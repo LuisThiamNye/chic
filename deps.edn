@@ -5,12 +5,19 @@
         io.github.humbleui/humbleui {:git/url "https://github.com/HumbleUI/HumbleUI"
                                      :git/sha "4deed5195a61511c348c0799db118c5c25d73c04"}
         io.github.humbleui/types$clojure     {:mvn/version "0.1.2"}
-        io.github.humbleui/jwm               {:mvn/version "0.4.0"  :exclusions [io.github.humbleui/types]}
-        io.github.humbleui/skija-windows     {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
-        io.github.humbleui/skija-linux       {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
-        io.github.humbleui/skija-macos-x64   {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
-        io.github.humbleui/skija-macos-arm64 {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
+        io.github.humbleui/jwm               {;:mvn/version "0.4.2"
+                                              :local/root "/Volumes/House/pclone/JWM"
+                                              :exclusions [io.github.humbleui/types]}
+        ;; io.github.humbleui/skija-windows     {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
+        ;; io.github.humbleui/skija-linux       {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
+        io.github.humbleui/skija-macos-x64   {:mvn/version "0.102.0" :exclusions [io.github.humbleui/types]}
+        ;; io.github.humbleui/skija-macos-arm64 {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
         com.github.clojure-lsp/clojure-lsp {:mvn/version "2022.03.31-20.00.20"}
+        ;; de.pitkley.jmccs/jmccs {:mvn/version "0.3.0"}
+        ;; de.pitkley/jmccs-osx {:mvn/version "0.2.1"}
+        com.github.oshi/oshi-core {:mvn/version "6.1.6"}
+        net.java.dev.jna/jna  {:mvn/version "5.10.0"}
+        net.java.dev.jna/jna-platform  {:mvn/version "5.11.0"}
         proteus/proteus {:mvn/version "0.1.6"}
         clj-kondo/clj-kondo {:mvn/version "2022.03.09"}
         cnuernber/dtype-next {:mvn/version "9.026"}

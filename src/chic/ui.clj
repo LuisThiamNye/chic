@@ -43,11 +43,12 @@
 (alter-var-root
  #'ui/label
  (fn [_]
-   (fn label [^String text ^Font font ^Paint paint & features]
-     {:pre [(some? font) (some? paint)]}
-     (let [opts (reduce #(.withFeatures ^ShapingOptions %1 ^String %2) ShapingOptions/DEFAULT features)
-           line (.shapeLine shaper text font ^ShapingOptions opts)]
-       (ui/->Label text font paint line (.getMetrics ^Font font))))))
+   (fn label
+     ([^String text ^Font font ^Paint paint & features]
+      {:pre [(some? font) (some? paint)]}
+      (let [opts (reduce #(.withFeatures ^ShapingOptions %1 ^String %2) ShapingOptions/DEFAULT features)
+            line (.shapeLine shaper text font ^ShapingOptions opts)]
+        (ui/->Label text font paint line (.getMetrics ^Font font)))))))
 
 (alter-var-root
  #'hui/memoize-last
@@ -356,6 +357,10 @@
        (<= (:y r1) bottom)
        (<= y (:bottom r1))))
 
+;; TODO only do selective drawing in serial collections (row/column)
+;; within a certain significant 'render distance' beyond the window, perhaps tell components
+;; to 'suspend' and deallocate resources so that UI would have to be
+;; regenerated the next time it becomes visible (inside the window)
 (defn draw-child
   ([child ctx cs canvas]
    (assert-good-cs cs)
@@ -485,6 +490,36 @@
 (defn on-mouse-move [on-event child]
   (dyncomp
    (->MouseMoveListener on-event child)))
+
+(defn standard-button [{:keys [on-click on-change no-hover?]} child]
+  (let [*state (volatile! :unpressed)
+        *holding? (volatile! false)
+        on-change (or on-change (fn [_ _]))]
+    (on-mouse-move
+     (fn [evt]
+       (if (point-in-component? evt (:chic.ui/mouse-win-pos evt))
+         (when (and on-change @*holding?
+                    (not= :pressed @*state))
+           (on-change @*state :pressed)
+           (vreset! *state :pressed))
+         (when (and on-change (not= :unpressed @*state))
+           (on-change @*state :unpressed)
+           (vreset! *state :unpressed))))
+     (clickable
+      (fn [evt]
+        (if (:hui.event.mouse-button/is-pressed evt)
+          (when (point-in-component? evt (:chic.ui/mouse-win-pos evt))
+            (vreset! *holding? true)
+            (on-change @*state :pressed)
+            (vswap! *state :pressed))
+          (do
+            (vreset! *holding? false)
+            (when on-change
+              (on-change @*state :unpressed)
+              (vswap! *state :unpressed))
+            (when (and on-click (point-in-component? evt (:chic.ui/mouse-win-pos evt)))
+              (on-click evt)))))
+      child))))
 
 (deftype+ DrawHook [on-draw after-draw child]
   IComponent
@@ -752,13 +787,17 @@
   (close [_]
     #_(.close line)))
 
-(defn label [^String text ^Font font ^Paint paint]
-  (let [line (.shapeLine shaper text font ShapingOptions/DEFAULT)
-        metrics (.getMetrics ^Font font)]
-    (->Label text font paint line (Math/ceil (.getCapHeight metrics))
-             (IPoint.
-              (Math/ceil (.getWidth line))
-              (Math/ceil (.getCapHeight metrics))))))
+(defn label
+  ([^String text ^Font font ^Paint paint]
+   (let [line (.shapeLine shaper text font ShapingOptions/DEFAULT)
+         metrics (.getMetrics ^Font font)]
+     (->Label text font paint line (Math/ceil (.getCapHeight metrics))
+              (IPoint.
+               (Math/ceil (.getWidth line))
+               (Math/ceil (.getCapHeight metrics))))))
+  ([^String text]
+   (dynamic ctx [{:keys [font-ui fill-text]} ctx]
+            (label text font-ui fill-text))))
 
 (alter-var-root
  #'ui/label

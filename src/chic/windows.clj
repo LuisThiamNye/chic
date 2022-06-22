@@ -34,10 +34,10 @@
 
 (defmacro safe-dosendui [& body]
   `(let [f# #(try ~@body (catch Throwable t# nil))]
-    (if (App/_onUIThread)
-     (f#)
-     (App/runOnUIThread f#))
-    nil))
+     (if (App/_onUIThread)
+       (f#)
+       (App/runOnUIThread f#))
+     nil))
 
 (defmacro safe-doui-async [& body]
   `(let [p# (promise)
@@ -90,13 +90,13 @@
   (huip/-event
    @*app-root (enc/merge @*ctx
                          (assoc (assoc event :chic/current-window w) :chic.ui/component-rect
-                               (window-app-rect window-obj)))))
+                                (window-app-rect window-obj)))))
 
 (defn schedule-after-event [event callback]
   (when-some [f (::event.schedule-after event)]
     (f callback)))
 
-(defn on-event-handler [{:keys [window-obj *ctx] :as win} event]
+(defn on-event-handler [{:keys [window-obj *ctx *visible?] :as win} event]
   (try
     (profile/reset "event")
     (profile/measure
@@ -105,51 +105,51 @@
            sae (fn [callback] (.add post-handlers callback))
            send-event (fn [win event]
                         (send-event win (assoc event ::event.schedule-after sae)))
-           changed? (condp instance? event
-                      EventMouseMove
-                      (let [pos (IPoint. (.getX ^EventMouseMove event) (.getY ^EventMouseMove event))
-                            event {:hui/event :hui/mouse-move
-                                   :chic.ui/mouse-win-pos pos
-                                   ;; :hui.event/pos pos
-                                   }]
-                        (swap! *ctx assoc :chic.ui/mouse-win-pos pos)
-                        (send-event win event))
+           changed?
+           (condp instance? event
+             EventMouseMove
+             (let [pos (IPoint. (.getX ^EventMouseMove event) (.getY ^EventMouseMove event))
+                   event {:hui/event :hui/mouse-move
+                          :chic.ui/mouse-win-pos pos
+                          ;; :hui.event/pos pos
+                          }]
+               (swap! *ctx assoc :chic.ui/mouse-win-pos pos)
+               (send-event win event))
 
-                      EventMouseButton
-                      (let [event {:hui/event :hui/mouse-button
-                                   :event event
-                                   :hui.event.mouse-button/is-pressed (.isPressed ^EventMouseButton event)}]
-                        (send-event win event))
+             EventMouseButton
+             (let [event {:hui/event :hui/mouse-button
+                          :event event
+                          :hui.event.mouse-button/is-pressed (.isPressed ^EventMouseButton event)}]
+               (send-event win event))
 
-                      EventMouseScroll
-                      (send-event win
-                                {:hui/event :hui/mouse-scroll
-                                 :hui.event.mouse-scroll/dx (.getDeltaX ^EventMouseScroll event)
-                                 :hui.event.mouse-scroll/dy (.getDeltaY ^EventMouseScroll event)})
+             EventMouseScroll
+             (send-event win
+                         {:hui/event :hui/mouse-scroll
+                          :hui.event.mouse-scroll/dx (.getDeltaX ^EventMouseScroll event)
+                          :hui.event.mouse-scroll/dy (.getDeltaY ^EventMouseScroll event)})
 
-                      EventWindowFocusOut
-                      (do ;;(vreset! *pressed-keys #{})
-                        false)
+             EventWindowFocusOut
+             (send-event win
+                         {:hui/event :hui/window-focus-out})
 
-                      EventKey
-                      (send-event win
-                                {:hui/event (if (.isPressed ^EventKey event) :hui/key-down :hui/key-up)
-                                 :hui.event.key/key (.getName (.getKey ^EventKey event))
-                                 :eventkey event})
+             EventKey
+             (send-event win
+                         {:hui/event (if (.isPressed ^EventKey event) :hui/key-down :hui/key-up)
+                          :hui.event.key/key (.getName (.getKey ^EventKey event))
+                          :eventkey event})
 
-                      EventTextInput
-                      (do
-                        (send-event win
-                                   {:hui/event :hui/text-input
-                                    :hui.event.text-input/text (.getText ^EventTextInput event)}))
+             EventTextInput
+             (do
+               (send-event win
+                           {:hui/event :hui/text-input
+                            :hui.event.text-input/text (.getText ^EventTextInput event)}))
 
-                      EventWindowResize
-                      true
-
-                      (do #_(println "Other event:" (type event)) nil))]
+             EventWindowResize
+             true
+             (do #_(println "Other event:" (type event)) nil))]
        (doit [cb post-handlers]
          (cb))
-       (when changed?
+       (when (and changed? @*visible?)
          ;; (vswap! (:*profiling win) assoc :event-triggers-change-time (System/nanoTime))
          (huiwin/request-frame window-obj))))
     (catch Throwable e
@@ -164,54 +164,60 @@
   (doseq [window (vals @*windows)]
     (huiwin/request-frame (:window-obj window))))
 
+(defn set-visible [window tf]
+  (vreset! (:*visible? window) tf)
+  (huiwin/set-visible (:window-obj window) tf))
+
 (defn error-view []
   (ui/dynamic
-    ctx [{:keys [scale]} ctx]
-    (let [font-ui (Font. style/face-code-default (float (* scale 13)))
+   ctx [{:keys [scale]} ctx]
+   (let [font-ui (Font. style/face-code-default (float (* scale 13)))
          fill-text (huipaint/fill 0xFF000000)]
      (ui/with-context
        {:font-ui font-ui
         :fill-text fill-text}
        (ui/dynamic
-         ctx [{:keys [*ui-error] :as window} (:chic/current-window ctx)
-              ui-error @*ui-error]
-         (let [{:keys [throwable bitmap]} ui-error]
-           (ui/fill
-            (huipaint/fill 0xFFF6E6E6)
-            (cuilay/vscrollbar
-             (cuilay/vscroll
-              (cuilay/column
-               (cuilay/padding
-                5 5
-                (cuilay/column
-                 (cui/clickable
-                  (uievt/on-primary-down (fn [_] (remount-window window)))
-                  (ui/fill (huipaint/fill 0x11000000)
-                           (cuilay/halign
-                            0.5 (cuilay/padding 20 5 (ui/label "Reload window" font-ui fill-text)))))
-                 (cuilay/padding 5 5 (ui/label (str throwable) font-ui fill-text))
-                 (cui.error/bound-errors
-                  (cuilay/column
-                   (when bitmap
-                     (cui/dyncomp(error/partial-canvas-preview bitmap)))
-                   (cui/dyncomp (error.stacktrace/stack-trace-view throwable))
-                   (cui/dyncomp (error/full-error-view-of throwable))))))))))))))))
+        ctx [{:keys [*ui-error] :as window} (:chic/current-window ctx)
+             ui-error @*ui-error]
+        (let [{:keys [throwable bitmap]} ui-error]
+          (ui/fill
+           (huipaint/fill 0xFFF6E6E6)
+           (cuilay/vscrollbar
+            (cuilay/vscroll
+             (cuilay/column
+              (cuilay/padding
+               5 5
+               (cuilay/column
+                (cui/clickable
+                 (uievt/on-primary-down (fn [_] (remount-window window)))
+                 (ui/fill (huipaint/fill 0x11000000)
+                          (cuilay/halign
+                           0.5 (cuilay/padding 20 5 (ui/label "Reload window" font-ui fill-text)))))
+                (cuilay/padding 5 5 (ui/label (str throwable) font-ui fill-text))
+                (cui.error/bound-errors
+                 (cuilay/column
+                  (when bitmap
+                    (cui/dyncomp (error/partial-canvas-preview bitmap)))
+                  (cui/dyncomp (error.stacktrace/stack-trace-view throwable))
+                  (cui/dyncomp (error/full-error-view-of throwable))))))))))))))))
+
+(def *always-render? (volatile! false))
 
 (defn on-paint-handler [{:keys [*app-root window-obj *ctx *ui-error] :as w} ^Canvas canvas]
   (.clear canvas (unchecked-int 0xFFF6F6F6))
   (let [bounds (window-app-rect window-obj)
-        scale(huiwin/scale window-obj)
+        scale (huiwin/scale window-obj)
         ctx (swap! *ctx
                    (fn [ctx]
                      (enc/merge
                       (assoc (util/assoc-if-not= ctx :scale scale)
-                            :chic/current-window w
-                            :chic.profiling/time-since-last-paint
-                            (unchecked-subtract (System/nanoTime) (:paint-start-time @(:*profiling w)))
-                            :chic.ui/component-rect bounds
-                            :chic.ui/window-content-bounds bounds
-                            :chic.error/make-render-error-window make-render-error-window)
-                     (style/context-default {:scale scale}))))]
+                             :chic/current-window w
+                             :chic.profiling/time-since-last-paint
+                             (unchecked-subtract (System/nanoTime) (:paint-start-time @(:*profiling w)))
+                             :chic.ui/component-rect bounds
+                             :chic.ui/window-content-bounds bounds
+                             :chic.error/make-render-error-window make-render-error-window)
+                      (style/context-default {:scale scale}))))]
     (profile/reset)
     (vswap! (:*profiling w) assoc :paint-start-time (System/nanoTime))
     (profile/measure
@@ -229,7 +235,8 @@
     (vswap! (:*profiling w) assoc :latest-paint-duration
             (unchecked-subtract (System/nanoTime) (:paint-start-time @(:*profiling w))))
     #_(enc/after-timeout 1000 (request-frame w))
-    #_(request-frame w)
+    #_(when @*always-render?
+      (request-frame w))
     #_(let [{:keys [paint-start-time event-triggers-change-time paint-done-time]} @(:*profiling w)]
         (chic.debug/println-main
          "(ms)"
@@ -248,6 +255,7 @@
            :*profiling (volatile! {:paint-start-time 0
                                    :latest-paint-duration 0})
            :build-app-root build-app-root
+           :*visible? (volatile! false)
            :*ctx (or *ctx (atom {}))
            :window-obj (huiwin/make
                         {:on-close #(do (swap! *windows dissoc id)
@@ -260,11 +268,121 @@
     (swap! *windows assoc id w)
     (:window-obj w)))
 
+(defn make2 [{:keys [id on-close *app-root on-paint on-event *ctx build-app-root] :as opts}]
+  {:pre [(on-ui-thread?)]}
+  (let [on-paint (or on-paint #'on-paint-handler)
+        on-event (or on-event #'on-event-handler)
+        *app-root (or *app-root (volatile! nil))
+        w {:id id
+           :*app-root *app-root
+           :*ui-error (volatile! nil)
+           :*profiling (volatile! {:paint-start-time 0
+                                   :latest-paint-duration 0})
+           :build-app-root build-app-root
+           :*visible? (volatile! false)
+           :*ctx (or *ctx (atom {}))
+           :window-obj (huiwin/make
+                        {:on-close #(do (swap! *windows dissoc id)
+                                        (on-close))
+                         :on-paint #(on-paint (get @*windows id) %2)
+                         :on-event #(on-event (get @*windows id) %2)})}
+        w (with-meta w
+            {`chic.protocols/request-frame #'request-frame})]
+    (vreset! *app-root (build-app-root))
+    (swap! *windows assoc id w)
+    w))
+
 (comment
   (remount-window (val (first @*windows)))
   (request-frame (val (first @*windows)))
   (:window-obj (second (vals @*windows)))
-  (:window-obj (first (vals @*windows)))
-(+ 0.5 (- 1 0.5))
+  (dosendui
+   (.setTitlebarVisible (:window-obj (first (vals @*windows))) true))
+
+  (io.github.humbleui.jwm.Log/setLogger
+   (reify java.util.function.Consumer
+     (accept [self data]
+       (chic.debug/println-main data))))
+
+  (def --app
+    (ui/dynamic
+     _ [x (rand)]
+     (cuilay/valign
+      x
+      (cuilay/halign
+       0 (ui/fill
+          (huipaint/fill 0xff000000)
+          (ui/gap 20 20))))))
+
+  (def --c (atom 1))
+  (defn --on-paint [window ^Canvas canvas]
+    ;; (chic.debug/println-main "pspdf")
+    (.clear canvas (unchecked-int 0xFFF6F6F6))
+    (let [bounds (huiwin/content-rect window)
+          ctx {:scale (huiwin/scale window)}
+          ctx (assoc ctx
+                     :chic.ui/component-rect bounds
+                     :chic.ui/window-content-bounds bounds)]
+      ;; (huip/-measure --app ctx (io.github.humbleui.types.IRect/makeXYWH
+      ;;                          0 0 (:width bounds) (:height bounds)))
+      (huip/-draw --app ctx
+                  (io.github.humbleui.types.IRect/makeXYWH
+                   0 0 (:width bounds) (:height bounds)) canvas)
+      (if (< 2 @--c)
+        (do (chic.debug/println-main "Paint")
+            (huiwin/request-frame window))
+        (do
+          (chic.debug/println-main "PAINT without request-frame")
+          (swap! --c inc)))))
+
+  (defn --on-event [window event]
+    (chic.debug/println-main "Event: " event)
+    (when-let [changed? (huip/-event --app {:event event})]
+      (huiwin/request-frame window)))
+  (def --window (atom nil))
+
+  (defn --make-window []
+    (let [screen (last (App/getScreens))
+          scale (.getScale screen)
+          width (* 600 scale)
+          height (* 400 scale)
+          area (.getWorkArea screen)
+          x (:x area)
+          y (-> (:height area) (- height) (/ 2) (+ (:y area)))
+          window (huiwin/make
+                  {:on-close #(reset! --window nil)
+                   :on-paint #'--on-paint
+                   :on-event #'--on-event})]
+      (chic.debug/println-main "Setting window title...")
+      (huiwin/set-title window "Humble UI")
+      (chic.debug/println-main "Setting window size...")
+      (huiwin/set-window-size window width height)
+      (chic.debug/println-main "Setting window position...")
+      (huiwin/set-window-position window x y)
+      (chic.debug/println-main "Setting window visible...")
+      ;; (huiwin/request-frame window)
+      (huiwin/set-visible window true)))
+
+  (dosendui
+   (.close @--window))
+  (dosendui
+   (try
+     (reset! --c 1#_3)
+     (reset! --window (--make-window))
+        (catch Exception e
+          (chic.debug/println-main (pr-str e)))))
+  (dosendui
+   ;; (prn 2)
+   (try (huiwin/request-frame @--window)
+        ;; (prn 3)
+        (catch Exception e
+          (chic.debug/println-main (pr-str e)))))
+
+  (dosendui
+   (prn 2)
+   (try (huiwin/request-frame (:window-obj (first (vals @*windows))))
+        (prn 3)
+        (catch Exception e
+          (chic.debug/println-main (pr-str e)))))
   #!
   )

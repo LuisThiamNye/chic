@@ -2,6 +2,7 @@
   (:require
    [chic.clj.source :as clj.source]
    [io.github.humbleui.paint :as huipaint]
+   [chic.cljbwr.var-editor :as var-editor]
    [chic.ui.error :as ui.error]
    [chic.ui :as cui]
    [chic.ui.event :as uievt]
@@ -43,7 +44,9 @@
 (defn ns-tree-map []
   (reduce (fn [tree ns]
             (let [segs (str/split (str ns) #"\.")]
-              (assoc-in tree segs {:ns ns})))
+              (if (= "chic" (first segs))
+                (assoc-in tree segs {:ns ns})
+                tree)))
           {}
           (all-ns)))
 
@@ -124,7 +127,8 @@
    ctx [member @*selected-member
         font-ui (:font-ui ctx)
         fill-text (:fill-text ctx)]
-    (let [jar? (when-let [f (:file (meta member))]
+    (var-editor/var-panel member)
+    #_(let [jar? (when-let [f (:file (meta member))]
                  (str/starts-with?
                   (str (.getResource (.getClassLoader (Class/forName "clojure.lang.Compiler")) f))
                   "jar"))]
@@ -132,7 +136,8 @@
       (cuilay/padding
        5 5
        (if-let [ext-src (and #_jar? (clj.source/crude-source-of-var member))]
-         (ui.error/bound-errors
+         (var-editor/var-panel member)
+         #_(ui.error/bound-errors
           (text-editor/element (text-editor.core/make {:content ext-src :pos 0})))
          (ui/label "No source available" font-ui fill-text)))
       (ui/gap 0 0)))))

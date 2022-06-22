@@ -6,6 +6,11 @@
    [clojure.math :as math]
    [io.github.humbleui.paint :as huipaint]))
 
+(defn -fix-b [n]
+  (if (> n 127)
+    (- n 256)
+    n))
+
 (def transparent (huipaint/fill 0x00000000))
 
 ;; see https://bottosson.github.io/posts/colorpicker/
@@ -40,7 +45,7 @@
                             (prim/* b 1.19445276)))
          green-max-saturation-coeffs
          blue-max-saturation-coeffs)
-        s (prim/+ (.-k0 coeffs)
+        S (prim/+ (.-k0 coeffs)
                   (prim/* a (.-k1 coeffs))
                   (prim/* b (.-k2 coeffs))
                   (prim/* a a (.-k3 coeffs))
@@ -48,9 +53,9 @@
         k-l (prim/+ (prim/* a 0.3963377774) (prim/* b 0.2158037573))
         k-m (prim/+ (prim/* a -0.1055613458) (prim/* b -0.0638541728))
         k-s (prim/+ (prim/* a -0.0894841775) (prim/* b -1.2914855480))
-        l' (prim/+ 1. (prim/* s k-l))
-        m' (prim/+ 1. (prim/* s k-m))
-        s' (prim/+ 1. (prim/* s k-s))
+        l' (prim/+ 1. (prim/* S k-l))
+        m' (prim/+ 1. (prim/* S k-m))
+        s' (prim/+ 1. (prim/* S k-s))
         l (prim/* l' l' l')
         m (prim/* m' m' m')
         s (prim/* s' s' s')
@@ -66,7 +71,7 @@
         f (prim/+ (prim/* wl l) (prim/* wm m) (prim/* ws s))
         f1 (prim/+ (prim/* wl l-ds) (prim/* wm m-ds) (prim/* ws s-ds))
         f2 (prim/+ (prim/* wl l-ds2) (prim/* wm m-ds2) (prim/* ws s-ds2))]
-    (prim/- s (prim/* f (prim// f1
+    (prim/- S (prim/* f (prim// f1
                                 (prim/- (prim/* f1 f1)
                                         (prim/* 0.5 f f2)))))))
 
@@ -86,10 +91,10 @@
     (.write (str (.-z o)))
     (.write "]")))
 
-(defn ^{:tag `DoubleTuple3} oklab->linear-srgb [^double l ^double a ^double b]
-  (let [l' (prim/+ l (prim/* a 0.3963377774) (prim/* b 0.2158037573))
-        m' (prim/+ l (prim/* a -0.1055613458) (prim/* b -0.0638541728))
-        s' (prim/+ l (prim/* a -0.0894841775) (prim/* b -1.2914855480))
+(defn ^{:tag `DoubleTuple3} oklab->linear-srgb [^double L ^double a ^double b]
+  (let [l' (prim/+ L (prim/* a 0.3963377774) (prim/* b 0.2158037573))
+        m' (prim/+ L (prim/* a -0.1055613458) (prim/* b -0.0638541728))
+        s' (prim/+ L (prim/* a -0.0894841775) (prim/* b -1.2914855480))
         l (prim/* l' l' l')
         m (prim/* m' m' m')
         s (prim/* s' s' s')]
@@ -111,7 +116,7 @@
   (let [cusp (find-cusp a b)
         l (.-x cusp)
         c (.-y cusp)]
-    (->DoubleTuple2 (prim// c l) (prim// c (prim/- l 1.)))))
+    (->DoubleTuple2 (prim// c l) (prim// c (prim/- 1. l)))))
 
 (defn srgb-transfer-function ^double [^double x]
   (if (prim/<= x 0.0031308)
@@ -153,15 +158,17 @@
         rgb (oklab->linear-srgb l (prim/* c a) (prim/* c b))]
     (->DoubleTuple3
      (prim/* 255. ^double (srgb-transfer-function (.-x rgb)))
-     (prim/* 255. ^double (srgb-transfer-function (.-y rgb)))
+     (prim/* 255. ^double (srgb-transfer-function (prim/max 0. (.-y rgb))))
      (prim/* 255. ^double (srgb-transfer-function (.-z rgb))))))
+;; (okhsv->srgb 0. 0.5 0.5)
+;; (okhsv->srgb 0.08 1. 1.)
 
 (defn okhsva* ^long [^double h ^double s ^double v ^double a]
   (let [rgb (okhsv->srgb h s v)]
     (prim/+
-     (prim/<< (Math/round (prim/* 255. a)) 24)
-     (prim/<< (Math/round (.-x rgb)) 16)
-     (prim/<< (Math/round (.-y rgb)) 8)
+     (prim/<< ^double (-fix-b (Math/round (prim/* 255. a))) 030)
+     (prim/<< ^double (-fix-b (Math/round (.-x rgb))) 020)
+     (prim/<< ^double (-fix-b (Math/round (.-y rgb))) 010)
      (Math/round (.-z rgb)))))
 
 (defn okhsv* ^long [^double h ^double s ^double v]
@@ -172,3 +179,11 @@
 
 (defmacro okhsva [h s v a]
   (okhsva* h s v a))
+
+(defmacro grey [v & [a]]
+  (let [a (or a 255)]
+    (unchecked-int
+     (+ (bit-shift-left a 24)
+        (bit-shift-left v 16)
+        (bit-shift-left v 8)
+        v))))

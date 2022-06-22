@@ -11,7 +11,8 @@
    [borkdude.dynaload :refer [dynaload]]
    [io.github.humbleui.ui :as ui]
    [io.github.humbleui.window :as huiwin]
-   [nrepl.server :as nrepl-server])
+   [nrepl.server :as nrepl-server]
+   [chic.ui :as cui])
   (:import
    [io.github.humbleui.skija Font Paint]))
 
@@ -73,6 +74,8 @@
 
 (def *app-root (volatile! nil))
 
+(def *scale2 (volatile! nil))
+
 (defn build-app-root []
   (ui/dynamic
    ctx [scale (:scale ctx)]
@@ -89,8 +92,12 @@
                        :fill-text fill-text}
        (cuilay/column
         [:stretch 1
-         (cui/dyncomp
-          (demo/basic-view))]
+         (cui/updating-ctx
+          (fn [ctx] (if-some [s @*scale2]
+                      (assoc ctx :scale s)
+                      ctx))
+          (cui/dyncomp
+           (demo/basic-view)))]
         #_[:stretch 1
            (ui/gap 0 0)]
         (cuilay/height
@@ -107,6 +114,14 @@
             (ui/fill (huipaint/fill 0x11000000)
                      (cuilay/valign
                       0.5 (cuilay/padding 20 0 (ui/label "Refresh" font-ui fill-text)))))
+           (ui/gap 3 0)
+           (cui/clickable
+            (fn [event]
+              (when (:hui.event.mouse-button/is-pressed event)
+                (vswap! windows/*always-render? not)))
+            (ui/fill (huipaint/fill 0x11000000)
+                     (cuilay/valign
+                      0.5 (cuilay/padding 10 0 (ui/label "60" font-ui fill-text)))))
            (cui/clickable
             (uievt/on-primary-down (fn [_] (debugger/show-error-window)))
             (ui/dynamic
@@ -148,17 +163,17 @@
         height (* 400 scale)
         area (:work-area screen)
         x (:x area)
-        y (-> (:height area) (- height))]
-    (doto
-     (windows/make
-      {:id "main"
-       :*app-root *app-root
-       :build-app-root #(cui/dyncomp (build-app-root))
-       :on-close #(fn [])})
+        y (-> (:height area) (- height))
+        w (windows/make2
+           {:id "main"
+            :*app-root *app-root
+            :build-app-root #(cui/dyncomp (build-app-root))
+            :on-close #(fn [])})]
+    (doto (:window-obj w)
       (huiwin/set-title "Main")
       (huiwin/set-window-size width height)
-      (huiwin/set-window-position x y)
-      (huiwin/set-visible true))))
+      (huiwin/set-window-position x y))
+    (windows/set-visible w true)))
 
 (defn -main [& args]
   (.start
@@ -184,7 +199,7 @@
    (Thread. (fn [] (fs/delete-if-exists ".nrepl-port"))))
   ;; (debug/attach-vm!)
   (debugger/install-debug-ctx!)
-  (let [class-loader
+  #_(let [class-loader
         (.getClassLoader (Class/forName "clojure.lang.Compiler"))
         #_(.getContextClassLoader
            (Thread/currentThread))]
@@ -192,9 +207,13 @@
                  (.setContextClassLoader
                   (Thread/currentThread)
                   class-loader)
-                 (make-main-window)))))
+                 (make-main-window))))
+  (hui/start (fn []
+               (make-main-window))))
 
 (comment
+  (windows/dosendui
+   (make-main-window))
   (do
     (hui/doui
      (some-> (some #(when (= "main" (:id %)) %) (vals @windows/*windows))
@@ -224,5 +243,12 @@
   (require 'chic.main :reload-all)
 
   ;; (hui/doui (alter-var-root #'clojure.core/*warn-on-reflection* (fn [_] true)))
+  (vreset! *scale2 10)
+  (vreset! *scale2 2)
+  (vreset! *scale2 1.75)
+  (vreset! *scale2 1.5)
+  (vreset! *scale2 1.25)
+  (vreset! *scale2 1)
+  (vreset! *scale2 nil)
 #!
   )
