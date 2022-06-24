@@ -1,5 +1,7 @@
 (ns chic.ui.ui2
   (:require
+   [chic.style :as style]
+   [io.github.humbleui.paint :as huipaint]
    [chic.util :as util]
    [chic.ui :as cui]
    [clojure.pprint :as pp]
@@ -96,6 +98,17 @@ parents set position
 (defn fill-rect [^Paint paint]
   (fill-rect-w {:getters {:paint (fn [_] paint)}}))
 
+(def fill-rrect-w
+  (direct-widget
+   {:get [:paint]
+    :draw (fn [self _ctx ^Rect rect ^Canvas cnv]
+            (.drawRRect cnv (.withRadii rect (float(access self :radius)))
+                        (access self :paint)))}))
+
+(defn fill-rrect [br ^Paint paint]
+  (fill-rrect-w {:getters {:paint (fn [_] paint)
+                           :radius (fn [_] br)}}))
+
 (defn subrect-sizer [width height])
 
 #_(defn sized [width height child]
@@ -104,7 +117,7 @@ parents set position
 (defn adapt-rect [f child]
   (assoc child :adapt-rect
          (if-some [f0 (:adapt-rect child)]
-           (fn [w ctx rect] (f ctx (f0 w ctx rect)))
+           (fn [w ctx rect] (f0 w ctx (f ctx rect)))
            (fn [_ ctx rect] (f ctx rect)))))
 
 (defn -rect-haligned [offset-coeff coeff parent rect]
@@ -112,3 +125,61 @@ parents set position
         offset (* offset-coeff (:width rect))
         l (- x offset)]
     (Rect. l (:y rect) (+ l (:width rect)) (:bottom rect))))
+
+(defn v1-root [{:keys [on-mount]} ui]
+  (let [*unmounted? (volatile! true)
+        on-mount (or on-mount (fn [_ctx]))]
+    (cui/generic
+    {:draw
+     (fn [_ ctx ^IRect rect ^Canvas cnv]
+       (let [layer (.save cnv)]
+         (.translate cnv (- (:x rect)) (- (:y rect)))
+         (when @*unmounted?
+           (on-mount ctx)
+           (vreset! *unmounted? false))
+         (draw ui ctx (.toRect rect) cnv)
+         (.restoreToCount cnv layer)))
+     :event (fn [_ evt]
+              (if (and (:hui.event.mouse-button/is-pressed evt)
+                       (cui/point-in-component? evt (:chic.ui/mouse-win-pos evt)))
+                nil nil))
+     :close (fn [_])})))
+
+(def textline-w
+  (direct-widget
+   {:get [:paint :text-line]
+    :draw (fn [self _ ^Rect rect ^Canvas cnv]
+            (let [text-line ^TextLine (access self :text-line)]
+              (.drawTextLine cnv text-line
+                            #_x (:x rect)
+                            #_y (:bottom rect)
+                            (access self :paint))))}))
+;; you already know the bounds of the TextLine
+
+(defn ph-textline [text {:keys [background]}]
+  (let [scale 2
+        font (Font. style/face-code-default (float (* scale 12)))
+        text-line (.shapeLine
+                   cui/shaper text font
+                   io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)]
+    (adapt-rect
+     (fn [_ ^Rect rect]
+       (Rect/makeXYWH (:x rect) (:y rect)
+                      (.getWidth text-line) (Math/ceil (.getCapHeight text-line))))
+     (stack*
+      (into []
+            cat
+            [background
+             [(textline-w
+               {:getters
+                {:paint (constantly (huipaint/fill 0xff000000))
+                 :text-line (constantly text-line)}})]])))))
+
+(def padded-w
+  {:get [:child]
+   })
+
+(defn margin [value child]
+  (adapt-rect
+   (fn [_ ^Rect rect] (.inflate rect (- value)))
+   child))
