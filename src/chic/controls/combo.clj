@@ -17,7 +17,8 @@
    [criterium.core :as crit])
   (:import
    [io.github.humbleui.skija Paint Shader Canvas PaintMode Path PaintStrokeCap Matrix33 ImageFilter Font]
-   [io.github.humbleui.types IPoint Point Rect RRect]))
+   [io.github.humbleui.types IPoint Point Rect RRect]
+   [io.github.humbleui.jwm Window]))
 
 (defn build-menu-window-root [{}]
   (cui/on-event
@@ -38,36 +39,45 @@
           (chic.controls.button/lone-button {:label "button"})
           #_(ui/gap 0 0)))))))
 
-(defn make-menu-window [{}]
-  (let [screen (last (hui/screens))
-        scale (:scale screen)
-        area (:work-area screen)
-        width (* 600 scale)
-        height (int (* 0.9 (:height area)))
-        x (-> (:width area) (- width) (/ 2) (+ (:x area)))
-        y (-> (:height area) (- height) (/ 2) (+ (:y area)))]
-    (doto
-      (windows/make
-       {:id (random-uuid)
-        :build-app-root (fn [] (cui/dyncomp (build-menu-window-root {})))
-        :on-close (fn [])})
+(defn make-menu-window [{:keys [window mouse-pos]}]
+  {:pre [(some? mouse-pos) (map? window)]}
+  (let [screen (.getScreen ^Window (:window-obj window))
+        scale (.getScale screen)
+        area (.getWorkArea screen)
+        width (* 100 scale)
+        height (* 300 scale)
+        window-rect (huiwin/window-rect (:window-obj window))
+        x (+ (:x window-rect) (:x mouse-pos))
+        y (+ (:y window-rect) (:y mouse-pos))
+        w (windows/make2
+           {:id (random-uuid)
+            :build-app-root (fn [] (cui/dyncomp (build-menu-window-root {})))
+            :on-close (fn [])})
+        wo (:window-obj w)]
+    (doto wo
       (huiwin/set-title (str "Context Menu"))
       (huiwin/set-window-size width height)
       (huiwin/set-window-position x y)
-      (huiwin/set-z-order :floating)
-      (.setTitlebarVisible false)
-      (huiwin/set-visible true)
-      (.focus))))
+      (huiwin/set-z-order :pop-up-menu #_:floating)
+      (.setTitlebarVisible false))
+    ;; (huiwin/set-visible wo true)
+    (windows/set-visible w true)
+    (.focus wo)))
 
 (defn combo-box [{}]
   (cui/standard-button
-   {:on-click (fn [_] (windows/dosendui
-                       (make-menu-window {})))}
+   {:on-click (fn [evt] (windows/safe-dosendui
+                       (make-menu-window {:window (:chic/current-window evt)
+                                          :mouse-pos (:chic.ui/mouse-win-pos evt)})))}
    (cui/label "Combo")))
 
 (comment
   (windows/dosendui
-   (make-menu-window {}))
+   (try (make-menu-window {:window (first (vals @windows/*windows))
+                       :mouse-pos {:x 0 :y 0}})
+        (catch Exception e
+          (chic.debug/println-main e))))
+  (windows/window-app-rect (:window-obj (first (vals @windows/*windows))))
   (def --win (:window-obj (second (vals @windows/*windows))))
   (windows/dosendui (.close --win))
   (windows/dosendui (.focus --win))

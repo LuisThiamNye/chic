@@ -8,6 +8,7 @@
 
 (defn new-db []
   (b/with-colls [:map]
+    ;; normalised db
     {::nodes {::root-node {::node-type ::type.root
                            ::node-children []}
               ::constant.nil (constant-node nil)

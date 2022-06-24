@@ -96,7 +96,7 @@
   (when-some [f (::event.schedule-after event)]
     (f callback)))
 
-(defn on-event-handler [{:keys [window-obj *ctx *visible?] :as win} event]
+(defn on-event-handler [{:keys [window-obj *ctx] :as win} event]
   (try
     (profile/reset "event")
     (profile/measure
@@ -149,7 +149,7 @@
              (do #_(println "Other event:" (type event)) nil))]
        (doit [cb post-handlers]
          (cb))
-       (when (and changed? @*visible?)
+       (when changed?
          ;; (vswap! (:*profiling win) assoc :event-triggers-change-time (System/nanoTime))
          (huiwin/request-frame window-obj))))
     (catch Throwable e
@@ -165,7 +165,7 @@
     (huiwin/request-frame (:window-obj window))))
 
 (defn set-visible [window tf]
-  (vreset! (:*visible? window) tf)
+  ;; (vreset! (:*visible? window) tf)
   (huiwin/set-visible (:window-obj window) tf))
 
 (defn error-view []
@@ -235,7 +235,7 @@
     (vswap! (:*profiling w) assoc :latest-paint-duration
             (unchecked-subtract (System/nanoTime) (:paint-start-time @(:*profiling w))))
     #_(enc/after-timeout 1000 (request-frame w))
-    #_(when @*always-render?
+    (when @*always-render?
       (request-frame w))
     #_(let [{:keys [paint-start-time event-triggers-change-time paint-done-time]} @(:*profiling w)]
         (chic.debug/println-main
@@ -255,7 +255,7 @@
            :*profiling (volatile! {:paint-start-time 0
                                    :latest-paint-duration 0})
            :build-app-root build-app-root
-           :*visible? (volatile! false)
+           ;; :*visible? (volatile! false)
            :*ctx (or *ctx (atom {}))
            :window-obj (huiwin/make
                         {:on-close #(do (swap! *windows dissoc id)
@@ -279,7 +279,7 @@
            :*profiling (volatile! {:paint-start-time 0
                                    :latest-paint-duration 0})
            :build-app-root build-app-root
-           :*visible? (volatile! false)
+           ;; :*visible? (volatile! false)
            :*ctx (or *ctx (atom {}))
            :window-obj (huiwin/make
                         {:on-close #(do (swap! *windows dissoc id)
@@ -291,6 +291,10 @@
     (vreset! *app-root (build-app-root))
     (swap! *windows assoc id w)
     w))
+
+(defn remount-all-windows []
+  (doseq [w (vals @*windows)]
+    (remount-window w)))
 
 (comment
   (remount-window (val (first @*windows)))

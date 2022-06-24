@@ -1,7 +1,9 @@
 (ns chic.demo
   (:require
+   [chic.example.constraints :as eg.constraints]
    [chic.ui.event :as uievt]
    [chic.colour.picker-ui :as picker-ui]
+   [chic.clj-editor2.core :as clj-editor2]
    [chic.quantum.demo :as quantum.demo]
    [chic.digger :as digger]
    [chic.cljbwr :as cljbwr]
@@ -78,15 +80,23 @@
   (ui/dynamic
     ctx [{:keys [font-ui fill-text]} ctx
          {:keys [selected-tab]} @*state]
-    (cuilay/column
+    (cuilay/row
      (ui/fill
       (huipaint/fill 0xFFb0b0b0)
-      (cuilay/row
-       (for [tab [:home :namespaces :browser :cljbrowser
-                  #_:quantum
-                  :digger #_:font :controls
-                  :screens :picker]]
-         [:stretch 1
+      (cuilay/vscroll
+       (cuilay/column
+        (for [tab [:home
+                   :screens
+                   :constraints
+                   :edit2
+                   :browser
+                   :cljbrowser
+                   :controls
+                   :digger
+                   :picker
+                   :namespaces
+                   #_:quantum
+                   #_:font]]
           (cui/clickable
            (uievt/on-primary-down (fn [_] (swap! *state assoc :selected-tab tab)))
            (ui/dynamic
@@ -100,7 +110,8 @@
                                     :else 0xFFd0d0d0)))
                  (cuilay/padding
                   5 8
-                  (ui/label (name tab) font-ui fill-text))))))])))
+                  (ui/label (name tab) font-ui fill-text)))))))
+        [:stretch 1 (ui/gap 0 0)])))
      [:stretch 1
       (case selected-tab
         :home (cuilay/vscrollbar
@@ -148,6 +159,8 @@
                       (ui/gap 0 30)))))
         :browser (cui/dyncomp (filebwr/basic-view))
         :cljbrowser (cui/dyncomp (cljbwr/basic-view))
+        :constraints (cui/dyncomp (eg.constraints/view1))
+        :edit2 (cui/dyncomp (clj-editor2/sample-view))
         :namespaces (cui/dyncomp (depview/basic-view))
         :quantum (cui/dyncomp (quantum.demo/basic-view))
         :digger (cui/dyncomp (digger/basic-view))

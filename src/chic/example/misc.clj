@@ -61,3 +61,5 @@
 ;; indeterminate loading bar
 ;; loading circle
 ;; indeterminate loading circle
+
+;; button that has an enlarged hitbox once held down (like macOS)

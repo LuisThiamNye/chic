@@ -854,3 +854,35 @@
 
 (defn with-debug [child]
   (->WithDebug child))
+
+(deftype+ Generic [d ^:mut mut on-measure on-draw on-event on-close child]
+  IComponent
+  (-measure [self ctx rect]
+    (on-measure self ctx rect))
+
+  (-draw [self ctx rect canvas]
+    (on-draw self ctx rect canvas))
+
+  (-event [self event]
+    (on-event self event))
+
+  AutoCloseable
+  (close [self] (on-close self)))
+
+(defn generic
+  ([opts] (generic opts nil))
+  ([{:keys [init init-mut measure draw event close]} child]
+   (->Generic init init-mut
+              (or measure (when-not (seqable? child)
+                            #(huip/-measure child %2 %3))
+                  (fn [_ _ rect] rect))
+              (or draw (when-not (seqable? child)
+                         #(huip/-draw child %2 %3 %4))
+                  (constantly nil))
+              (or event (when-not (seqable? child)
+                          #(huip/-event child %2))
+                  (constantly nil))
+              (or close (when-not (seqable? child)
+                          #(ui/child-close child))
+                  (constantly nil))
+              child)))
