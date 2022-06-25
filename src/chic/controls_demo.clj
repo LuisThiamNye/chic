@@ -1,5 +1,7 @@
 (ns chic.controls-demo
   (:require
+   [chic.ui.ui2 :as ui2]
+   [chic.controls.textbox.core :as textbox]
    [clojure.core.matrix :as matrix]
    [taoensso.encore :as enc]
    [chic.paint :as cpaint]
@@ -52,3 +54,11 @@
     (cuilay/halign
      0 (combo/combo-box {}))
     [:stretch 1 (ui/gap 0 0)])))
+
+(defn textbox-demo []
+  (ui2/v1-root
+   {}
+   (ui2/clip-rect
+    (ui2/padded
+     8
+     (textbox/textbox-sample)))))

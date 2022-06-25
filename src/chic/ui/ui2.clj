@@ -1,5 +1,6 @@
 (ns chic.ui.ui2
   (:require
+   [chic.ui.font :as uifont]
    [chic.style :as style]
    [io.github.humbleui.paint :as huipaint]
    [chic.util :as util]
@@ -13,11 +14,19 @@
    [io.github.humbleui.profile :as profile]
    [io.github.humbleui.ui :as ui])
   (:import
+   (io.lacuna.bifurcan LinearList)
    (java.util ArrayList)
    (io.github.humbleui.skija Canvas Font Paint TextLine FontMetrics)
    (io.github.humbleui.skija.shaper ShapingOptions Shaper)
    (io.github.humbleui.types IPoint IRect Rect Point)
    (java.lang AutoCloseable)))
+
+(defmacro with-save [canvas & body]
+  (assert (symbol? canvas))
+  `(let [c# (.save ^Canvas ~canvas)]
+     (try
+       ~@body
+       (finally (.restoreToCount ^Canvas ~canvas c#)))))
 
 (defn -transmit-rect [widget ctx rect]
   (if-some [adapt-rect (get widget :adapt-rect)]
@@ -27,12 +36,18 @@
 (defn draw [widget ctx rect ^Canvas canvas]
   ((:draw widget) widget ctx (-transmit-rect widget ctx rect) canvas))
 
+(defn measure [widget max-rect]
+  ((:measure widget) (-transmit-rect widget 0 max-rect)))
+
 (defn access [widget prop]
-  ((get (:getters widget) prop) {}))
+  #_(when (nil? (get (:getters widget) prop))
+    (prn widget))
+  ((get (:getters widget) prop) 0))
 
 (defn direct-widget [config]
   (fn [opts]
-    (assoc config :getters (:getters opts))))
+    (assoc config :getters (:getters opts)
+           :slots (:slots opts))))
 
 "
 layout:
@@ -46,16 +61,94 @@ parents set position
 (defn layout [{} child]
   child)
 
-(defn column [{} children]
-  {:on-draw
-   (fn [{} ctx rect ^Canvas canvas]
-     (let-mutable [y 0]
-       (doit [child children]
-         (let [child-size (huip/-measure child ctx rect)]
-           (huip/-draw child ctx (cui/offset-lt rect 0 y) canvas)
-           (set! y (+ y (:height child-size)))))))})
+(def column-w
+  (direct-widget
+   {:get [:children]
+    :draw
+    (fn [self ctx rect ^Canvas canvas]
+      (let-mutable [y (:y rect)]
+        (doit [child (access self :children)]
+          (when (< y (:bottom rect))
+            (let [child-rect (measure child (Rect. (:x rect) y
+                                                  (:right rect) (:bottom rect)))]
+              (draw child ctx child-rect canvas)
+             (set! y (+ y (:height child-rect))))))))}))
 
-(defn inf-column [{:keys [init prev] :as opts}]
+(defn column* [children]
+  (column-w {:getters {:children (constantly children)}}))
+
+(defmacro column [& children]
+  `(column* [~@children]))
+
+(def eqicolumn-w
+  (direct-widget
+   {:get [:children :height]
+    :draw
+    (fn [self ctx rect ^Canvas canvas]
+      (let [height (access self :height)
+            l (:x rect)
+            t (:top rect)
+            r (:right rect)
+            b (:bottom rect)]
+        (let-mutable [i 0]
+          (doit [child (access self :children)]
+            (let [y (+ t (* i height))]
+              (when (and (< y b) (< i 1000))
+                (draw child ctx (Rect. l y r (+ height y)) canvas)
+               (set! i (inc i))))))))}))
+
+(defn eqicolumn* [height children]
+  (column-w {:getters {:children (constantly children)
+                       :height (constantly height)}}))
+
+(def inf-column-w
+  (direct-widget
+   {:get [:children :offset]
+    :slots [:build-init :build-prev :build-next]
+    :draw
+    (fn --draw [self ctx rect cnv]
+      (let[build-next (get (:slots self) :build-next)]
+        (let-mutable [y (+ (:y rect) (access self :offset))
+                      i 0]
+          (loop []
+            (when (and (< y (:bottom rect)) (< i 1000))
+              (when-some [child (build-next ctx)]
+                (let [child-rect (measure child (Rect. (:x rect) y
+                                                       (:right rect) Float/MAX_VALUE))]
+                  (draw child ctx child-rect cnv)
+                  (set! i (inc i))
+                  (set! y (+ y (:height child-rect))))
+                (recur))))
+          #_(doit [child (access self :children)]
+              (let [child-rect (measure child (Rect. (:x rect) y
+                                                     (:right rect) Float/MAX_VALUE))]
+                (draw child ctx child-rect cnv)
+                (set! y (+ y (:height child-rect)))))
+          )))}))
+
+(defn inf-column [{:keys[init prev] :as opts}]
+  (let [build-next (:next opts)
+        children (java.util.ArrayDeque.)
+        *state (volatile! {:offset 0})]
+    ;; (assert (fn? init)) (assert (fn? prev)) (assert (fn? build-next))
+    (.add children (build-next {}))
+    (inf-column-w
+     {:getters {:children (constantly children)
+                :offset (fn [_] (:offset @*state))}
+      :slots {:build-init init :build-prev prev
+              :build-next (fn [ctx]
+                            (let [c (build-next ctx)]
+                              (.add children c)
+                              c))}})))
+
+(defn clip-rect [child]
+  (let [draw-old (:draw child)]
+    (assoc child :draw (fn [self ctx rect ^Canvas cnv]
+                        (with-save cnv
+                          (.clipRect cnv rect)
+                          (draw-old self ctx rect cnv))))))
+
+#_(defn inf-column [{:keys [init prev] :as opts}]
   (let [build-next (:next opts)]
     (assert (fn? init)) (assert (fn? prev)) (assert (fn? build-next))
     (cui/generic
@@ -64,7 +157,7 @@ parents set position
       :init-mut {:offset 0}
      ;; :on-measure
      ;; (fn [_ _ _])
-      :on-draw
+      :draw
       (fn [{{:keys [children]} :d
             {:keys [offset]} :mut}
            ctx rect ^Canvas canvas]
@@ -109,7 +202,7 @@ parents set position
   (fill-rrect-w {:getters {:paint (fn [_] paint)
                            :radius (fn [_] br)}}))
 
-(defn subrect-sizer [width height])
+;; (defn subrect-sizer [width height])
 
 #_(defn sized [width height child]
   (assoc child :adapt-rect ))
@@ -119,6 +212,18 @@ parents set position
          (if-some [f0 (:adapt-rect child)]
            (fn [w ctx rect] (f0 w ctx (f ctx rect)))
            (fn [_ ctx rect] (f ctx rect)))))
+
+(defn sized-with [f child]
+  (adapt-rect
+   (fn [ctx ^Rect rect]
+     (let [size (f ctx)]
+       (Rect/makeXYWH (:x rect) (:y rect)
+                      (:width size) (:height size))))
+   (assoc child :measure
+          (fn [rect]
+            (let [size (f 0)]
+              (Rect/makeXYWH (:x rect) (:y rect)
+                             (:width size) (:height size)))))))
 
 (defn -rect-haligned [offset-coeff coeff parent rect]
   (let [x (+ (:x parent) (* coeff (:width parent)))
@@ -145,6 +250,24 @@ parents set position
                 nil nil))
      :close (fn [_])})))
 
+(def text-string-w
+  (direct-widget
+   {:get [:paint :string :font]
+    :draw (fn [self _ ^Rect rect ^Canvas cnv]
+            (let [string ^String (access self :string)]
+              (.drawString cnv string
+                             #_x (:x rect)
+                             #_y (:bottom rect)
+                             (access self :font)
+                             (access self :paint))))}))
+
+(defn text-string
+  ([string font] (text-string string font nil))
+  ([string font paint]
+   (text-string-w {:getters {:paint (constantly (or paint (huipaint/fill 0xff000000)))
+                             :string (constantly string)
+                             :font (constantly font)}})))
+
 (def textline-w
   (direct-widget
    {:get [:paint :text-line]
@@ -156,12 +279,16 @@ parents set position
                             (access self :paint))))}))
 ;; you already know the bounds of the TextLine
 
+(defn textline
+  ([text-line] (textline text-line nil))
+  ([text-line paint]
+   (textline-w {:getters {:paint (constantly (or paint (huipaint/fill 0xff000000)))
+                          :text-line (constantly text-line)}})))
+
 (defn ph-textline [text {:keys [background]}]
   (let [scale 2
         font (Font. style/face-code-default (float (* scale 12)))
-        text-line (.shapeLine
-                   cui/shaper text font
-                   io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)]
+        text-line (uifont/shape-line-default font text)]
     (adapt-rect
      (fn [_ ^Rect rect]
        (Rect/makeXYWH (:x rect) (:y rect)
@@ -175,11 +302,34 @@ parents set position
                 {:paint (constantly (huipaint/fill 0xff000000))
                  :text-line (constantly text-line)}})]])))))
 
-(def padded-w
+#_(def padded-w
   {:get [:child]
    })
 
-(defn margin [value child]
-  (adapt-rect
-   (fn [_ ^Rect rect] (.inflate rect (- value)))
-   child))
+(defn padded [value child]
+  (let [[l t r b] (if (vector? value)
+                    (if (== 4 (count value))
+                      value
+                      (-> value (conj (nth value 0))
+                          (conj (nth value 1))))
+                    [value value value value])]
+    (adapt-rect
+     (fn [_ ^Rect rect]
+       (Rect. (+ l (:x rect)) (+ t (:y rect))
+              (- (:right rect) r) (- (:bottom rect) b)))
+     child)))
+
+(defn before-draw [f child]
+  (let [old-draw (:draw child)]
+    (assoc child :draw (fn [w ctx rect cnv]
+                         (f ctx rect)
+                         (old-draw w ctx rect cnv)))))
+
+(defn watch-rect [f child]
+  (let [*old-rect (proteus.Containers$O. nil)]
+    (before-draw
+    (fn [ctx rect]
+      (when-not (.equals rect (.-x *old-rect))
+        (.set *old-rect rect)
+        (f ctx rect)))
+    child)))

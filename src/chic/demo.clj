@@ -1,5 +1,6 @@
 (ns chic.demo
   (:require
+   [chic.ui.ui2 :as ui2]
    [chic.example.constraints :as eg.constraints]
    [chic.ui.event :as uievt]
    [chic.colour.picker-ui :as picker-ui]
@@ -91,6 +92,7 @@
                    :edit2
                    :browser
                    :cljbrowser
+                   :textbox
                    :controls
                    :digger
                    :picker
@@ -113,93 +115,95 @@
                   (ui/label (name tab) font-ui fill-text)))))))
         [:stretch 1 (ui/gap 0 0)])))
      [:stretch 1
-      (case selected-tab
-        :home (cuilay/vscrollbar
-               (cuilay/vscroll
-                (cuilay/halign
-                 0.5 (cuilay/column
-                      (ui/gap 0 20)
-                      (ui/label "Hello world" font-ui fill-text)
-                      (ui/gap 0 30)
-                      (ui/fill fill-text
-                               (cuilay/padding
-                                1
-                                (ui/fill
-                                 (huipaint/fill 0xFFFFFFFF)
-                                 (cuilay/width
-                                  300 (cui/dyncomp (text-input/make))))))
-                      (ui/gap 0 30)
-                      (cui/dyncomp (error-button :draw))
-                      (ui/gap 0 30)
-                      (cuilay/padding 4 (ui/label "Error boundary: -draw" font-ui fill-text))
-                      (cui.error/bound-errors
-                       (ui/fill
-                        (huipaint/fill 0xFF000000)
-                        (cuilay/padding
-                         1 (ui/fill (huipaint/fill 0xFFFFFFFF)
-                                    (cuilay/padding
-                                     10 (cuilay/column
-                                         (cuilay/padding
-                                          0 4 (ui/label "We're able to draw this" font-ui fill-text))
-                                         (cui/dyncomp (error-button :draw))
-                                         (cuilay/padding
-                                          0 4 (ui/label "But not this" font-ui fill-text))))))))
-                      (ui/gap 0 20)
-                      (cuilay/padding 4 (ui/label "Stack overflow due to recursion" font-ui fill-text))
-                      (cui/dyncomp (error-button :stackoverflow))
-                      (ui/gap 0 20)
-                      (cuilay/padding 4 (ui/label "Error boundary: -measure" font-ui fill-text))
-                      (cui.error/bound-errors
-                       (ui/fill
-                        (huipaint/fill 0xFF000000)
-                        (cuilay/padding
-                         1 (ui/fill (huipaint/fill 0xFFFFFFFF)
-                                    (cuilay/padding
-                                     10 (cui/dyncomp (error-button :measure)))))))
-                      (ui/gap 0 30)))))
-        :browser (cui/dyncomp (filebwr/basic-view))
-        :cljbrowser (cui/dyncomp (cljbwr/basic-view))
-        :constraints (cui/dyncomp (eg.constraints/view1))
-        :edit2 (cui/dyncomp (clj-editor2/sample-view))
-        :namespaces (cui/dyncomp (depview/basic-view))
-        :quantum (cui/dyncomp (quantum.demo/basic-view))
-        :digger (cui/dyncomp (digger/basic-view))
-        :controls (cui/dyncomp (controls-demo/basic-view))
-        :screens (cui/dyncomp (mccs.ui-basic/basic-view))
-        :picker (cui/dyncomp (picker-ui/basic-view))
-        :font (let [text "Sample"
-                    ref-size 50. ;; bigger -> more accurate & less excess trailing space
-                    ratio (/ (:width (.measureText (io.github.humbleui.skija.Font. chic.style/face-default ref-size) text))
-                             ref-size)]
-                (cui/on-draw
-                (fn [ctx cs ^io.github.humbleui.skija.Canvas canvas]
-                  (if false
-                    ;; Scaling implementation transitions more smoothly when scaling because it permits subpixel alignment
-                    ;; Also, individual letters jitter when adjusting height only whilst text is width-limited
-                    (let [font (io.github.humbleui.skija.Font.
-                                chic.style/face-default (float (:height cs)))
-                          metrics (.getMetrics font)
-                          line (.shapeLine cui/shaper text font
-                                           io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
-                          width (.getWidth line)
-                          layer (.save canvas)
-                          sf (min 1 (/ (:width cs) width))]
-                      (.scale canvas sf sf)
-                      (.drawTextLine
-                       canvas line
-                       0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text)
-                      (.restoreToCount canvas layer))
-                    ;; Letters may look to jitter slightly relative to each other when scaling
-                    ;; as it ensures proper pixel alignment at every size.
-                    (let [height (float (min (/ (:width cs) ratio) (:height cs)))
-                          font (io.github.humbleui.skija.Font.
-                                chic.style/face-default height)
-                          metrics (.getMetrics font)
-                          line (.shapeLine cui/shaper text font
-                                           io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
-                          width (.getWidth line)
-                          sf (min 1 (/ (:width cs) width))]
-                      (.drawTextLine
-                       canvas line
-                       0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text))))
-                (ui/gap 0 0))))])))
+      (cui.error/bound-errors
+       (case selected-tab
+         :home (cuilay/vscrollbar
+                (cuilay/vscroll
+                 (cuilay/halign
+                  0.5 (cuilay/column
+                       (ui/gap 0 20)
+                       (ui/label "Hello world" font-ui fill-text)
+                       (ui/gap 0 30)
+                       (ui/fill fill-text
+                                (cuilay/padding
+                                 1
+                                 (ui/fill
+                                  (huipaint/fill 0xFFFFFFFF)
+                                  (cuilay/width
+                                   300 (cui/dyncomp (text-input/make))))))
+                       (ui/gap 0 30)
+                       (cui/dyncomp (error-button :draw))
+                       (ui/gap 0 30)
+                       (cuilay/padding 4 (ui/label "Error boundary: -draw" font-ui fill-text))
+                       (cui.error/bound-errors
+                        (ui/fill
+                         (huipaint/fill 0xFF000000)
+                         (cuilay/padding
+                          1 (ui/fill (huipaint/fill 0xFFFFFFFF)
+                                     (cuilay/padding
+                                      10 (cuilay/column
+                                          (cuilay/padding
+                                           0 4 (ui/label "We're able to draw this" font-ui fill-text))
+                                          (cui/dyncomp (error-button :draw))
+                                          (cuilay/padding
+                                           0 4 (ui/label "But not this" font-ui fill-text))))))))
+                       (ui/gap 0 20)
+                       (cuilay/padding 4 (ui/label "Stack overflow due to recursion" font-ui fill-text))
+                       (cui/dyncomp (error-button :stackoverflow))
+                       (ui/gap 0 20)
+                       (cuilay/padding 4 (ui/label "Error boundary: -measure" font-ui fill-text))
+                       (cui.error/bound-errors
+                        (ui/fill
+                         (huipaint/fill 0xFF000000)
+                         (cuilay/padding
+                          1 (ui/fill (huipaint/fill 0xFFFFFFFF)
+                                     (cuilay/padding
+                                      10 (cui/dyncomp (error-button :measure)))))))
+                       (ui/gap 0 30)))))
+         :browser (cui/dyncomp (filebwr/basic-view))
+         :cljbrowser (cui/dyncomp (cljbwr/basic-view))
+         :textbox (cui/dyncomp (controls-demo/textbox-demo))
+         :constraints (cui/dyncomp (eg.constraints/view1))
+         :edit2 (cui/dyncomp (clj-editor2/sample-view))
+         :namespaces (cui/dyncomp (depview/basic-view))
+         :quantum (cui/dyncomp (quantum.demo/basic-view))
+         :digger (cui/dyncomp (digger/basic-view))
+         :controls (cui/dyncomp (controls-demo/basic-view))
+         :screens (cui/dyncomp (mccs.ui-basic/basic-view))
+         :picker (cui/dyncomp (picker-ui/basic-view))
+         :font (let [text "Sample"
+                     ref-size 50. ;; bigger -> more accurate & less excess trailing space
+                     ratio (/ (:width (.measureText (io.github.humbleui.skija.Font. chic.style/face-default ref-size) text))
+                              ref-size)]
+                 (cui/on-draw
+                  (fn [ctx cs ^io.github.humbleui.skija.Canvas canvas]
+                    (if false
+                      ;; Scaling implementation transitions more smoothly when scaling because it permits subpixel alignment
+                      ;; Also, individual letters jitter when adjusting height only whilst text is width-limited
+                      (let [font (io.github.humbleui.skija.Font.
+                                  chic.style/face-default (float (:height cs)))
+                            metrics (.getMetrics font)
+                            line (.shapeLine cui/shaper text font
+                                             io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
+                            width (.getWidth line)
+                            layer (.save canvas)
+                            sf (min 1 (/ (:width cs) width))]
+                        (.scale canvas sf sf)
+                        (.drawTextLine
+                         canvas line
+                         0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text)
+                        (.restoreToCount canvas layer))
+                      ;; Letters may look to jitter slightly relative to each other when scaling
+                      ;; as it ensures proper pixel alignment at every size.
+                      (let [height (float (min (/ (:width cs) ratio) (:height cs)))
+                            font (io.github.humbleui.skija.Font.
+                                  chic.style/face-default height)
+                            metrics (.getMetrics font)
+                            line (.shapeLine cui/shaper text font
+                                             io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
+                            width (.getWidth line)
+                            sf (min 1 (/ (:width cs) width))]
+                        (.drawTextLine
+                         canvas line
+                         0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text))))
+                  (ui/gap 0 0)))))])))
