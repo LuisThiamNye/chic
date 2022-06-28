@@ -96,7 +96,7 @@
   (when-some [f (::event.schedule-after event)]
     (f callback)))
 
-(defn on-event-handler [{:keys [window-obj *ctx] :as win} event]
+(defn on-event-handler [{:keys [window-obj *ctx] :as win} jwmevt]
   (try
     (profile/reset "event")
     (profile/measure
@@ -104,11 +104,12 @@
      (let [post-handlers (java.util.ArrayList. 0)
            sae (fn [callback] (.add post-handlers callback))
            send-event (fn [win event]
-                        (send-event win (assoc event ::event.schedule-after sae)))
+                        (send-event win (assoc event ::event.schedule-after sae
+                                               :raw-event jwmevt)))
            changed?
-           (condp instance? event
+           (condp instance? jwmevt
              EventMouseMove
-             (let [pos (IPoint. (.getX ^EventMouseMove event) (.getY ^EventMouseMove event))
+             (let [pos (IPoint. (.getX ^EventMouseMove jwmevt) (.getY ^EventMouseMove jwmevt))
                    event {:hui/event :hui/mouse-move
                           :chic.ui/mouse-win-pos pos
                           ;; :hui.event/pos pos
@@ -118,15 +119,15 @@
 
              EventMouseButton
              (let [event {:hui/event :hui/mouse-button
-                          :event event
-                          :hui.event.mouse-button/is-pressed (.isPressed ^EventMouseButton event)}]
+                          :event jwmevt
+                          :hui.event.mouse-button/is-pressed (.isPressed ^EventMouseButton jwmevt)}]
                (send-event win event))
 
              EventMouseScroll
              (send-event win
                          {:hui/event :hui/mouse-scroll
-                          :hui.event.mouse-scroll/dx (.getDeltaX ^EventMouseScroll event)
-                          :hui.event.mouse-scroll/dy (.getDeltaY ^EventMouseScroll event)})
+                          :hui.event.mouse-scroll/dx (.getDeltaX ^EventMouseScroll jwmevt)
+                          :hui.event.mouse-scroll/dy (.getDeltaY ^EventMouseScroll jwmevt)})
 
              EventWindowFocusOut
              (send-event win
@@ -134,15 +135,15 @@
 
              EventKey
              (send-event win
-                         {:hui/event (if (.isPressed ^EventKey event) :hui/key-down :hui/key-up)
-                          :hui.event.key/key (.getName (.getKey ^EventKey event))
-                          :eventkey event})
+                         {:hui/event (if (.isPressed ^EventKey jwmevt) :hui/key-down :hui/key-up)
+                          :hui.event.key/key (.getName (.getKey ^EventKey jwmevt))
+                          :eventkey jwmevt})
 
              EventTextInput
              (do
                (send-event win
                            {:hui/event :hui/text-input
-                            :hui.event.text-input/text (.getText ^EventTextInput event)}))
+                            :hui.event.text-input/text (.getText ^EventTextInput jwmevt)}))
 
              EventWindowResize
              true

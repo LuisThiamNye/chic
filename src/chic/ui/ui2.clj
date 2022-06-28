@@ -1,11 +1,13 @@
 (ns chic.ui.ui2
   (:require
    [chic.ui.font :as uifont]
+   [chic.ui.interactor :as uii]
    [chic.style :as style]
    [io.github.humbleui.paint :as huipaint]
    [chic.util :as util]
    [chic.ui :as cui]
    [clojure.pprint :as pp]
+   [chic.types :as types]
    [proteus :refer [let-mutable]]
    [potemkin :refer [doit]]
    [clj-commons.primitive-math :as prim]
@@ -19,7 +21,17 @@
    (io.github.humbleui.skija Canvas Font Paint TextLine FontMetrics)
    (io.github.humbleui.skija.shaper ShapingOptions Shaper)
    (io.github.humbleui.types IPoint IRect Rect Point)
+   (io.github.humbleui.jwm EventMouseMove)
    (java.lang AutoCloseable)))
+
+"
+Idea: replace on-mount and some of ctx with standardised builder function
+that takes a mount ctx (contains jwm window, mutable mouse pos etc).
+Or only use widgets that have a mutable slot for their parent, so that they
+can get parent ctx in addition to window/global ctx.
+
+Would reduce the need to have to save the ctx for use between draw/event fns
+"
 
 (defmacro with-save [canvas & body]
   (assert (symbol? canvas))
@@ -41,7 +53,7 @@
 
 (defn access [widget prop]
   #_(when (nil? (get (:getters widget) prop))
-    (prn widget))
+      (prn widget))
   ((get (:getters widget) prop) 0))
 
 (defn direct-widget [config]
@@ -70,9 +82,9 @@ parents set position
         (doit [child (access self :children)]
           (when (< y (:bottom rect))
             (let [child-rect (measure child (Rect. (:x rect) y
-                                                  (:right rect) (:bottom rect)))]
+                                                   (:right rect) (:bottom rect)))]
               (draw child ctx child-rect canvas)
-             (set! y (+ y (:height child-rect))))))))}))
+              (set! y (+ y (:height child-rect))))))))}))
 
 (defn column* [children]
   (column-w {:getters {:children (constantly children)}}))
@@ -95,7 +107,7 @@ parents set position
             (let [y (+ t (* i height))]
               (when (and (< y b) (< i 1000))
                 (draw child ctx (Rect. l y r (+ height y)) canvas)
-               (set! i (inc i))))))))}))
+                (set! i (inc i))))))))}))
 
 (defn eqicolumn* [height children]
   (column-w {:getters {:children (constantly children)
@@ -107,7 +119,7 @@ parents set position
     :slots [:build-init :build-prev :build-next]
     :draw
     (fn --draw [self ctx rect cnv]
-      (let[build-next (get (:slots self) :build-next)]
+      (let [build-next (get (:slots self) :build-next)]
         (let-mutable [y (+ (:y rect) (access self :offset))
                       i 0]
           (loop []
@@ -123,10 +135,9 @@ parents set position
               (let [child-rect (measure child (Rect. (:x rect) y
                                                      (:right rect) Float/MAX_VALUE))]
                 (draw child ctx child-rect cnv)
-                (set! y (+ y (:height child-rect)))))
-          )))}))
+                (set! y (+ y (:height child-rect))))))))}))
 
-(defn inf-column [{:keys[init prev] :as opts}]
+(defn inf-column [{:keys [init prev] :as opts}]
   (let [build-next (:next opts)
         children (java.util.ArrayDeque.)
         *state (volatile! {:offset 0})]
@@ -144,30 +155,30 @@ parents set position
 (defn clip-rect [child]
   (let [draw-old (:draw child)]
     (assoc child :draw (fn [self ctx rect ^Canvas cnv]
-                        (with-save cnv
-                          (.clipRect cnv rect)
-                          (draw-old self ctx rect cnv))))))
+                         (with-save cnv
+                           (.clipRect cnv rect)
+                           (draw-old self ctx rect cnv))))))
 
 #_(defn inf-column [{:keys [init prev] :as opts}]
-  (let [build-next (:next opts)]
-    (assert (fn? init)) (assert (fn? prev)) (assert (fn? build-next))
-    (cui/generic
-     {:init {:items []
-             :children (ArrayList.)}
-      :init-mut {:offset 0}
+    (let [build-next (:next opts)]
+      (assert (fn? init)) (assert (fn? prev)) (assert (fn? build-next))
+      (cui/generic
+       {:init {:items []
+               :children (ArrayList.)}
+        :init-mut {:offset 0}
      ;; :on-measure
      ;; (fn [_ _ _])
-      :draw
-      (fn [{{:keys [children]} :d
-            {:keys [offset]} :mut}
-           ctx rect ^Canvas canvas]
-        #_(build-next)
+        :draw
+        (fn [{{:keys [children]} :d
+              {:keys [offset]} :mut}
+             ctx rect ^Canvas canvas]
+          #_(build-next)
 
-        (let-mutable [y offset]
-          (doit [child children]
-            (let [child-size (huip/-measure child ctx rect)]
-              (huip/-draw child ctx (cui/offset-lt rect 0 y) canvas)
-              (set! y (+ y (:height child-size)))))))})))
+          (let-mutable [y offset]
+            (doit [child children]
+              (let [child-size (huip/-measure child ctx rect)]
+                (huip/-draw child ctx (cui/offset-lt rect 0 y) canvas)
+                (set! y (+ y (:height child-size)))))))})))
 
 (def stack-w
   (direct-widget
@@ -195,7 +206,7 @@ parents set position
   (direct-widget
    {:get [:paint]
     :draw (fn [self _ctx ^Rect rect ^Canvas cnv]
-            (.drawRRect cnv (.withRadii rect (float(access self :radius)))
+            (.drawRRect cnv (.withRadii rect (float (access self :radius)))
                         (access self :paint)))}))
 
 (defn fill-rrect [br ^Paint paint]
@@ -205,7 +216,7 @@ parents set position
 ;; (defn subrect-sizer [width height])
 
 #_(defn sized [width height child]
-  (assoc child :adapt-rect ))
+    (assoc child :adapt-rect))
 
 (defn adapt-rect [f child]
   (assoc child :adapt-rect
@@ -233,22 +244,39 @@ parents set position
 
 (defn v1-root [{:keys [on-mount]} ui]
   (let [*unmounted? (volatile! true)
-        on-mount (or on-mount (fn [_ctx]))]
+        event-listeners (ArrayList.)
+        on-mount (or on-mount (fn [_ctx]))
+        mouse-pos (types/->XyIMunsync 0 0)]
     (cui/generic
-    {:draw
-     (fn [_ ctx ^IRect rect ^Canvas cnv]
-       (let [layer (.save cnv)]
-         (.translate cnv (- (:x rect)) (- (:y rect)))
-         (when @*unmounted?
-           (on-mount ctx)
-           (vreset! *unmounted? false))
-         (draw ui ctx (.toRect rect) cnv)
-         (.restoreToCount cnv layer)))
-     :event (fn [_ evt]
-              (if (and (:hui.event.mouse-button/is-pressed evt)
-                       (cui/point-in-component? evt (:chic.ui/mouse-win-pos evt)))
-                nil nil))
-     :close (fn [_])})))
+     {:draw
+      (fn [_ ctx ^IRect rect ^Canvas cnv]
+        (let [layer (.save cnv)]
+          (.translate cnv (- (:x rect)) (- (:y rect)))
+          (when @*unmounted?
+            (on-mount ctx)
+            (vreset! *unmounted? false))
+          (draw ui (assoc ctx
+                          :jwm-window (:window-obj (:chic/current-window ctx))
+                          ::mouse-pos mouse-pos
+                          ::add-event-listener
+                          (fn [typ f]
+                            (case typ
+                              :all (.add event-listeners f))))
+                (.toRect rect) cnv)
+          (.restoreToCount cnv layer)))
+      :event (fn [_ evt]
+               (let [jwm-evt (:raw-event evt)]
+                 (doit [el event-listeners]
+                   (el {::mouse-pos mouse-pos} jwm-evt))
+                 (condp instance? jwm-evt
+                   EventMouseMove
+                   (let [jwm-evt ^EventMouseMove jwm-evt]
+                     (types/reset-xyi mouse-pos (.getX jwm-evt) (.getY jwm-evt)))
+                   nil)))
+      :close (fn [_])})))
+
+(defn get-mouse-pos [ctx]
+  (get ctx ::mouse-pos))
 
 (def text-string-w
   (direct-widget
@@ -256,10 +284,10 @@ parents set position
     :draw (fn [self _ ^Rect rect ^Canvas cnv]
             (let [string ^String (access self :string)]
               (.drawString cnv string
-                             #_x (:x rect)
-                             #_y (:bottom rect)
-                             (access self :font)
-                             (access self :paint))))}))
+                           #_x (:x rect)
+                           #_y (:bottom rect)
+                           (access self :font)
+                           (access self :paint))))}))
 
 (defn text-string
   ([string font] (text-string string font nil))
@@ -274,9 +302,9 @@ parents set position
     :draw (fn [self _ ^Rect rect ^Canvas cnv]
             (let [text-line ^TextLine (access self :text-line)]
               (.drawTextLine cnv text-line
-                            #_x (:x rect)
-                            #_y (:bottom rect)
-                            (access self :paint))))}))
+                             #_x (:x rect)
+                             #_y (:bottom rect)
+                             (access self :paint))))}))
 ;; you already know the bounds of the TextLine
 
 (defn textline
@@ -303,8 +331,7 @@ parents set position
                  :text-line (constantly text-line)}})]])))))
 
 #_(def padded-w
-  {:get [:child]
-   })
+    {:get [:child]})
 
 (defn padded [value child]
   (let [[l t r b] (if (vector? value)
@@ -328,8 +355,52 @@ parents set position
 (defn watch-rect [f child]
   (let [*old-rect (proteus.Containers$O. nil)]
     (before-draw
-    (fn [ctx rect]
-      (when-not (.equals rect (.-x *old-rect))
-        (.set *old-rect rect)
-        (f ctx rect)))
-    child)))
+     (fn [ctx rect]
+       (when-not (.equals rect (.-x *old-rect))
+         (.set *old-rect rect)
+         (f ctx rect)))
+     child)))
+
+(defn on-mount [f child]
+  (let [old-draw (:draw child)
+        *unmounted? (volatile! true)]
+    (assoc child :draw (fn [self ctx rect cnv]
+                         (when @*unmounted?
+                           (f ctx)
+                           (vreset! *unmounted? false))
+                         (old-draw self ctx rect cnv)))))
+
+(defn attach-interactor [{:keys [cursor-style
+                                 on-mouse-down
+                                 on-mouse-up
+                                 on-scroll]
+                          :as intr-opts}
+                         child]
+  (let [*intr-id (volatile! nil)]
+    (on-mount
+     (fn [ctx]
+       (when-some [mgr (::interactor-manager ctx)]
+         (vreset! *intr-id
+                  (uii/mgr-create-intr mgr (assoc intr-opts
+                                                  :rect (Rect. 0 0 0 0))))))
+     (watch-rect
+      (fn [ctx rect]
+        (uii/mgr-intr-set-rect (::interactor-manager ctx) @*intr-id rect))
+      child))))
+
+(defn updating-ctx [f child]
+  (let [old-draw (:draw child)]
+    (assoc child :draw (fn [self ctx rect cnv]
+                         (old-draw self (f ctx) rect cnv)))))
+
+(defn attach-interactor-manager [_opts child]
+  (let [*mgr (volatile! nil)]
+    (on-mount
+     (fn [ctx]
+       ((::add-event-listener ctx)
+        :all
+        (fn [ctx evt]
+          (uii/mgr-handle-jwm-event @*mgr ctx evt)))
+       (vreset! *mgr (uii/new-mgr {:jwm-window (:jwm-window ctx)})))
+     (updating-ctx (fn [ctx] (assoc ctx ::interactor-manager @*mgr))
+                   child))))

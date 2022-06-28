@@ -58,7 +58,9 @@
 (defn textbox-demo []
   (ui2/v1-root
    {}
-   (ui2/clip-rect
-    (ui2/padded
-     8
-     (textbox/textbox-sample)))))
+   (ui2/attach-interactor-manager
+    {}
+    (ui2/clip-rect
+     (ui2/padded
+      8
+      (textbox/textbox-sample))))))
