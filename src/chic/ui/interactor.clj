@@ -63,10 +63,18 @@
 (defn mgr-notify-intr-mousedown [mgr ctx event]
   (let [mouse-pos (:chic.ui.ui2/mouse-pos ctx)
         intr (-find-intr-at-point mgr (:x mouse-pos) (:y mouse-pos))]
+    (when-some [f (-> intr :focus-node :take-focus)]
+      (when (f)
+        (vswap! mgr assoc :focused-intr-id (:id intr))))
     (when-some [f (:on-mouse-down intr)]
      (f ctx (:rect intr) event))))
 
 (defn mgr-notify-intr-mouseup [mgr ctx event])
+
+(defn mgr-notify-intr-textinput [mgr ctx ^EventTextInput event]
+  (let [intr (get (:intrs @mgr) (:focused-intr-id @mgr))]
+    (when-some [f (:on-text-input (:focus-node intr))]
+      (f (.getText event)))))
 
 (defn mgr-create-intr [mgr opts]
   (let [id (random-uuid)]
@@ -82,6 +90,7 @@
 
 (defn new-mgr [{:keys [jwm-window]}]
   (volatile! {:hovered-intr-id nil
+              :focused-intr-id nil
               :jwm-window jwm-window
               :intrs {}}))
 
@@ -95,8 +104,14 @@
     (if (.isPressed ^EventMouseButton event)
       (mgr-notify-intr-mousedown mgr ctx event)
       (mgr-notify-intr-mouseup mgr ctx event))
-    EventKey nil
-    EventTextInput nil
+    EventKey
+    (let [event ^EventKey event
+          intr (get (:intrs @mgr) (:focused-intr-id @mgr))]
+      (when (.-_isPressed event)
+        (when-some [f (:handle-keydown (:focus-node intr))]
+         (f {:jwm-event event :pressed-keys #{"TODO"}}))))
+    EventTextInput
+    (mgr-notify-intr-textinput mgr ctx event)
     nil))
 
 "Event types

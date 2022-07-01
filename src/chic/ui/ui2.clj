@@ -17,11 +17,11 @@
    [io.github.humbleui.ui :as ui])
   (:import
    (io.lacuna.bifurcan LinearList)
-   (java.util ArrayList)
+   (java.util ArrayList HashMap)
    (io.github.humbleui.skija Canvas Font Paint TextLine FontMetrics)
    (io.github.humbleui.skija.shaper ShapingOptions Shaper)
    (io.github.humbleui.types IPoint IRect Rect Point)
-   (io.github.humbleui.jwm EventMouseMove)
+   (io.github.humbleui.jwm EventMouseMove EventTextInput EventKey)
    (java.lang AutoCloseable)))
 
 "
@@ -31,6 +31,10 @@ Or only use widgets that have a mutable slot for their parent, so that they
 can get parent ctx in addition to window/global ctx.
 
 Would reduce the need to have to save the ctx for use between draw/event fns
+
+If winodw ctx, Makes sense to have the special mount function rather than a common
+subscription-like dependency system because the window ctx should only change
+if moved between windows (or when EventScreenChange so scale can be in win ctx).
 "
 
 (defmacro with-save [canvas & body]
@@ -110,7 +114,7 @@ parents set position
                 (set! i (inc i))))))))}))
 
 (defn eqicolumn* [height children]
-  (column-w {:getters {:children (constantly children)
+  (column-w {:getters {:children (if (fn? children) children (constantly children))
                        :height (constantly height)}}))
 
 (def inf-column-w
@@ -246,7 +250,9 @@ parents set position
   (let [*unmounted? (volatile! true)
         event-listeners (ArrayList.)
         on-mount (or on-mount (fn [_ctx]))
-        mouse-pos (types/->XyIMunsync 0 0)]
+        mouse-pos (types/->XyIMunsync 0 0)
+        *text-input-handler (volatile! nil)
+        keys->locs (HashMap.)]
     (cui/generic
      {:draw
       (fn [_ ctx ^IRect rect ^Canvas cnv]
@@ -267,12 +273,21 @@ parents set position
       :event (fn [_ evt]
                (let [jwm-evt (:raw-event evt)]
                  (doit [el event-listeners]
-                   (el {::mouse-pos mouse-pos} jwm-evt))
+                   (el {::mouse-pos mouse-pos
+                        ::set-text-input-handler
+                        (fn [f] (vreset! *text-input-handler f))}
+                       jwm-evt))
                  (condp instance? jwm-evt
                    EventMouseMove
                    (let [jwm-evt ^EventMouseMove jwm-evt]
                      (types/reset-xyi mouse-pos (.getX jwm-evt) (.getY jwm-evt)))
-                   nil)))
+                   ;; EventTextInput
+                   ;; (when-some [f @*text-input-handler]
+                   ;;   (f (.getText ^EventTextInput jwm-evt)))
+                   ;; EventKey
+                   ;; (let [ ])
+                   nil)
+                 nil))
       :close (fn [_])})))
 
 (defn get-mouse-pos [ctx]

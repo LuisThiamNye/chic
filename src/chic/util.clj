@@ -37,6 +37,12 @@
 (defn index-of [coll x]
   (.indexOf ^clojure.lang.APersistentVector coll x))
 
+(defn remove-index
+  ([coll at] (remove-index coll at (inc at)))
+  ([coll from to-exclusive]
+   (into (subvec coll 0 from)
+         (subvec coll to-exclusive))))
+
 (def *template-var->generated-var
   (atom {}))
 

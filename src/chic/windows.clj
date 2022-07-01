@@ -19,10 +19,12 @@
    [io.github.humbleui.ui :as ui]
    [io.github.humbleui.window :as huiwin])
   (:import
-   [io.github.humbleui.jwm EventMouseButton EventMouseMove EventMouseScroll
-    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput]
-   [io.github.humbleui.skija Canvas Font Paint]
-   [io.github.humbleui.types IPoint]))
+   (io.github.humbleui.jwm EventMouseButton EventMouseMove EventMouseScroll
+                           EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+                           EventFrame)
+   (io.github.humbleui.jwm.skija EventFrameSkija)
+   (io.github.humbleui.skija Canvas Font Paint)
+   (io.github.humbleui.types IPoint)))
 
 (defmacro on-ui-thread? []
   `(App/_onUIThread))
@@ -150,7 +152,12 @@
              (do #_(println "Other event:" (type event)) nil))]
        (doit [cb post-handlers]
          (cb))
-       (when changed?
+       (when (or changed? (not (or (instance? EventFrame jwmevt)
+                                   (instance? EventFrameSkija jwmevt)
+                                   (instance? EventMouseMove jwmevt)
+                                   (instance? EventKey jwmevt)
+                                   ;; (instance? EventMouseButton jwmevt)
+                                   (instance? EventTextInput jwmevt))))
          ;; (vswap! (:*profiling win) assoc :event-triggers-change-time (System/nanoTime))
          (huiwin/request-frame window-obj))))
     (catch Throwable e

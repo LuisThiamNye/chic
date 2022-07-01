@@ -42,10 +42,10 @@
             (when (= s (str jk)) jk))
           (.getEnumConstants (Class/forName clsname)))))
 
-(defn keyspec->jwm [k]
+(defn ^Key keyspec->jwm [k]
   (keyspec->jwm-enum k (util/compile (.getName Key))))
 
-(defn modspec->jwm [k]
+(defn ^KeyModifier modspec->jwm [k]
   (keyspec->jwm-enum k (util/compile (.getName KeyModifier))))
 
 (defn make-keybindings-handler [spec]

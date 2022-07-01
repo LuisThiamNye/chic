@@ -5,3 +5,5 @@
 
   #!
   )
+
+;; give ways to implement iassociative and other interfaces
