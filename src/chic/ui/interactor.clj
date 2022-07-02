@@ -53,10 +53,12 @@
 (defn mgr-notify-mouse-pos [mgr ctx ^EventMouseMove event]
   (let [x (.getX event)
         y (.getY event)
-        intr2 (-find-intr-at-point mgr x y)]
-    (vswap! mgr assoc :hovered-intr-id (:id intr2))
+        intr (-find-intr-at-point mgr x y)]
+    (vswap! mgr assoc :hovered-intr-id (:id intr))
     ;; (when (.contains (.getContentRect ^Window (:jwm-window @mgr)) (int x) (int y)))
-    (.setMouseCursor ^Window (:jwm-window @mgr) (:cursor-style intr2 MouseCursor/ARROW))))
+    (.setMouseCursor ^Window (:jwm-window @mgr) (:cursor-style intr MouseCursor/ARROW))
+    (when-some [f (:on-mouse-move intr)]
+      (f ctx (:rect intr) event))))
 
 (defn mgr-notify-intr-scroll [mgr event])
 
@@ -69,7 +71,11 @@
     (when-some [f (:on-mouse-down intr)]
      (f ctx (:rect intr) event))))
 
-(defn mgr-notify-intr-mouseup [mgr ctx event])
+(defn mgr-notify-intr-mouseup [mgr ctx event]
+  (let [;mouse-pos (:chic.ui.ui2/mouse-pos ctx)
+        intr (get (:intrs @mgr) (:focused-intr-id @mgr))]
+    (when-some [f (:on-mouse-up intr)]
+      (f ctx (:rect intr) event))))
 
 (defn mgr-notify-intr-textinput [mgr ctx ^EventTextInput event]
   (let [intr (get (:intrs @mgr) (:focused-intr-id @mgr))]

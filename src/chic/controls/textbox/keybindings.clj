@@ -74,6 +74,8 @@
    [:mods 'shift
     ['right :select-right
      'left :select-left
+     'up :select-up
+     'down :select-down
      'Z :redo]]
    [:mods 'shift :alt
     ['right :select-right-word

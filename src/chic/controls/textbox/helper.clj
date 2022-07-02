@@ -77,6 +77,19 @@
 (defn rope->textlines [{:keys [font]} ^Rope rope]
   (mapv #(uifont/shape-line-default font %) (rope-visual-lines rope)))
 
+(defn find-line-idx [line-start-idxs cidx]
+  (let [pred #(<= % cidx)
+        phi-1 (/ (- (Math/sqrt 5) 1) 2)]
+   (loop [min-idx -1
+          rang (count line-start-idxs)]
+     (if (== 0 rang)
+       min-idx
+       (let [idx (+ min-idx (int (Math/ceil (* phi-1 rang))))
+             item (nth line-start-idxs idx)]
+         (if (pred item)
+           (recur idx (- (+ rang min-idx) idx))
+           (recur min-idx (- idx min-idx 1))))))))
+
 (defn -dbg-check-state [{:keys [cursor-idx ^Rope rope line-start-idxs
                                 cursor-line-idx text-lines] :as state}]
   (let [nlines (count (rope-visual-lines rope))

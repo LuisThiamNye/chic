@@ -155,9 +155,9 @@
        (when (or changed? (not (or (instance? EventFrame jwmevt)
                                    (instance? EventFrameSkija jwmevt)
                                    (instance? EventMouseMove jwmevt)
-                                   (instance? EventKey jwmevt)
+                                   ;(instance? EventKey jwmevt)
                                    ;; (instance? EventMouseButton jwmevt)
-                                   (instance? EventTextInput jwmevt))))
+                                   #_(instance? EventTextInput jwmevt))))
          ;; (vswap! (:*profiling win) assoc :event-triggers-change-time (System/nanoTime))
          (huiwin/request-frame window-obj))))
     (catch Throwable e
