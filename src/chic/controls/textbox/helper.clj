@@ -74,6 +74,39 @@
   (= ["a" "" "" ""] (vec (rope-visual-lines (Rope/from "a\n\n\n"))))
   (= ["" "a" "" ""] (vec (rope-visual-lines (Rope/from "\na\n\n")))))
 
+(defn calc-line-start-idxs [^Rope rope]
+  (let [producer
+        (reify
+          clojure.lang.IReduceInit
+          (reduce [_ rf init]
+            (let [iter (.codePoints rope)
+                  ret (rf init 0)]
+              (cond
+                (reduced? ret) @ret
+                (not (.hasNext iter)) ret
+                :else
+                (loop [acc ret
+                       idx 0]
+                  (if (.hasNext iter)
+                    (let [idx' (unchecked-inc idx)
+                          cint (.nextInt iter)]
+                      (if (== 10 cint)
+                        (let [ret (rf acc idx')]
+                          (if (reduced? ret)
+                            @ret
+                            (recur ret idx')))
+                        (recur acc idx')))
+                    acc))))))]
+    (vec producer)))
+
+(comment
+  (= [0] (calc-line-start-idxs (Rope/from "abc")))
+  (= [0] (calc-line-start-idxs (Rope/from "")))
+  (= [0 1] (calc-line-start-idxs (Rope/from "\n")))
+  (= [0 2 5 6 9] (calc-line-start-idxs (Rope/from "0\n23\n\n67\n9")))
+  #!
+  )
+
 (defn rope->textlines [{:keys [font]} ^Rope rope]
   (mapv #(uifont/shape-line-default font %) (rope-visual-lines rope)))
 
@@ -90,6 +123,17 @@
            (recur idx (- (+ rang min-idx) idx))
            (recur min-idx (- idx min-idx 1))))))))
 
+(defn recalculate-derived* [{:keys [cursor-idx rope] :as state}]
+  (-> state
+      (assoc :line-start-idxs (calc-line-start-idxs rope))
+      (as-> state (assoc state :cursor-line-idx
+                         (find-line-idx (:line-start-idxs state) cursor-idx)))
+      (as-> state (assoc state :text-lines (rope->textlines state rope)))
+      (as-> state (let [dx (calc-cursor-dx state)]
+                    (-> state
+                        (assoc :cursor-dx dx)
+                        (assoc :cursor-target-dx dx))))))
+
 (defn -dbg-check-state [{:keys [cursor-idx ^Rope rope line-start-idxs
                                 cursor-line-idx text-lines] :as state}]
   (let [nlines (count (rope-visual-lines rope))
@@ -100,10 +144,11 @@
                       [3 (== nlines (count line-start-idxs))]
                       [4 (< cursor-line-idx nlines)]
                       [5 (== nlines (count text-lines))]
-                      [6 (every? (fn [idx]
-                                   (or (== 0 idx)
-                                       (== 10 (.nth rope (dec idx)))))
-                                 line-start-idxs)]
+                      ["line-start-idxs points to chars after lfs"
+                       (every? (fn [idx]
+                                 (or (== 0 idx)
+                                     (== 10 (.nth rope (dec idx)))))
+                               line-start-idxs)]
                       [7 (== 0 (nth line-start-idxs 0))]])]
     (when (pos? (count errors))
       (chic.debug/println-main errors "\nnlines" nlines)

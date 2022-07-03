@@ -65,9 +65,9 @@
 (defn mgr-notify-intr-mousedown [mgr ctx event]
   (let [mouse-pos (:chic.ui.ui2/mouse-pos ctx)
         intr (-find-intr-at-point mgr (:x mouse-pos) (:y mouse-pos))]
-    (when-some [f (-> intr :focus-node :take-focus)]
-      (when (f)
-        (vswap! mgr assoc :focused-intr-id (:id intr))))
+    (when (not (when-some [f (-> intr :focus-node :take-focus)]
+                 (not (f))))
+      (vswap! mgr assoc :focused-intr-id (:id intr)))
     (when-some [f (:on-mouse-down intr)]
      (f ctx (:rect intr) event))))
 

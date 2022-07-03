@@ -52,13 +52,16 @@ if moved between windows (or when EventScreenChange so scale can be in win ctx).
 (defn draw [widget ctx rect ^Canvas canvas]
   ((:draw widget) widget ctx (-transmit-rect widget ctx rect) canvas))
 
-(defn measure [widget max-rect]
-  ((:measure widget) (-transmit-rect widget 0 max-rect)))
+(defn measure [widget ctx max-rect]
+  ((:measure widget) (-transmit-rect widget ctx max-rect)))
 
 (defn access [widget prop]
   #_(when (nil? (get (:getters widget) prop))
       (prn widget))
   ((get (:getters widget) prop) 0))
+
+(defn get-getter [widget prop]
+  (get (:getters widget) prop))
 
 (defn direct-widget [config]
   (fn [opts]
@@ -85,8 +88,8 @@ parents set position
       (let-mutable [y (:y rect)]
         (doit [child (access self :children)]
           (when (< y (:bottom rect))
-            (let [child-rect (measure child (Rect. (:x rect) y
-                                                   (:right rect) (:bottom rect)))]
+            (let [child-rect (measure child ctx (Rect. (:x rect) y
+                                                       (:right rect) (:bottom rect)))]
               (draw child ctx child-rect canvas)
               (set! y (+ y (:height child-rect))))))))}))
 
@@ -115,7 +118,7 @@ parents set position
 
 (defn eqicolumn* [height children]
   (column-w {:getters {:children (if (fn? children) children (constantly children))
-                       :height (constantly height)}}))
+                       :height (if (fn? height) height (constantly height))}}))
 
 (def inf-column-w
   (direct-widget
@@ -129,8 +132,8 @@ parents set position
           (loop []
             (when (and (< y (:bottom rect)) (< i 1000))
               (when-some [child (build-next ctx)]
-                (let [child-rect (measure child (Rect. (:x rect) y
-                                                       (:right rect) Float/MAX_VALUE))]
+                (let [child-rect (measure child ctx (Rect. (:x rect) y
+                                                           (:right rect) Float/MAX_VALUE))]
                   (draw child ctx child-rect cnv)
                   (set! i (inc i))
                   (set! y (+ y (:height child-rect))))
@@ -209,8 +212,8 @@ parents set position
 (def fill-rrect-w
   (direct-widget
    {:get [:paint]
-    :draw (fn [self _ctx ^Rect rect ^Canvas cnv]
-            (.drawRRect cnv (.withRadii rect (float (access self :radius)))
+    :draw (fn [self {:keys [scale]} ^Rect rect ^Canvas cnv]
+            (.drawRRect cnv (.withRadii rect (* scale (float (access self :radius))))
                         (access self :paint)))}))
 
 (defn fill-rrect [br ^Paint paint]
@@ -348,15 +351,26 @@ parents set position
 #_(def padded-w
     {:get [:child]})
 
+(defn -inset-value->ltrb [value]
+  (if (vector? value)
+    (if (== 4 (count value))
+      value
+      (-> value (conj (nth value 0))
+          (conj (nth value 1))))
+    [value value value value]))
+
 (defn padded [value child]
-  (let [[l t r b] (if (vector? value)
-                    (if (== 4 (count value))
-                      value
-                      (-> value (conj (nth value 0))
-                          (conj (nth value 1))))
-                    [value value value value])]
+  (let [[l t r b] (-inset-value->ltrb value)]
     (adapt-rect
-     (fn [_ ^Rect rect]
+     (fn [{:keys [scale]} ^Rect rect]
+       (Rect. (+ (* scale l) (:x rect)) (+ (* scale t) (:y rect))
+              (- (:right rect) (* scale r)) (- (:bottom rect) (* scale b))))
+     child)))
+
+(defn padded-unscaled [value child]
+  (let [[l t r b] (-inset-value->ltrb value)]
+    (adapt-rect
+     (fn [{:keys [scale]} ^Rect rect]
        (Rect. (+ l (:x rect)) (+ t (:y rect))
               (- (:right rect) r) (- (:bottom rect) b)))
      child)))

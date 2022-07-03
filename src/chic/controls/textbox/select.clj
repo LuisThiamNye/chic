@@ -43,6 +43,10 @@
     (vswap! *state select-move-generic move/cursor-move-right*)
     :select-left
     (vswap! *state select-move-generic move/cursor-move-left*)
+    :select-right-word
+    (vswap! *state select-move-generic move/cursor-move-right-word*)
+    :select-left-word
+    (vswap! *state select-move-generic move/cursor-move-left-word*)
     :select-down
     (vswap! *state select-move-generic move/cursor-move-down*)
     :select-up
@@ -51,6 +55,10 @@
     (vswap! *state select-move-generic move/cursor-move-start*)
     :select-end
     (vswap! *state select-move-generic move/cursor-move-end*)
+    :select-start-up
+    (vswap! *state select-move-generic move/cursor-move-start-up*)
+    :select-end-down
+    (vswap! *state select-move-generic move/cursor-move-end-down*)
     :select-doc-start
     (vswap! *state select-move-generic move/cursor-move-doc-start*)
     :select-doc-end
@@ -94,10 +102,18 @@
                       (-> state
                           (move-to-sel-limit false)
                           move/cursor-move-up*)))
+     :move-right-word
+     (vswap! *state simple-move move/cursor-move-right-word*)
+     :move-left-word
+     (vswap! *state simple-move move/cursor-move-left-word*)
      :move-start
      (vswap! *state simple-move move/cursor-move-start*)
      :move-end
      (vswap! *state simple-move move/cursor-move-end*)
+     :move-start-up
+     (vswap! *state simple-move move/cursor-move-start-up*)
+     :move-end-down
+     (vswap! *state simple-move move/cursor-move-end-down*)
      :move-doc-start
      (vswap! *state simple-move move/cursor-move-doc-start*)
      :move-doc-end

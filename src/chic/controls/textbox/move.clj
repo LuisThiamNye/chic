@@ -50,7 +50,6 @@
     (loop [idx' (.following iter idx)]
       (when (prim/<= 0 idx')
         (if (or (prim/== n idx')
-                ;; true
                 (let [rs (.getRuleStatus iter)]
                  ;; if not punctuation/space
                   (or (prim/< rs BreakIterator/WORD_NONE)
@@ -59,39 +58,47 @@
           (recur (.next iter)))))))
 
 (comment
-  (.following (make-word-iter (Rope/from "012 45 78"))
-              9) ;; -1
-  (word-before (make-word-iter (Rope/from "012  5 78"))
-               5)
-  (word-after (make-word-iter (Rope/from "012  5 78"))
-               0)
-  (.getRuleStatus
-   (doto (make-word-iter (Rope/from "0. 3"))
-     (.following 2)))
+  (.following (make-word-iter (Rope/from "012 45 78")) 9) ;; -1
 
+  ;; getRuleStatus is 0 at WORD_NONE boundaries
+  ;; type of boundary defined by the index before
+  ;; eg idx=3 "012| 45" gives number rule status (100)
+  ;; eg idx=0 or idx=4 "012 |45" gives WORD_NONE rule status (100)
+  ;; WORD_NONE includes space & punctuation and does not distinguish between them
   (.getRuleStatus
    (doto (make-word-iter (Rope/from "012 45 78"))
      (.following 6)))
   (.getRuleStatus
    (doto (make-word-iter (Rope/from "012  5 78"))
-     (.preceding 6)))
-  (def --r nil)
-  (def ^Thread --x
-    (doto
-     (Thread.
-      (fn [] (alter-var-root
-              #'--r (constantly
-                     (word-after (make-word-iter (Rope/from "012 45 78"))
-                                 3)))))
-      .start))
-  (.stop --x)
-  ;; (future-cancel --x)
-  ;; (def --ts (filterv (fn [^Thread t] (and (re-find #"^clojure-agent-send-off" (.getName t))
-  ;;                                         (.isAlive t)))
-  ;;                    (.keySet (Thread/getAllStackTraces))))
-  (.toString (make-word-iter (Rope/from "012 45 78")))
+     (.preceding 2)))
+
+  ;; there is a boundary between each instance of:
+  ;;    newline = , .
+  ;; & other punctuation, but spaces are contiguous
+  (.following (make-word-iter (Rope/from "...")) 0)
+
+  ;; It may be feasible to create an interator with a set of
+  ;; custom compiled rules
+  (type (BreakIterator/getWordInstance)) ;; RuleBasedBreakIterator
+  (str (BreakIterator/getWordInstance)) ;; prints the rule source
+
   #!
   )
+
+(defn move-cursor-to-coord* [state {:keys [x y]}]
+  (let [{:keys [line-start-idxs text-lines]
+         {:keys [line-height first-line-origin]} :layout} state
+        dy (- y (:y first-line-origin))
+        lidx (long (Math/floor (/ dy line-height)))
+        nlines (count line-start-idxs)
+        lidx (max 0 (min (dec nlines) lidx))
+        text-line ^TextLine (nth text-lines lidx)
+        dx (- x (:x first-line-origin))
+        cidx (.getOffsetAtCoord text-line dx)]
+    (-> state
+        (assoc :cursor-dx (.getCoordAtOffset text-line cidx))
+        (assoc :cursor-idx (+ (nth line-start-idxs lidx) cidx))
+        (assoc :cursor-line-idx lidx))))
 
 (defn cursor-move-right* [{:keys [cursor-idx ^Rope rope line-start-idxs
                                   cursor-line-idx] :as state}]
@@ -136,26 +143,26 @@
       (cursor-move-to-idx* state cursor-idx2)
       state)))
 
-(defn cursor-move-down* [{:keys [cursor-dx ^Rope rope line-start-idxs
+(defn cursor-move-down* [{:keys [cursor-target-dx ^Rope rope line-start-idxs
                                  cursor-line-idx] :as state}]
   (let [next-line-idx (inc cursor-line-idx)
         has-next? (< next-line-idx (count line-start-idxs))]
     (-> state
         (cond-> has-next?
           (-> (assoc :cursor-line-idx next-line-idx)
-              (as-> state (assoc state :cursor-idx (hpr/dx->cursor-idx state cursor-dx)))))
+              (as-> state (assoc state :cursor-idx (hpr/dx->cursor-idx state cursor-target-dx)))))
         (cond-> (not has-next?)
           (assoc :cursor-idx (.size rope)))
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
 
-(defn cursor-move-up* [{:keys [cursor-dx ^Rope rope line-start-idxs
+(defn cursor-move-up* [{:keys [cursor-target-dx ^Rope rope line-start-idxs
                                cursor-line-idx] :as state}]
   (let [next-line-idx (dec cursor-line-idx)
         has-prev? (<= 0 next-line-idx)]
     (-> state
         (cond-> has-prev?
           (-> (assoc :cursor-line-idx next-line-idx)
-              (as-> state (assoc state :cursor-idx (hpr/dx->cursor-idx state cursor-dx)))))
+              (as-> state (assoc state :cursor-idx (hpr/dx->cursor-idx state cursor-target-dx)))))
         (cond-> (not has-prev?)
           (assoc :cursor-idx 0))
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
@@ -172,6 +179,19 @@
       (assoc :cursor-idx (dec (nth line-start-idxs (inc cursor-line-idx)
                                    (inc (.size rope)))))
       (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))
+
+(defn cursor-move-start-up* [{:keys [line-start-idxs cursor-idx
+                                     cursor-line-idx] :as state}]
+  (if (== cursor-idx (nth line-start-idxs cursor-line-idx))
+    (cursor-move-up* state)
+    (cursor-move-start* state)))
+
+(defn cursor-move-end-down* [{:keys [^Rope rope line-start-idxs
+                                     cursor-line-idx cursor-idx] :as state}]
+  (if (== cursor-idx (dec (nth line-start-idxs (inc cursor-line-idx)
+                               (inc (.size rope)))))
+    (-> state cursor-move-down* cursor-move-end*)
+    (cursor-move-end* state)))
 
 (defn cursor-move-doc-start* [{:keys [] :as state}]
   (-> state
@@ -203,6 +223,10 @@
     (vswap! *state cursor-move-start*)
     :move-end
     (vswap! *state cursor-move-end*)
+    :move-start-up
+    (vswap! *state cursor-move-start-up*)
+    :move-end-down
+    (vswap! *state cursor-move-end-down*)
     :move-doc-start
     (vswap! *state cursor-move-doc-start*)
     :move-doc-end

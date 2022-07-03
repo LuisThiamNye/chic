@@ -15,7 +15,9 @@
     :move-up
     :move-down
     :move-start
+    :move-start-up
     :move-end
+    :move-end-down
     :move-doc-start
     :move-doc-end
 
@@ -24,7 +26,9 @@
     :select-right
     :select-right-word
     :select-start
+    :select-start-up
     :select-end
+    :select-end-down
     :select-doc-start
     :select-doc-end
     :select-all
@@ -70,22 +74,26 @@
    [:mods :alt
     ['right :move-right-word
      'left :move-left-word
+     'down :move-end-down
+     'up :move-start-up
      'backspace :delete-left-word
      'delete :delete-forward-word]]
    [:mods 'shift
     ['right :select-right
      'left :select-left
      'up :select-up
-     'down :select-down
-     'Z :redo]]
+     'down :select-down]]
    [:mods 'shift :alt
     ['right :select-right-word
-     'left :select-left-word]]
+     'left :select-left-word
+     'down :select-end-down
+     'up :select-start-up]]
    [:mods 'shift :primary
     ['left :select-start
      'right :select-end
      'up :select-doc-start
-     'down :select-doc-end]]
+     'down :select-doc-end
+     'Z :redo]]
    [:mods :primary
     ['A :select-all
      'left :move-start

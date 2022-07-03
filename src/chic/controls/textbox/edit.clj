@@ -19,7 +19,8 @@
    [chic.util :as util]
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.ui :as ui]
-   [chic.clj-editor.parser :as parser])
+   [chic.clj-editor.parser :as parser]
+   [chic.controls.textbox.move :as move])
   (:import
    (io.lacuna.bifurcan Rope)
    (io.github.humbleui.skija Paint Font Canvas TextLine)
@@ -52,28 +53,76 @@
         (assoc :text-lines text-lines)
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
 
+(defn delete-left* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                            cursor-line-idx] :as state}]
+  (if (== 0 cursor-idx)
+    state
+    (let [cursor-idx2 (dec cursor-idx)
+          rope2 (.remove rope cursor-idx2 cursor-idx)
+          moved-line? (< cursor-idx2 (nth line-start-idxs cursor-line-idx))]
+      (-> state
+          (assoc :cursor-idx cursor-idx2)
+          (assoc :rope rope2)
+          (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+          (cond-> moved-line?
+            (-> (assoc :cursor-line-idx (dec cursor-line-idx))
+                (assoc :line-start-idxs (into (subvec line-start-idxs 0 cursor-line-idx)
+                                              (map dec)
+                                              (subvec line-start-idxs (inc cursor-line-idx))))))
+          (cond-> (not moved-line?)
+            (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
+                                          (map dec)
+                                          (subvec line-start-idxs (inc cursor-line-idx)))))
+          (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
+
+(defn delete-right* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                             cursor-line-idx] :as state}]
+  (if (== cursor-idx (.size rope))
+    state
+    (let [delete-idx (inc cursor-idx)
+          rope2 (.remove rope cursor-idx delete-idx)
+          joined-line? (<= (nth line-start-idxs (inc cursor-line-idx) Long/MAX_VALUE) delete-idx)]
+      (-> state
+          (assoc :rope rope2)
+          (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+          (cond-> joined-line?
+            (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
+                                          (map dec)
+                                          (subvec line-start-idxs (inc (inc cursor-line-idx))))))
+          (cond-> (not joined-line?)
+            (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
+                                          (map dec)
+                                          (subvec line-start-idxs (inc cursor-line-idx)))))))))
+
+(defn delete-between* [{:keys [^Rope rope line-start-idxs] :as state} idx1 idx2]
+  (let [rope2 (.remove rope idx1 idx2)
+        nchars (- idx2 idx1)
+        upper-line-idx (hpr/find-line-idx line-start-idxs idx1)
+        lower-line-idx (hpr/find-line-idx line-start-idxs idx2)]
+    (-> state
+        (assoc :rope rope2)
+        (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc upper-line-idx))
+                                      (map #(- % nchars))
+                                      (subvec line-start-idxs (inc lower-line-idx))))
+        (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+        (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
+
 (defn delete-start* [{:keys [cursor-idx ^Rope rope line-start-idxs
                              cursor-line-idx] :as state}]
   (let [line-start-idx (nth line-start-idxs cursor-line-idx)]
     (if (== cursor-idx line-start-idx)
-      state
-      (let [rope2 (.remove rope line-start-idx cursor-idx)]
-        (-> state
-            (assoc :cursor-idx line-start-idx)
-            (assoc :rope rope2)
-            (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-            (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))))
+      (delete-left* state)
+      (-> state
+          (assoc :cursor-idx line-start-idx)
+          (delete-between* line-start-idx cursor-idx)))))
 
 (defn delete-end* [{:keys [cursor-idx ^Rope rope line-start-idxs
                            cursor-line-idx] :as state}]
   (let [line-end-idx (dec (nth line-start-idxs (inc cursor-line-idx)
                                (inc (.size rope))))]
     (if (== cursor-idx line-end-idx)
-      state
-      (let [rope2 (.remove rope cursor-idx line-end-idx)]
-        (-> state
-            (assoc :rope rope2)
-            (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2))))))))
+      (delete-right* state)
+      (-> state (delete-between* cursor-idx line-end-idx)))))
 
 (defn enter-newline* [{:keys [^long cursor-idx ^Rope rope line-start-idxs
                               cursor-line-idx] :as state}]
@@ -94,46 +143,25 @@
 (defn handle-edit-intent [*state intent]
   (case intent
     :delete-left
-    (vswap! *state (fn [{:keys [cursor-idx ^Rope rope line-start-idxs
-                                cursor-line-idx] :as state}]
-                     (if (== 0 cursor-idx)
-                       state
-                       (let [cursor-idx2 (dec cursor-idx)
-                             rope2 (.remove rope cursor-idx2 cursor-idx)
-                             moved-line? (< cursor-idx2 (nth line-start-idxs cursor-line-idx))]
-                         (-> state
-                             (assoc :cursor-idx cursor-idx2)
-                             (assoc :rope rope2)
-                             (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                             (cond-> moved-line?
-                               (-> (assoc :cursor-line-idx (dec cursor-line-idx))
-                                   (assoc :line-start-idxs (into (subvec line-start-idxs 0 cursor-line-idx)
-                                                                 (map dec)
-                                                                 (subvec line-start-idxs (inc cursor-line-idx))))))
-                             (cond-> (not moved-line?)
-                               (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
-                                                             (map dec)
-                                                             (subvec line-start-idxs (inc cursor-line-idx)))))
-                             (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))))
+    (vswap! *state delete-left*)
     :delete-right
-    (vswap! *state (fn [{:keys [cursor-idx ^Rope rope line-start-idxs
-                                cursor-line-idx] :as state}]
-                     (if (== cursor-idx (.size rope))
-                       state
-                       (let [delete-idx (inc cursor-idx)
-                             rope2 (.remove rope cursor-idx delete-idx)
-                             joined-line? (<= (nth line-start-idxs (inc cursor-line-idx) Long/MAX_VALUE) delete-idx)]
-                         (-> state
-                             (assoc :rope rope2)
-                             (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                             (cond-> joined-line?
-                               (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
-                                                             (map dec)
-                                                             (subvec line-start-idxs (inc (inc cursor-line-idx))))))
-                             (cond-> (not joined-line?)
-                               (assoc :line-start-idxs (into (subvec line-start-idxs 0 (inc cursor-line-idx))
-                                                             (map dec)
-                                                             (subvec line-start-idxs (inc cursor-line-idx))))))))))
+    (vswap! *state delete-right*)
+    :delete-right-word
+    (vswap! *state (fn [{:keys [cursor-idx] :as state}]
+                     (let [idx2 (move/word-after (move/make-word-iter (:rope state))
+                                                 cursor-idx)]
+                       (-> state
+                           (delete-between* cursor-idx idx2)
+                           (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
+    :delete-left-word
+    (vswap! *state (fn [{:keys [cursor-idx] :as state}]
+                     (let [idx2 (move/word-before (move/make-word-iter (:rope state))
+                                                  cursor-idx)]
+                       (-> state
+                           (assoc :cursor-idx idx2)
+                           (assoc :cursor-line-idx (hpr/find-line-idx (:line-start-idxs state) idx2))
+                           (delete-between* idx2 cursor-idx)
+                           (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
     :delete-start
     (vswap! *state delete-start*)
     (:kill :delete-end)
