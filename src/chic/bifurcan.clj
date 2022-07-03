@@ -3,10 +3,12 @@
    [clojure.walk :as walk]
    [chic.util :as util]
    [better-cond.core :refer [cond] :rename {cond cond+}]
+   [chic.types :as types]
    [clj-commons.primitive-math :as prim]
    [potemkin :refer [def-map-type unify-gensyms deftype+]])
   (:import
-   (io.lacuna.bifurcan Map)))
+   (java.text CharacterIterator)
+   (io.lacuna.bifurcan Map Rope)))
 
 (declare ->WrappedMapTransient)
 
@@ -121,3 +123,48 @@
 
   #!
   )
+
+(deftype RopeCharacterIterator
+  [^Rope rope ^:unsynchronized-mutable ^int idx ^int end-idx]
+  CharacterIterator
+  (first [_]
+    (set! idx (unchecked-int 0))
+    ^char (.nth rope 0))
+  (last [_]
+    (set! idx (unchecked-dec-int end-idx))
+    ^char (.nth rope idx))
+  (current [_]
+    (if (prim/== idx end-idx)
+      CharacterIterator/DONE
+      ^char (.nth rope idx)))
+  (next [_]
+    (set! idx (unchecked-inc-int idx))
+    (if (prim/< idx end-idx)
+      ^char (.nth rope idx)
+      (do (set! idx end-idx)
+          CharacterIterator/DONE)))
+  (previous [_]
+    (if (prim/zero? idx)
+      CharacterIterator/DONE
+      (do (set! idx (unchecked-dec-int idx))
+          ^char (.nth rope idx))))
+  (setIndex [_ idx2]
+    (when (or (prim/< idx2 0) (prim/< end-idx idx2))
+      (throw (IllegalArgumentException.
+              (str "Index must be in interval [0, " end-idx
+                   "] = [ getBeginIndex(), getEndIndex() ]"))))
+    (set! idx idx2)
+    (if (prim/== idx2 end-idx)
+      CharacterIterator/DONE
+      ^char (.nth rope idx2)))
+  (getBeginIndex [_] 0)
+  (getEndIndex [_] end-idx)
+  (getIndex [_] idx)
+  (clone [_]
+    (RopeCharacterIterator. rope idx end-idx)))
+
+(defn rope-character-iterator [^Rope rope]
+  (let [size (.size rope)]
+    (if (prim/< 0 size)
+      (->RopeCharacterIterator rope 0 size)
+      (types/->EmptyCharacterIterator))))

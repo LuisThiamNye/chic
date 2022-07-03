@@ -46,7 +46,7 @@
     (count [this] (.reduce this (fn [n _] (inc n)) 0))
     clojure.lang.IReduceInit
     (reduce [_ rf init]
-      (let [iter (.chars rope)
+      (let [iter (.codePoints rope)
             sb (StringBuilder.)]
         (if-not (.hasNext iter)
           (rf init "")

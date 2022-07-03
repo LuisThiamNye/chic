@@ -70,7 +70,8 @@
    [:mods :alt
     ['right :move-right-word
      'left :move-left-word
-     'backspace :delete-left-word]]
+     'backspace :delete-left-word
+     'delete :delete-forward-word]]
    [:mods 'shift
     ['right :select-right
      'left :select-left

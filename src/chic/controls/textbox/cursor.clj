@@ -142,9 +142,11 @@
     :draw
     (fn [self {:keys [scale]} _ ^Canvas cnv]
       (let [line-top (ui2/access self :line-top)
-            cursor-x (math/round (ui2/access self :cursor-x))]
-        (.drawRect cnv (Rect. (- cursor-x scale) line-top
-                              (+ cursor-x scale) (+ line-top (ui2/access self :line-height)))
+            cursor-x (math/round (ui2/access self :cursor-x))
+            line-height (ui2/access self :line-height)
+            extra-v (math/round (* 0.12 line-height))]
+        (.drawRect cnv (Rect. (- cursor-x scale) (- line-top extra-v)
+                              (+ cursor-x scale) (+ line-top extra-v line-height))
                    (ui2/access self :paint))))}))
 
 ;; (defn cursor-widget)

@@ -1,6 +1,7 @@
 (ns chic.controls.textbox.core
   (:require
    [proteus :refer [let-mutable]]
+   [clojure.math :as math]
    [chic.controls.textbox.edit :as edit]
    [chic.controls.textbox.move :as move]
    [chic.controls.textbox.select :as select]
@@ -37,15 +38,16 @@
   (when-some [intent (keybindings/evt->simple-keybindings-intent
                       keybindings/editor-keybindings-map evt)]
     (or (if (:select-idx @*state)
-          (select/handle-deselecting-move-intent *state intent)
-          (move/handle-move-intent *state intent))
-        (edit/handle-edit-intent *state intent)
+          (or (select/handle-deselecting-move-intent *state intent)
+              (select/handle-selected-edit-intent *state intent))
+          (or (move/handle-move-intent *state intent)
+              (edit/handle-edit-intent *state intent)))
         (select/handle-select-intent *state intent))
     (hpr/-dbg-check-state @*state)))
 
 (defn textbox-sample []
   (let [font (Font. style/face-code-default (* scale 14.))
-        line-spacing (.getSpacing font)
+        line-spacing (math/round (.getSpacing font))
         init-rope (.insert Rope/EMPTY 0 "Hello there.\nIt is me")
         *state (volatile! {:rope init-rope
                            :cursor-idx 0 ;; idx in rope
@@ -191,6 +193,8 @@
   (alter-var-root #'scale (constantly 2))
 
   ;; TODO
+  ;; - 6 word ops
+  ;; - undo/redo
   ;; - when selecting whitespace, show a dot (at least for trailing whitespace)
 
 #!

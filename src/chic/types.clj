@@ -1,5 +1,8 @@
 (ns chic.types
+  (:require
+   [clj-commons.primitive-math :as prim])
   (:import
+   (java.text CharacterIterator)
    (io.github.humbleui.types IPoint)))
 
 (defprotocol PXyIM
@@ -21,3 +24,24 @@
     (case k
       :x x :y y
       nil)))
+
+(deftype EmptyCharacterIterator []
+  CharacterIterator
+  (first [_]
+    CharacterIterator/DONE)
+  (last [_]
+    CharacterIterator/DONE)
+  (current [_]
+    CharacterIterator/DONE)
+  (next [_]
+    CharacterIterator/DONE)
+  (previous [_]
+    CharacterIterator/DONE)
+  (setIndex [_ idx2]
+    (when (prim/not== idx2 0)
+      (throw (IllegalArgumentException. "Index must be zero")))
+    CharacterIterator/DONE)
+  (getBeginIndex [_] 0)
+  (getEndIndex [_] 0)
+  (getIndex [_] 0)
+  (clone [self] self))

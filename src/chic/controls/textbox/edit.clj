@@ -52,6 +52,45 @@
         (assoc :text-lines text-lines)
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
 
+(defn delete-start* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                             cursor-line-idx] :as state}]
+  (let [line-start-idx (nth line-start-idxs cursor-line-idx)]
+    (if (== cursor-idx line-start-idx)
+      state
+      (let [rope2 (.remove rope line-start-idx cursor-idx)]
+        (-> state
+            (assoc :cursor-idx line-start-idx)
+            (assoc :rope rope2)
+            (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+            (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))))
+
+(defn delete-end* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                           cursor-line-idx] :as state}]
+  (let [line-end-idx (dec (nth line-start-idxs (inc cursor-line-idx)
+                               (inc (.size rope))))]
+    (if (== cursor-idx line-end-idx)
+      state
+      (let [rope2 (.remove rope cursor-idx line-end-idx)]
+        (-> state
+            (assoc :rope rope2)
+            (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2))))))))
+
+(defn enter-newline* [{:keys [^long cursor-idx ^Rope rope line-start-idxs
+                              cursor-line-idx] :as state}]
+  (let [cursor2 (inc cursor-idx)
+        line-idx2 (inc cursor-line-idx)
+        rope2 (.insert rope cursor-idx "\n")]
+    (-> state
+        (assoc :rope rope2)
+        (assoc :cursor-line-idx line-idx2)
+        (assoc :cursor-idx cursor2)
+        (assoc :line-start-idxs (into (conj (subvec line-start-idxs 0 line-idx2)
+                                            cursor2)
+                                      (map inc)
+                                      (subvec line-start-idxs line-idx2)))
+        (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+        (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
+
 (defn handle-edit-intent [*state intent]
   (case intent
     :delete-left
@@ -96,44 +135,11 @@
                                                              (map dec)
                                                              (subvec line-start-idxs (inc cursor-line-idx))))))))))
     :delete-start
-    (vswap! *state (fn [{:keys [cursor-idx ^Rope rope line-start-idxs
-                                cursor-line-idx] :as state}]
-                     (let [line-start-idx (nth line-start-idxs cursor-line-idx)]
-                       (if (== cursor-idx line-start-idx)
-                         state
-                         (let [rope2 (.remove rope line-start-idx cursor-idx)]
-                           (-> state
-                               (assoc :cursor-idx line-start-idx)
-                               (assoc :rope rope2)
-                               (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                               (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))))
+    (vswap! *state delete-start*)
     (:kill :delete-end)
-    (vswap! *state (fn [{:keys [cursor-idx ^Rope rope line-start-idxs
-                                cursor-line-idx] :as state}]
-                     (let [line-end-idx (dec (nth line-start-idxs (inc cursor-line-idx)
-                                                  (inc (.size rope))))]
-                       (if (== cursor-idx line-end-idx)
-                         state
-                         (let [rope2 (.remove rope cursor-idx line-end-idx)]
-                           (-> state
-                               (assoc :rope rope2)
-                               (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))))))))
+    (vswap! *state delete-end*)
     :enter
-    (vswap! *state (fn [{:keys [^long cursor-idx ^Rope rope line-start-idxs
-                                cursor-line-idx] :as state}]
-                     (let [cursor2 (inc cursor-idx)
-                           line-idx2 (inc cursor-line-idx)
-                           rope2 (.insert rope cursor-idx "\n")]
-                       (-> state
-                           (assoc :rope rope2)
-                           (assoc :cursor-line-idx line-idx2)
-                           (assoc :cursor-idx cursor2)
-                           (assoc :line-start-idxs (into (conj (subvec line-start-idxs 0 line-idx2)
-                                                               cursor2)
-                                                         (map inc)
-                                                         (subvec line-start-idxs line-idx2)))
-                           (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                           (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
+    (vswap! *state enter-newline*)
     (:paste :yank)
     (when-some [text (clipboard/get :text:plain)]
       (vswap! *state insert-text* text))
@@ -153,23 +159,23 @@
                     cursor-idx2 (max 0 (cond-> line-start-idx end-line? dec))
                     rope2 (.remove rope cursor-idx2 (min (inc line-lf-idx) (.size rope)))
                     char-count (- (.size rope) (.size rope2))]
-               (clipboard/set-text
-                (str (.slice rope line-start-idx line-lf-idx)
-                     \newline))
-               (-> state
-                   (assoc :rope rope2)
-                   (assoc :cursor-idx cursor-idx2)
-                   (cond-> (< 1 nlines)
-                     (->
-                      (cond-> end-line?
-                        (update :cursor-line-idx dec))
-                      (assoc :line-start-idxs (if end-line?
-                                                (pop line-start-idxs)
-                                                (into (subvec line-start-idxs 0 (inc cursor-line-idx))
-                                                      (map #(- % char-count))
-                                                      (subvec line-start-idxs (inc (inc cursor-line-idx))))))))
-                   (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                   (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
+                (clipboard/set-text
+                 (str (.slice rope line-start-idx line-lf-idx)
+                      \newline))
+                (-> state
+                    (assoc :rope rope2)
+                    (assoc :cursor-idx cursor-idx2)
+                    (cond-> (< 1 nlines)
+                      (->
+                       (cond-> end-line?
+                         (update :cursor-line-idx dec))
+                       (assoc :line-start-idxs (if end-line?
+                                                 (pop line-start-idxs)
+                                                 (into (subvec line-start-idxs 0 (inc cursor-line-idx))
+                                                       (map #(- % char-count))
+                                                       (subvec line-start-idxs (inc (inc cursor-line-idx))))))))
+                    (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+                    (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))
     :transpose
     (vswap! *state
             (fn [{:keys [cursor-idx ^Rope rope line-start-idxs
@@ -179,19 +185,19 @@
                             0 1)
                     idx1 (+ cursor-idx shift -2)]
                 (if (< idx1 0)
-                 state
-                 (let [idx2 (+ cursor-idx shift -1)
-                       cint1 (.nth rope idx1)
-                       cint2 (.nth rope idx2)
-                       rope2 (.insert (.remove rope idx1 (inc idx2))
-                                      (int idx1) (str (char cint2) (char cint1)))]
-                   (-> state
-                       (assoc :cursor-idx (+ cursor-idx shift))
-                       (assoc :rope rope2)
-                       (cond-> (== 10 cint1)
-                         (update :line-start-idxs update cursor-line-idx inc))
-                       (cond-> (== 10 cint2)
-                         (update :line-start-idxs update cursor-line-idx dec))
-                       (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
-                       (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))))
+                  state
+                  (let [idx2 (+ cursor-idx shift -1)
+                        cint1 (.nth rope idx1)
+                        cint2 (.nth rope idx2)
+                        rope2 (.insert (.remove rope idx1 (inc idx2))
+                                       (int idx1) (str (char cint2) (char cint1)))]
+                    (-> state
+                        (assoc :cursor-idx (+ cursor-idx shift))
+                        (assoc :rope rope2)
+                        (cond-> (== 10 cint1)
+                          (update :line-start-idxs update cursor-line-idx inc))
+                        (cond-> (== 10 cint2)
+                          (update :line-start-idxs update cursor-line-idx dec))
+                        (as-> state (assoc state :text-lines (hpr/rope->textlines state rope2)))
+                        (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state)))))))))
     nil))

@@ -17,16 +17,84 @@
    [io.github.humbleui.paint :as huipaint]
    [chic.paint :as cpaint]
    [chic.util :as util]
+   [clj-commons.primitive-math :as prim]
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.ui :as ui]
-   [chic.clj-editor.parser :as parser])
+   [chic.clj-editor.parser :as parser]
+   [chic.bifurcan :as b])
   (:import
    (io.lacuna.bifurcan Rope)
    (io.github.humbleui.skija Paint Font Canvas TextLine)
-   (io.github.humbleui.types Rect Point RRect)))
+   (io.github.humbleui.types Rect Point RRect)
+   (com.ibm.icu.text BreakIterator)))
+
+(defn ^BreakIterator make-word-iter [rope]
+  (doto (BreakIterator/getWordInstance)
+    (.setText (b/rope-character-iterator rope))))
+
+;; this implementation gives same word-movement results as macOS TextEdit
+
+(defn word-before [^BreakIterator iter idx]
+  (loop [idx' (.following iter (dec idx))
+         found-word? false]
+    (when (prim/<= 0 idx')
+      (if (or (prim/zero? idx') found-word?)
+        idx'
+        (let [rs (.getRuleStatus iter)]
+          (recur (.previous iter)
+                 (or (prim/< rs BreakIterator/WORD_NONE)
+                     (prim/<= BreakIterator/WORD_NONE_LIMIT rs))))))))
+
+(defn word-after [^BreakIterator iter idx]
+  (let [n (.last iter)]
+    (loop [idx' (.following iter idx)]
+      (when (prim/<= 0 idx')
+        (if (or (prim/== n idx')
+                ;; true
+                (let [rs (.getRuleStatus iter)]
+                 ;; if not punctuation/space
+                  (or (prim/< rs BreakIterator/WORD_NONE)
+                      (prim/<= BreakIterator/WORD_NONE_LIMIT rs))))
+          idx'
+          (recur (.next iter)))))))
+
+(comment
+  (.following (make-word-iter (Rope/from "012 45 78"))
+              9) ;; -1
+  (word-before (make-word-iter (Rope/from "012  5 78"))
+               5)
+  (word-after (make-word-iter (Rope/from "012  5 78"))
+               0)
+  (.getRuleStatus
+   (doto (make-word-iter (Rope/from "0. 3"))
+     (.following 2)))
+
+  (.getRuleStatus
+   (doto (make-word-iter (Rope/from "012 45 78"))
+     (.following 6)))
+  (.getRuleStatus
+   (doto (make-word-iter (Rope/from "012  5 78"))
+     (.preceding 6)))
+  (def --r nil)
+  (def ^Thread --x
+    (doto
+     (Thread.
+      (fn [] (alter-var-root
+              #'--r (constantly
+                     (word-after (make-word-iter (Rope/from "012 45 78"))
+                                 3)))))
+      .start))
+  (.stop --x)
+  ;; (future-cancel --x)
+  ;; (def --ts (filterv (fn [^Thread t] (and (re-find #"^clojure-agent-send-off" (.getName t))
+  ;;                                         (.isAlive t)))
+  ;;                    (.keySet (Thread/getAllStackTraces))))
+  (.toString (make-word-iter (Rope/from "012 45 78")))
+  #!
+  )
 
 (defn cursor-move-right* [{:keys [cursor-idx ^Rope rope line-start-idxs
-                         cursor-line-idx] :as state}]
+                                  cursor-line-idx] :as state}]
   (let [next-line-idx (inc cursor-line-idx)]
     (-> state
         (assoc :cursor-idx (min (.size rope) (inc cursor-idx)))
@@ -35,13 +103,38 @@
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
 
 (defn cursor-move-left* [{:keys [cursor-idx line-start-idxs
-             cursor-line-idx] :as state}]
+                                 cursor-line-idx] :as state}]
   (let [cursor-idx2 (max 0 (dec cursor-idx))]
     (-> state
         (assoc :cursor-idx cursor-idx2)
         (cond-> (< cursor-idx2 (nth line-start-idxs cursor-line-idx))
           (assoc :cursor-line-idx (dec cursor-line-idx)))
         (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
+
+(defn cursor-move-to-idx* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                                   cursor-line-idx] :as state} cursor-idx2]
+  (let [line-idx2 (hpr/find-line-idx line-start-idxs cursor-idx2)]
+    (-> state
+        (assoc :cursor-idx cursor-idx2)
+        (cond-> (not (== cursor-line-idx line-idx2))
+          (assoc :cursor-line-idx line-idx2))
+        (as-> state (assoc state :cursor-dx (hpr/calc-cursor-dx state))))))
+
+(defn cursor-move-right-word* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                                       cursor-line-idx] :as state}]
+  (let [word-iter (make-word-iter rope)
+        cursor-idx2 (word-after word-iter cursor-idx)]
+    (if cursor-idx2
+      (cursor-move-to-idx* state cursor-idx2)
+      state)))
+
+(defn cursor-move-left-word* [{:keys [cursor-idx ^Rope rope line-start-idxs
+                                      cursor-line-idx] :as state}]
+  (let [word-iter (make-word-iter rope)
+        cursor-idx2 (word-before word-iter cursor-idx)]
+    (if cursor-idx2
+      (cursor-move-to-idx* state cursor-idx2)
+      state)))
 
 (defn cursor-move-down* [{:keys [cursor-dx ^Rope rope line-start-idxs
                                  cursor-line-idx] :as state}]
@@ -98,6 +191,10 @@
     (vswap! *state cursor-move-right*)
     :move-left
     (vswap! *state cursor-move-left*)
+    :move-right-word
+    (vswap! *state cursor-move-right-word*)
+    :move-left-word
+    (vswap! *state cursor-move-left-word*)
     :move-down
     (vswap! *state cursor-move-down*)
     :move-up
