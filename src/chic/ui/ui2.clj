@@ -1,6 +1,7 @@
 (ns chic.ui.ui2
   (:require
    [chic.ui.font :as uifont]
+   [chic.debug]
    [chic.ui.interactor :as uii]
    [chic.style :as style]
    [io.github.humbleui.paint :as huipaint]
@@ -17,8 +18,9 @@
    [io.github.humbleui.ui :as ui])
   (:import
    (io.lacuna.bifurcan LinearList)
+   (io.github.humbleui.skija.svg SVGLengthContext SVGDOM SVGSVG SVGLengthType)
    (java.util ArrayList HashMap)
-   (io.github.humbleui.skija Canvas Font Paint TextLine FontMetrics)
+   (io.github.humbleui.skija Data Canvas Font Paint TextLine FontMetrics)
    (io.github.humbleui.skija.shaper ShapingOptions Shaper)
    (io.github.humbleui.types IPoint IRect Rect Point)
    (io.github.humbleui.jwm EventMouseMove EventTextInput EventKey)
@@ -53,7 +55,9 @@ if moved between windows (or when EventScreenChange so scale can be in win ctx).
   ((:draw widget) widget ctx (-transmit-rect widget ctx rect) canvas))
 
 (defn measure [widget ctx max-rect]
-  ((:measure widget) (-transmit-rect widget ctx max-rect)))
+  (if-some [f (:measure widget)]
+    (f widget (-transmit-rect widget ctx max-rect))
+    max-rect))
 
 (defn access [widget prop]
   #_(when (nil? (get (:getters widget) prop))
@@ -102,23 +106,39 @@ parents set position
 (def eqicolumn-w
   (direct-widget
    {:get [:children :height]
+    :measure (fn [self ^Rect rect]
+               (.withHeight rect (* (count (access self :children))
+                                    (access self :height))))
     :draw
-    (fn [self ctx rect ^Canvas canvas]
-      (let [height (access self :height)
+    (fn eqicolumn-draw [self ctx rect ^Canvas canvas]
+      (let [^long height (access self :height)
             l (:x rect)
-            t (:top rect)
+            t (:y rect)
             r (:right rect)
-            b (:bottom rect)]
-        (let-mutable [i 0]
-          (doit [child (access self :children)]
-            (let [y (+ t (* i height))]
-              (when (and (< y b) (< i 1000))
-                (draw child ctx (Rect. l y r (+ height y)) canvas)
-                (set! i (inc i))))))))}))
+            b (:bottom rect)
+            visible-rect (:visible-rect ctx rect)
+            dt ^long (max 0 (- (:y visible-rect) t))
+            idx0 (Math/floorDiv dt height)
+            children (access self :children)
+            end-idx (min (count children)
+                          (Math/ceilDiv ^long (- (min b (:bottom visible-rect)) t) height))]
+        (loop [i idx0]
+          (when (< i end-idx)
+            (let [child (nth children i)
+                  y (+ t (* i height))]
+              (draw child ctx (Rect. l y r (+ height y)) canvas)
+              (recur (unchecked-inc-int i)))))))}))
 
 (defn eqicolumn* [height children]
-  (column-w {:getters {:children (if (fn? children) children (constantly children))
-                       :height (if (fn? height) height (constantly height))}}))
+  (eqicolumn-w {:getters {:children (if (fn? children) children (constantly children))
+                          :height (if (fn? height) height (constantly height))}}))
+
+#_(def xyoffset-w
+  (direct-widget
+   {:get [:child :offset-x :offset-y]
+    :draw
+    (fn [self ctx rect ^Canvas cnv]
+      )}))
 
 (def inf-column-w
   (direct-widget
@@ -158,6 +178,13 @@ parents set position
                             (let [c (build-next ctx)]
                               (.add children c)
                               c))}})))
+
+#_(def basic-frame-w
+  (direct-widget
+   {:get [:child]
+    :draw
+    (fn [self ctx rect cnv]
+      (draw c ctx rect cnv))}))
 
 (defn clip-rect [child]
   (let [draw-old (:draw child)]
@@ -238,7 +265,7 @@ parents set position
        (Rect/makeXYWH (:x rect) (:y rect)
                       (:width size) (:height size))))
    (assoc child :measure
-          (fn [rect]
+          (fn [_ rect]
             (let [size (f 0)]
               (Rect/makeXYWH (:x rect) (:y rect)
                              (:width size) (:height size)))))))
@@ -276,9 +303,11 @@ parents set position
       :event (fn [_ evt]
                (let [jwm-evt (:raw-event evt)]
                  (doit [el event-listeners]
-                   (el {::mouse-pos mouse-pos
-                        ::set-text-input-handler
-                        (fn [f] (vreset! *text-input-handler f))}
+                   (el (merge
+                        evt
+                        {::mouse-pos mouse-pos
+                         ::set-text-input-handler
+                         (fn [f] (vreset! *text-input-handler f))})
                        jwm-evt))
                  (condp instance? jwm-evt
                    EventMouseMove
@@ -299,6 +328,8 @@ parents set position
 (def text-string-w
   (direct-widget
    {:get [:paint :string :font]
+    :measure (fn [self ^Rect rect]
+               (.withHeight rect (.getHeight (.getMetrics ^Font (access self :font)))))
     :draw (fn [self _ ^Rect rect ^Canvas cnv]
             (let [string ^String (access self :string)]
               (.drawString cnv string
@@ -384,7 +415,7 @@ parents set position
 (defn watch-rect [f child]
   (let [*old-rect (proteus.Containers$O. nil)]
     (before-draw
-     (fn [ctx rect]
+     (fn [ctx ^Rect rect]
        (when-not (.equals rect (.-x *old-rect))
          (.set *old-rect rect)
          (f ctx rect)))
@@ -420,7 +451,7 @@ parents set position
 (defn updating-ctx [f child]
   (let [old-draw (:draw child)]
     (assoc child :draw (fn [self ctx rect cnv]
-                         (old-draw self (f ctx) rect cnv)))))
+                         (old-draw self (f ctx rect) rect cnv)))))
 
 (defn attach-interactor-manager [_opts child]
   (let [*mgr (volatile! nil)]
@@ -431,5 +462,25 @@ parents set position
         (fn [ctx evt]
           (uii/mgr-handle-jwm-event @*mgr ctx evt)))
        (vreset! *mgr (uii/new-mgr {:jwm-window (:jwm-window ctx)})))
-     (updating-ctx (fn [ctx] (assoc ctx ::interactor-manager @*mgr))
+     (updating-ctx (fn [ctx _] (assoc ctx ::interactor-manager @*mgr))
                    child))))
+
+(def svg-w
+  (direct-widget
+   {:get [:svgdom]
+    :draw (fn [self ctx rect ^Canvas canvas]
+            (let [dom ^SVGDOM (access self :svgdom)
+                  root ^SVGSVG (.getRoot dom)
+                  lc (SVGLengthContext. (Point. (:width rect) (:height rect)))
+                  width (.resolve lc (.getWidth root) SVGLengthType/HORIZONTAL)
+                  height (.resolve lc (.getHeight root) SVGLengthType/VERTICAL)
+                  xscale (/ (:width rect) width)
+                  yscale (/ (:height rect) height)]
+              (with-save canvas
+                (.translate canvas (:x rect) (:y rect))
+                (.setContainerSize dom (Point. (:x rect) (:y rect)))
+                (.scale canvas xscale yscale)
+                (.render dom canvas))))}))
+
+(defn svg-from-data [^Data data]
+  (svg-w {:getters {:svgdom (constantly (SVGDOM. data))}}))

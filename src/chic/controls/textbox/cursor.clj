@@ -59,23 +59,34 @@
     (if with-first-line? ;; first line joined to rest
       (let [first-end-x (nth line-end-xs 0)
             l (min (- first-end-x first-line-x) bd)]
-       (doto path
-         ;; bottom left of start of first line
-         (.moveTo first-line-x (- (+ origin-y line-height) border-radius))
-         (.lineTo first-line-x (+ (:y first-line-origin) border-radius))
-         (.arcTo (Rect. first-line-x (:y first-line-origin)
-                        (+ first-line-x l)
-                        (+ (:y first-line-origin) l))
-                 180. 90. false)
-         (.lineTo (- first-end-x border-radius) (:y first-line-origin))
-         (.arcTo (Rect. (- first-end-x l) (:y first-line-origin)
-                        first-end-x (+ (:y first-line-origin) l))
-                 270. 90. false)
-         (.lineTo (nth line-end-xs 0) (- (+ line-height origin-y) border-radius)))
-       (doto (Path.)
-         (add-line-end (+ origin-y line-height) first-line-x origin-x)
-         (->> (.reverseAddPath path)))
-       (add-line-end path (+ line-height origin-y) first-end-x (nth line-end-xs 1)))
+        (doto path
+          (.moveTo origin-x (+ (+ origin-y line-height) border-radius))
+          (as-> path
+            (let [x0 origin-x
+                  x1 first-line-x
+                  y (+ origin-y line-height)
+                  dx (min border-radius (abs (/ (- x0 x1) 2)))]
+              (doto path
+                (.arcTo (Rect. x0 y
+                               (+ x0 (* 2 dx)) (+ y bd))
+                        180. 90. false)
+                (.lineTo (- x1 dx) y)
+                (.arcTo (Rect. (- x1 (* 2 dx)) (- y bd)
+                               x1 y)
+                        90. -90. false))))
+          ;; bottom left of start of first line
+          ;; (.moveTo first-line-x (- (+ origin-y line-height) border-radius))
+          (.lineTo first-line-x (+ (:y first-line-origin) border-radius))
+          (.arcTo (Rect. first-line-x (:y first-line-origin)
+                         (+ first-line-x l)
+                         (+ (:y first-line-origin) l))
+                  180. 90. false)
+          (.lineTo (- first-end-x border-radius) (:y first-line-origin))
+          (.arcTo (Rect. (- first-end-x l) (:y first-line-origin)
+                         first-end-x (+ (:y first-line-origin) l))
+                  270. 90. false)
+          (.lineTo (nth line-end-xs 0) (- (+ line-height origin-y) border-radius)))
+        (add-line-end path (+ line-height origin-y) first-end-x (nth line-end-xs 1)))
       ;; ignore first line
       (let [end-x (nth line-end-xs 1)
             l (min (- end-x origin-x) bd)]

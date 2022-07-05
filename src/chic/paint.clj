@@ -182,8 +182,15 @@
 
 (defmacro grey [v & [a]]
   (let [a (or a 255)]
-    (unchecked-int
-     (+ (bit-shift-left a 24)
-        (bit-shift-left v 16)
-        (bit-shift-left v 8)
-        v))))
+    (if (number? v)
+      (unchecked-int
+      (+ (bit-shift-left a 24)
+         (bit-shift-left v 16)
+         (bit-shift-left v 8)
+         v))
+      `(let [v# ~v]
+         (unchecked-int
+         (+ (bit-shift-left ~a 24)
+            (bit-shift-left v# 16)
+            (bit-shift-left v# 8)
+            v#))))))

@@ -7,10 +7,12 @@
    [chic.util :as util]
    [chic.ui.event :as uievt]
    [clojure.math :as math]
+   [taoensso.encore :as enc]
    [io.github.humbleui.core :as hui]
    [io.github.humbleui.paint :as huipaint]
    [chic.ui.error :as cui.error]
    [chic.ui :as cui]
+   [chic.windows :as windows]
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.ui :as ui])
   (:import
@@ -25,71 +27,78 @@
    {:row-fn (fn [idx {:keys []}]
               [])})
 (defn basic-view []
-  (cuilay/padding
-   5
-   (let [screens (App/getScreens)
-         max-scale (apply max (map #(.getScale %) screens))]
-     (cuilay/halign
-      0.5
-      (cuilay/valign
+  (cui/dynamic
+    ctx [win (:chic/current-window ctx)]
+    (cuilay/padding
+    5
+    (let [screens (App/getScreens)
+          max-scale (apply max (map #(.getScale ^Screen %) screens))]
+      (cuilay/halign
        0.5
-       (cuilay/stack
-        (for [[idx screen] (map-indexed (fn [idx s] [idx s]) screens)]
-          ;; (cui/label (str (.getBounds screen)))
-          (let [bounds (.getBounds screen)
-                sf0 20
-                sf (/ max-scale (.getScale screen) sf0)
-                *brightness (atom (some->
-                                   (second (re-find #"current: (\d+)"
-                                                    (:out (sh/sh "ddcctl" "-d" (str (inc idx)) "-b" "?"))))
-                                   (parse-double)
-                                   (/ 100)))
-                available? (boolean @*brightness)]
-            (cuilay/halign
-             0
-             (cuilay/valign
-              0
-              (cuilay/translate
-               (/ (:x bounds) sf0) (/ (:y bounds) sf0)
-               (cuilay/width
-                (* (:width bounds) sf)
-                (cuilay/height
-                 (* (:height bounds) sf)
-                 (cui/dynamic
-                  ctx [{:keys [scale]} ctx]
-                  (cuilay/stack
-                   (if available?
-                     (let [*b-agt (agent @*brightness :error-mode :continue)]
-                       (cuilay/scrollable
-                        (fn [{:hui.event.mouse-scroll/keys [dy] :as evt}]
-                          (when (cui/point-in-component? evt (:chic.ui/mouse-win-pos evt))
-                            (swap! *brightness
-                                   (fn [b]
-                                     (max 0. (min 1. (+ b (/ dy scale 2000))))))
-                            (send *b-agt (fn [b1]
-                                           (let [b2 @*brightness]
-                                             (when-not (== b1 b2)
-                                               (sh/sh "ddcctl" "-d" (str (inc idx)) "-b" (str (* 100 b2))))
-                                             b2)))))
-                        (ui/fill
-                         (huipaint/fill 0xffd09000)
-                         (cuilay/valign
-                          1
-                          (ui/fill
-                           (huipaint/fill 0xfffff000)
-                           (cuilay/height
-                            #(* @*brightness (:height %))
-                            (ui/gap 0 0)))))))
-                     (ui/fill (huipaint/fill 0xff404040)
-                              (ui/gap 0 0)))
-                   (cuilay/padding
-                    1
-                    (ui/fill (huipaint/stroke 0xff000000 (* scale 2))
-                             (ui/gap 0 0)))))))))))
-          #_(cui/on-draw
-             (fn [_ _ ^Canvas canvas]
-               (.drawRect (huipaint/fill 0xff000000)))
-             (ui/gap 0 0)))))))))
+       (cuilay/valign
+        0.5
+        (cuilay/stack
+         (for [[idx ^Screen screen] (map-indexed (fn [idx s] [idx s]) screens)]
+           ;; (cui/label (str (.getBounds screen)))
+           (let [bounds (.getBounds screen)
+                 sf0 20
+                 sf (/ max-scale (.getScale screen) sf0)
+                 *brightness (atom nil)
+                 _ (future (reset! *brightness
+                                   (some->
+                                    (second (re-find #"current: (\d+)"
+                                                     (:out (sh/sh "ddcctl" "-d" (str (inc idx)) "-b" "?"))))
+                                    (parse-double)
+                                    (/ 100)))
+                           (windows/safe-dosendui
+                            (windows/request-frame win)))]
+             (cui/dynamic
+               _ [available? (boolean @*brightness)]
+               (cuilay/halign
+               0
+               (cuilay/valign
+                0
+                (cuilay/translate
+                 (/ (:x bounds) sf0) (/ (:y bounds) sf0)
+                 (cuilay/width
+                  (* (:width bounds) sf)
+                  (cuilay/height
+                   (* (:height bounds) sf)
+                   (cui/dynamic
+                     ctx [{:keys [scale]} ctx]
+                     (cuilay/stack
+                      (if available?
+                        (let [*b-agt (agent @*brightness :error-mode :continue)]
+                          (cuilay/scrollable
+                           (fn [{:hui.event.mouse-scroll/keys [dy] :as evt}]
+                             (when (cui/point-in-component? evt (:chic.ui/mouse-win-pos evt))
+                               (swap! *brightness
+                                      (fn [b]
+                                        (max 0. (min 1. (+ b (/ dy scale 2000))))))
+                               (send *b-agt (fn [b1]
+                                              (let [b2 @*brightness]
+                                                (when-not (== b1 b2)
+                                                  (sh/sh "ddcctl" "-d" (str (inc idx)) "-b" (str (* 100 b2))))
+                                                b2)))))
+                           (ui/fill
+                            (huipaint/fill 0xffd09000)
+                            (cuilay/valign
+                             1
+                             (ui/fill
+                              (huipaint/fill 0xfffff000)
+                              (cuilay/height
+                               #(* @*brightness (:height %))
+                               (ui/gap 0 0)))))))
+                        (ui/fill (huipaint/fill 0xff404040)
+                                 (ui/gap 0 0)))
+                      (cuilay/padding
+                       1
+                       (ui/fill (huipaint/stroke 0xff000000 (* scale 2))
+                                (ui/gap 0 0))))))))))))
+           #_(cui/on-draw
+              (fn [_ _ ^Canvas canvas]
+                (.drawRect (huipaint/fill 0xff000000)))
+              (ui/gap 0 0))))))))))
 
 (comment
   (map #(.getBounds %) (App/getScreens))

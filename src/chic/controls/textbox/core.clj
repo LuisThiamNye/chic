@@ -21,7 +21,7 @@
    [chic.clj-editor.ast :as ast]
    [io.github.humbleui.paint :as huipaint]
    [chic.paint :as cpaint]
-   [chic.util :as util]
+   [chic.util :as util :refer [<<-]]
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.ui :as ui]
    [chic.clj-editor.parser :as parser])
@@ -74,7 +74,11 @@
      :on-text-input
      (fn [^String text]
        (undo/maybe-save-undo *state)
-       (vswap! *state edit/insert-text* text))}
+       (vswap! *state (fn [state]
+                        (-> state
+                            (cond-> (:select-idx state)
+                              (select/delete-sel-contents*))
+                            (edit/insert-text* text)))))}
     :on-mouse-down
     (fn [ctx rect evt]
       (ievt/case-mousebtn evt
@@ -99,67 +103,88 @@
                      :primary
                      (vswap! *state (fn [state]
                                       (assoc state :dragging? false)))))
-    :on-scroll (fn [evt])}
-   (ui2/stack
-    (ui2/padded
-     4
-     (ui2/watch-rect
-      (fn --f1 [_ rect]
-        (vswap! *state (fn [state]
-                         (-> state
-                             (assoc-in [:layout :first-line-origin] (Point. (:x rect) (:y rect)))
-                             (assoc-in [:layout :text-plane-rect] rect)))))
-      (ui2/stack
-       ((ui2/direct-widget
-         {:draw (fn [self {:keys [scale] :as ctx} rect cnv]
-                  (when (:select-idx @*state)
-                    ((cursor/selction-draw-fn-for-layout
-                      (let [{:keys [text-lines line-start-idxs cursor-line-idx
-                                    cursor-idx select-idx]
-                             {:keys [line-height]} :layout :as state} @*state
-                            sel-line-idx (hpr/find-line-idx line-start-idxs select-idx)
-                            rev? (< cursor-idx select-idx)
-                            line-idx1 (if rev? cursor-line-idx sel-line-idx)
-                            line-idx2 (if rev? sel-line-idx cursor-line-idx)
-                            local-idx1 (- (if rev? cursor-idx select-idx)
-                                          (nth line-start-idxs line-idx1))
-                            local-idx2 (- (if rev? select-idx cursor-idx)
-                                          (nth line-start-idxs line-idx2))
-                            text-line1 ^TextLine (nth text-lines line-idx1)
-                            florigin (:first-line-origin (:layout state))
-                            flx (:x florigin)]
-                        {:line-height line-height
-                         :first-line-origin (update florigin :y + (* line-height line-idx1))
-                         :first-line-x (+ flx (.getCoordAtOffset text-line1 local-idx1))
-                         :line-end-xs
-                         (if (== line-idx2 line-idx1)
-                           [(+ flx (.getCoordAtOffset text-line1 local-idx2))]
-                           (let [lf-width (* 4 scale)]
-                             (-> [(+ flx lf-width (.getWidth text-line1))]
-                                 (into (map #(+ flx lf-width (.getWidth ^TextLine %)))
-                                       (subvec text-lines (inc line-idx1) line-idx2))
-                                 (conj (+ flx (.getCoordAtOffset ^TextLine (nth text-lines line-idx2) local-idx2))))))})
-                      selection-paint) self ctx rect cnv)))}) {})
-       (ui2/eqicolumn*
-        (fn [_] (:line-height (:layout @*state)))
-        (fn [_]
-          (let [{:keys [^Font font]
-                 {:keys [line-height]} :layout} @*state]
-            (mapv (fn [text-line]
-                   (ui2/sized-with
-                    (fn [_] (Point. 400. line-height))
-                    (ui2/padded-unscaled [0 0 0 (.getDescent (.getMetrics font))]
-                                         (ui2/textline text-line))))
-                 (:text-lines @*state)))))
-       (cursor/cursor-w
-        {:getters {:paint (constantly cursor-paint)
-                   :line-height (fn [_] (:line-height (:layout @*state)))
-                   :line-top (fn [_] (let [state @*state
-                                           layout (:layout state)]
-                                       (+ (:y (:text-plane-rect layout))
-                                          (* (:cursor-line-idx state) (:line-height layout)))))
-                   :cursor-x (fn [_] (+ (:x (:text-plane-rect (:layout @*state)))
-                                        (:cursor-dx @*state)))}})))))))
+   :on-scroll
+    (fn [ctx rect evt]
+      (let [dy (ievt/scroll-dy evt)
+            dx (ievt/scroll-dx evt)]
+        (vswap! *state
+                (fn [{:keys [scroll-offset-x scroll-offset-y line-start-idxs]
+                      {:keys [line-height]} :layout :as state}]
+                  (-> state
+                      (assoc :scroll-offset-x (max -700
+                                                   (min 0 (+ scroll-offset-x dx))))
+                      (assoc :scroll-offset-y (max (* -1 line-height (count line-start-idxs))
+                                                   (min 0 (+ scroll-offset-y dy)))))))))}
+   (<<-
+    ui2/clip-rect
+    (ui2/updating-ctx
+     (fn [ctx rect] (assoc ctx :visible-rect rect))
+     (ui2/stack
+      (ui2/padded
+       4
+       (ui2/adapt-rect
+        (fn [_ ^Rect rect]
+          (let [{:keys [scroll-offset-x scroll-offset-y]} @*state]
+            (Rect. (+ (:x rect) scroll-offset-x) (+ (:y rect) scroll-offset-y)
+                   Float/MAX_VALUE Float/MAX_VALUE)))
+        (ui2/watch-rect
+         (fn --f1 [_ rect]
+           (vswap! *state (fn [state]
+                            (-> state
+                                (assoc-in [:layout :first-line-origin] (Point. (:x rect) (:y rect)))
+                                (assoc-in [:layout :text-plane-rect] rect)))))
+         (ui2/stack
+          ((ui2/direct-widget
+            (let [*cache (volatile! [nil nil])]
+              {:draw (fn [self {:keys [scale] :as ctx} rect cnv]
+                      (when (:select-idx @*state)
+                        ((cursor/selction-draw-fn-for-layout
+                          (let [{:keys [text-lines line-start-idxs cursor-line-idx
+                                        cursor-idx select-idx]
+                                 {:keys [line-height]} :layout :as state} @*state
+                                sel-line-idx (hpr/find-line-idx line-start-idxs select-idx)
+                                rev? (< cursor-idx select-idx)
+                                line-idx1 (if rev? cursor-line-idx sel-line-idx)
+                                line-idx2 (if rev? sel-line-idx cursor-line-idx)
+                                local-idx1 (- (if rev? cursor-idx select-idx)
+                                              (nth line-start-idxs line-idx1))
+                                local-idx2 (- (if rev? select-idx cursor-idx)
+                                              (nth line-start-idxs line-idx2))
+                                text-line1 ^TextLine (nth text-lines line-idx1)
+                                florigin (:first-line-origin (:layout state))
+                                flx (:x florigin)]
+                            {:line-height line-height
+                             :first-line-origin (update florigin :y + (* line-height line-idx1))
+                             :first-line-x (+ flx (.getCoordAtOffset text-line1 local-idx1))
+                             :line-end-xs
+                             (if (== line-idx2 line-idx1)
+                               [(+ flx (.getCoordAtOffset text-line1 local-idx2))]
+                               (let [lf-width (* 4 scale)]
+                                 (-> [(+ flx lf-width (.getWidth text-line1))]
+                                     (into (map #(+ flx lf-width (.getWidth ^TextLine %)))
+                                           (subvec text-lines (inc line-idx1) line-idx2))
+                                     (conj (+ flx (.getCoordAtOffset ^TextLine (nth text-lines line-idx2) local-idx2))))))})
+                          selection-paint) self ctx rect cnv)))})) {})
+          (ui2/eqicolumn*
+           (fn [_] (:line-height (:layout @*state)))
+           (fn [_]
+             (let [{:keys [^Font font]
+                    {:keys [line-height]} :layout} @*state]
+               (mapv (fn [text-line]
+                       (ui2/sized-with
+                        (fn [_] (Point. 0. line-height))
+                        (ui2/padded-unscaled [0 0 0 (.getDescent (.getMetrics font))]
+                                             (ui2/textline text-line))))
+                     (:text-lines @*state)))))
+          (cursor/cursor-w
+           {:getters {:paint (constantly cursor-paint)
+                      :line-height (fn [_] (:line-height (:layout @*state)))
+                      :line-top (fn [_] (let [state @*state
+                                              layout (:layout state)]
+                                          (+ (:y (:text-plane-rect layout))
+                                             (* (:cursor-line-idx state) (:line-height layout)))))
+                      :cursor-x (fn [_] (+ (:x (:text-plane-rect (:layout @*state)))
+                                           (:cursor-dx @*state)))}}))))))))))
 
 (defn textbox-sample []
   (let [init-rope (.insert Rope/EMPTY 0 "Hello there.\nIt is me.\nIt is good\nLife is great.\nToes.\nNose\nGear")
@@ -190,6 +215,8 @@
                     :last-undo-commit-time 0
                     :undo-commit-idx -1
                     :undo-commits []
+                    :scroll-offset-x 0
+                    :scroll-offset-y 0
                     :layout {:line-height (math/round (.getSpacing font))
                              :first-line-origin (Point. 0. 0.)
                              :first-line-x 0
@@ -197,8 +224,11 @@
                              #_#_:line-end-xs []}}))
          (vswap! *state assoc :text-lines (hpr/rope->textlines @*state init-rope))))
      (ui2/stack
-      (ui2/padded 0.5 (ui2/fill-rrect 2 border-paint))
-      (bare-textarea *state {:selection-paint selection-paint :cursor-paint cursor-paint})))))
+      (ui2/padded
+       [10 30 15 30]
+       (ui2/stack
+        (ui2/padded 0.5 (ui2/fill-rrect 2 border-paint))
+        (bare-textarea *state {:selection-paint selection-paint :cursor-paint cursor-paint})))))))
 
 (comment
   (chic.windows/remount-all-windows)

@@ -60,7 +60,11 @@
     (when-some [f (:on-mouse-move intr)]
       (f ctx (:rect intr) event))))
 
-(defn mgr-notify-intr-scroll [mgr event])
+(defn mgr-notify-intr-scroll [mgr ctx event]
+  (let [mouse-pos (:chic.ui.ui2/mouse-pos ctx)
+        intr (-find-intr-at-point mgr (:x mouse-pos) (:y mouse-pos))]
+    (when-some [f (:on-scroll intr)]
+      (f ctx (:rect intr) event))))
 
 (defn mgr-notify-intr-mousedown [mgr ctx event]
   (let [mouse-pos (:chic.ui.ui2/mouse-pos ctx)
@@ -105,7 +109,7 @@
     EventMouseMove
     (mgr-notify-mouse-pos mgr ctx event)
     EventMouseScroll
-    (mgr-notify-intr-scroll mgr event)
+    (mgr-notify-intr-scroll mgr ctx event)
     EventMouseButton
     (if (.isPressed ^EventMouseButton event)
       (mgr-notify-intr-mousedown mgr ctx event)

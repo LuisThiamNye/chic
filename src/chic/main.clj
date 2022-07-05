@@ -151,7 +151,7 @@
            (cui/clickable
             (fn [event]
               (when (:hui.event.mouse-button/is-pressed event)
-                (windows/remount-window (:chic/current-window event))))
+                (windows/remount-all-windows)))
             (ui/fill (huipaint/fill 0x11000000)
                      (cuilay/valign
                       0.5 (cuilay/padding 20 0 (ui/label "Reload" font-ui fill-text)))))))))))))

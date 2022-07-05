@@ -2,7 +2,7 @@
   #_(:require
      [])
   (:import
-   (io.github.humbleui.jwm MouseButton EventMouseButton)))
+   (io.github.humbleui.jwm MouseButton EventMouseButton EventMouseScroll)))
 
 (def kw->mouse-button
   {:primary MouseButton/PRIMARY
@@ -31,3 +31,9 @@
 
 #_(defn mousedown-handler [{}]
     (fn [ctx rect evt]))
+
+(defn scroll-dx [^EventMouseScroll evt]
+  (.-_deltaX evt))
+
+(defn scroll-dy [^EventMouseScroll evt]
+  (.-_deltaY evt))

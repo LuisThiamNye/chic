@@ -137,3 +137,5 @@
         (list 'let (into [] cat symbinds##)
            code##)
         code##))))
+
+(defmacro  <<- [& forms] `(->> ~@(reverse forms)))
