@@ -12,7 +12,7 @@
    [chic.windows :as windows])
   (:import
    (io.github.humbleui.jwm Window)
-   (io.github.humbleui.skija Paint Shader Canvas ClipMode Font ImageFilter)
+   (io.github.humbleui.skija Paint Shader Canvas ClipMode Font ImageFilter Path)
    (io.github.humbleui.types Rect Point)))
 
 ;; (fs/list-dir (io/file "."))
@@ -68,12 +68,16 @@
                                 x-inner (- x (* scale 2.))
                                 x-mid (- x (* scale 1.))]
                             (.drawRect cnv (Rect. x-inner  (:y rect) x-mid (:bottom rect))
-                                       (huipaint/fill (- col 0x90000000)))
+                                       (huipaint/fill (- col 0x20000000)))
                             (.drawRect cnv (Rect. x-mid (:y rect) x (:bottom rect))
                                       (huipaint/fill col))
                             (when (== r (dec n))
-                              (.drawRect cnv (Rect. x0 (:y rect) (+ x0 (* scale 1.)) (:bottom rect))
-                                        (huipaint/fill col)))))
+                              (.drawRect cnv (Rect. x0 (:y rect)
+                                                    (+ x0 (* scale 2.)) (:bottom rect))
+                                        (huipaint/fill col))
+                              (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
+                                                    (+ x0 (* scale 3.)) (:bottom rect))
+                                         (huipaint/fill (- col 0x90000000))))))
                         #_(when (< 0 n)
                           (.drawRect cnv (Rect. (:x rect) (:y rect)
                                                 (+ (:x rect) (+ 16. (* n idiff))
@@ -93,9 +97,49 @@
                                                 (+ -1 (:bottom rect)))
                                      (huipaint/fill buc)))
                         (when fil?
-                          (.drawRect cnv (Rect. x0 (- (:y rect) (* 2. scale)) (+ x0 8. (* n 8. scale))
-                                                (:y rect))
-                                     (huipaint/fill (nth icols (dec n)))))
+                          (let [stick-y (- (:y rect) (* (:height rect) 0.3))
+                                uh 4.]
+                            #_(.drawRect cnv (Rect. (+ 8. x0) (- (:y rect) (* uh scale))
+                                                  (+ x0 8. (* n 8. scale))
+                                                  (:y rect))
+                                       (huipaint/fill (- (nth icols (dec n))
+                                                         0xC0000000)))
+                            ;; underline
+                            (.drawPath cnv
+                                       (doto (Path.)
+                                         (.moveTo (+ x0 (* scale 10.))
+                                                  (- (:y rect) (* uh scale)))
+                                         (.lineTo (+ uh x0 8. (* n 8. scale))
+                                                  (- (:y rect) (* uh scale)))
+                                         (.lineTo (+ x0 8. (* n 8. scale))
+                                                  (:y rect))
+                                         (.lineTo (+ x0 (* scale 6.))
+                                                  (:y rect))
+                                         (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect))
+                                                  #_(Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2))))
+                                         (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
+                                       (huipaint/fill (- (nth icols (dec n))
+                                                         0xC0000000)))
+                            ;; tip behind
+                            (.drawRect cnv (Rect. (- x0 (* scale 2.))
+                                                  (+ 1. stick-y)
+                                                  (- x0 (* 1. scale))
+                                                  (:y rect))
+                                       (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
+                            ;; tip rect
+                            (.drawRect cnv (Rect. (- x0 (* scale 1.))
+                                                  stick-y
+                                                  (+ x0 (* 3. scale))
+                                                  (:y rect))
+                                       (huipaint/fill (nth icols (dec n))))
+                            ;; tip
+                            (.drawPath
+                             cnv (doto (Path.)
+                                   (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
+                                   (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
+                                   (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
+                                   (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
+                             (huipaint/fill (nth icols (dec n))))))
                         #_#_
                         (.drawRect cnv (Rect. (+ (:x rect) gl) (:bottom rect)
                                               (+ (:x rect) gl idiff) (+ 1 (:bottom rect)))
@@ -106,12 +150,12 @@
                                                   buc))))})
                   {})
                  (ui2/padded
-                  [(+ idnt 2.) 2. 0 0]
+                  [(+ idnt 2. 3.) 2. 0 0]
                   (ui2/sized-with
                    (fn [_] (Point. 16. 16.))
                    (ui2/svg-from-data (maticons/svg-data "folder" "outlined" "24px"))))
                  (ui2/padded
-                  [(+ idnt 20.) 1. 6. (+ 3 (Math/ceil (.getDescent (.getMetrics font))))]
+                  [(+ idnt 20. 3.) 1. 6. (+ 3 (Math/ceil (.getDescent (.getMetrics font))))]
                   (ui2/textline (uifont/shape-line-default font (fs/file-name f))
                                 (huipaint/fill 0xEc000000)))))))
             (map vector
