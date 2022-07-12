@@ -351,7 +351,7 @@
     (chic.debug/println-main "Event: " event)
     (when-let [changed? (huip/-event --app {:event event})]
       (huiwin/request-frame window)))
-  (def --window (atom nil)/
+  (def --window (atom nil))
 
   (defn --make-window []
     (let [screen (last (App/getScreens))

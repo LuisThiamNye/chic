@@ -25,7 +25,7 @@
          '[tech.droit.fset])
 (def *cider-nrepl-handler (dynaload 'cider.nrepl/cider-nrepl-handler {:default nil}))
 
-(set! *warn-on-reflection* true)
+;; (set! *warn-on-reflection* true)
 
 (require '[chic.debug.swap :as debug.swap])
 ;; (debug.swap/install-all-instrumentation!)

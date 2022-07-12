@@ -62,7 +62,6 @@
 
 (comment
   (#{'boolean}
-   (:tag (meta (first(nth (first (nnext (macroexpand-1 '(deftype+ j [^boolean XXXX]))))
-                     2)))))
+   (:tag (meta (ffirst (drop 2 (second (macroexpand-1 '(deftype+ j [^boolean XXXX]))))))))
   #!
   )

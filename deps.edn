@@ -1,7 +1,7 @@
 ;;
 {:paths ["src"]
 
- :deps {org.clojure/clojure                  {:mvn/version "1.11.1"}
+ :deps {org.clojure/clojure                  {:mvn/version "1.12.0-alpha1"}
         io.github.humbleui/humbleui {:git/url "https://github.com/HumbleUI/HumbleUI"
                                      :git/sha "4deed5195a61511c348c0799db118c5c25d73c04"}
         io.github.humbleui/types$clojure     {:mvn/version "0.1.2"}
@@ -13,19 +13,24 @@
         io.github.humbleui/skija-macos-x64   {:mvn/version "0.102.0" :exclusions [io.github.humbleui/types]}
         ;; io.github.humbleui/skija-macos-arm64 {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
         com.github.clojure-lsp/clojure-lsp {:mvn/version "2022.03.31-20.00.20"}
+        ;; org.bitbucket.mstrobel/procyon-compilertools {:mvn/version "0.6.0"}
+        zprint/zprint {:mvn/version "1.2.3"}
+        org.ow2.asm/asm {:mvn/version "9.3"}
+        org.ow2.asm/asm-tree {:mvn/version "9.3"}
+        insn/insn {:mvn/version "0.5.4"}
         ;; de.pitkley.jmccs/jmccs {:mvn/version "0.3.0"}
         ;; de.pitkley/jmccs-osx {:mvn/version "0.2.1"}
-        com.github.oshi/oshi-core {:mvn/version "6.1.6"}
-        net.java.dev.jna/jna  {:mvn/version "5.10.0"}
-        net.java.dev.jna/jna-platform  {:mvn/version "5.11.0"}
+        com.github.oshi/oshi-core {:mvn/version "6.2.1"}
+        net.java.dev.jna/jna  {:mvn/version "5.12.1"}
+        net.java.dev.jna/jna-platform  {:mvn/version "5.12.1"}
         com.ibm.icu/icu4j {:mvn/version "68.1"}
         proteus/proteus {:mvn/version "0.1.6"}
         clj-kondo/clj-kondo {:mvn/version "2022.03.09"}
         cnuernber/dtype-next {:mvn/version "9.026"}
-        babashka/fs {:mvn/version "0.1.4"}
+        babashka/fs {:mvn/version "0.1.6"}
         org.suskalo/farolero {:mvn/version "1.4.3"}
         cheshire/cheshire {:mvn/version "5.10.2"}
-        better-cond/better-cond {:mvn/version "2.1.4"}
+        better-cond/better-cond {:mvn/version "2.1.5"}
         criterium/criterium {:mvn/version "0.4.6"}
         io.lacuna/bifurcan {:mvn/version "0.2.0-alpha6"}
         ;; com.luisthiamnye/primitive-maths
@@ -38,8 +43,8 @@
         org.clojure/core.match {:mvn/version "1.0.0"}
         com.crypticbutter/snoop {:mvn/version "21-353-alpha"}
         tech.droit/fset {:mvn/version "0.1.1"}
-        town.lilac/cascade {:mvn/version "1.2.0"}
-        borkdude/dynaload {:mvn/version "0.2.2"}
+        town.lilac/cascade {:mvn/version "2.0.1"}
+        borkdude/dynaload {:mvn/version "0.3.4"}
         rewrite-clj/rewrite-clj {:mvn/version "1.0.767-alpha"}}
 
  :aliases {

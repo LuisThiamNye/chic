@@ -3,6 +3,9 @@
    [potemkin :refer [unify-gensyms doit]]
    [riddley.walk :as rwalk]))
 
+(def ^:constant phi-1 (double (/ (- (Math/sqrt 5) 1) 2)))
+(def ^:constant phi (double (/ (+ 1 (Math/sqrt 5)) 2)))
+
 (defn url->bytes [url]
   (with-open [^java.io.InputStream input-stream (.openStream (java.net.URL. url))]
     (loop [bs []]
