@@ -20,7 +20,15 @@
     (assoc m k v)))
 
 (defmacro compile [& body]
-  (eval `(do ~@body)))
+  (if (and (== 1 (count body))
+           (seq? (first body))
+           (symbol? (ffirst body))
+           (= #'fn (resolve (ffirst body))))
+    ((eval (first body)) &env)
+    (eval `(do ~@body))))
+
+(defmacro quoted [expr]
+  `(quote ~expr))
 
 (definterface IMutable
   (reset [v]))

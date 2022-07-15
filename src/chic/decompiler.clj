@@ -27,10 +27,7 @@
       (Compiler/compile (io/reader rdr) "result.clj" "result"))))
 
 (defn compiled-classfile-paths []
-  (let [paths (filterv #(= "class" (fs/extension %)) (fs/glob tmp-dir "**"))]
-    (if (== 1 (count paths))
-      paths
-      (filterv #(not= "result__init.class" (fs/file-name %)) paths))))
+  (filterv #(= "class" (fs/extension %)) (fs/glob tmp-dir "**")))
 
 (comment
   (clean-tmp-dir)

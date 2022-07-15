@@ -59,6 +59,7 @@
                        ;; "--add-modules=jdk.incubator.foreign"
                        "--enable-native-access=ALL-UNNAMED"
                        "-XX:+UseShenandoahGC"
+                       "-ea" ;; enable assertions
                        ]
             :main-opts   ["-m" "chic.main"]}
            ;;

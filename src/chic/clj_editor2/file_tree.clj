@@ -1,6 +1,7 @@
 (ns chic.clj-editor2.file-tree
   (:require
    [babashka.fs :as fs]
+   [chic.debug]
    [clojure.walk :as walk]
    [clojure.java.io :as io]
    [clojure.math :as math]
@@ -13,9 +14,11 @@
    [io.github.humbleui.window :as huiwin]
    [chic.paint :as cpaint]
    [chic.util :as util]
+   [potemkin :refer [doary doit]]
    [chic.windows :as windows])
   (:import
    (java.nio.file Files)
+   (io.lacuna.bifurcan List)
    (io.github.humbleui.jwm Window)
    (io.github.humbleui.skija.svg SVGDOM SVGSVG SVGLength)
    (io.github.humbleui.skija Paint Shader Canvas ClipMode Font ImageFilter Path Image Surface)
@@ -26,9 +29,10 @@
 #_(with-open [ds (Files/newDirectoryStream (fs/path "."))]
     (mapv str ds))
 
-(comment
+(do
   (def --code1
-    '(ui3/fnlet-widget
+    (util/quoted
+     (ui3/fnlet-widget
       (fn ui-icon-and-label
         [centre-y x height
          textblob text-paint cap-height wh->icon-image]
@@ -43,8 +47,9 @@
           {:draw
            (fn [cnv]
              (.drawImageRect cnv icon-image icon-image-rect)
-             (.drawTextBlob cnv textblob text-x baseline-y text-paint))}))))
-  (def ui-icon-and-label (eval --code1))
+             (.drawTextBlob cnv textblob text-x baseline-y text-paint))})))))
+  (def ui-icon-and-label (eval --code1)))
+(comment
   (binding [*print-meta* true]
     (chic.debug/println-main
      (zprint.core/zprint-str
@@ -58,20 +63,15 @@
   (map #(.getType ^java.lang.reflect.Field %)
        (.getDeclaredFields ^Class (resolve 'UiIconAndLabel)
                            #_(Class/forName (str (munge (str *ns*)) "." 'UiIconAndLabel))))
-
-  (deftype UiCmptIconAndLabel [^float baseline-y ^float text-x ^Image icon-image icon-image-rect]
-    (draw [_ cnv change-mask
-           centre-y x height textblob text-paint
-           cap-height wh->icon-image]
-      (when (< 0 change-mask)
-        (let [field-change-mask
-              (-> 0
-                  (cond-> (< 0 (bit-and change-mask 2r100001))
-                    (bit-or (do (set! baseline-y (+ centre-y (/ cap-height 2)))
-                                2r1))))]))
-      (.drawImageRect cnv icon-image icon-image-rect)
-      (.drawTextBlob cnv textblob text-x baseline-y text-paint))))
-
+  (bit-and java.lang.reflect.Modifier/STATIC
+           (.getModifiers (last (.getDeclaredFields ^Class (resolve 'UiIconAndLabel)
+                                                    #_(Class/forName (str (munge (str *ns*)) "." 'UiIconAndLabel))))))
+  UiIconAndLabel/const__11
+  #_(let [x 4]
+      deftype __X []
+      java.lang.AutoCloseable)
+  #!
+  )
 #_(let [s 10]
     (/ (.getCapHeight (.getMetrics (Font. style/face-code-default (float s))))
        s))
@@ -111,12 +111,12 @@
 (def calc-list-positions-fnsnip
   (fnlet-snippet
    (fn [rect visible-rect
-        nchildren offset-y offset-x item-height]
+        nchildren offset-y offset-x ^int item-height]
      (let [content-y (+ (:y rect) offset-y)
            first-visible-idx (max 0 (Math/floorDiv (unchecked-int (- (:y visible-rect) content-y)) item-height))
            last-visible-idxe (min nchildren
                                   (Math/ceilDiv (unchecked-int (- (min (:bottom rect) (:bottom visible-rect))
-                                                                   content-y))
+                                                                  content-y))
                                                 item-height))
            content-x (+ (:x rect) offset-x)]
        [first-visible-idx last-visible-idxe content-x content-y]))))
@@ -129,167 +129,316 @@
                (set (remove #(contains? input-smap %) input-syms))))
     `(let ~(into [] cat
                  (swap-let-binding-input-syms input-smap bindings))
-      ~(zipmap (map keyword ret-syms) ret-syms))))
+       ~(zipmap (map keyword ret-syms) ret-syms))))
+
+(defn bcoll-search-insertion-idx
+  ^long [^java.util.Comparator cmptor ^io.lacuna.bifurcan.ICollection coll k]
+  (loop [min-idx 0
+         max-idx (.size coll)]
+    (if (== min-idx max-idx)
+      max-idx
+      (let [idx (unchecked-add
+                 min-idx (unchecked-int
+                          (Math/floor (unchecked-multiply
+                                       util/phi-1 (unchecked-subtract max-idx min-idx)))))
+            item (.nth coll idx)]
+        (if (< 0 (.compare cmptor item k))
+          (recur min-idx idx)
+          (recur (unchecked-inc idx) max-idx))))))
 
 (comment
+  (let [lst (List/from [0 1 2 3 4 6 6 6 6 9 10])]
+    (and (= 9 (bcoll-search-insertion-idx compare lst 6))
+         (= 4 (bcoll-search-insertion-idx compare lst 3))
+         (= 0 (bcoll-search-insertion-idx compare lst -1))
+         (= 11 (bcoll-search-insertion-idx compare lst 11))))
+
   (let [offset-y 0 offset-x 0 item-height (int 10) visible-rect (Rect. 0 0 30 30) rect (Rect. 0 0 50 50)]
     (inline-fnsnip-multiretmap
      calc-list-positions-fnsnip
      [rect visible-rect offset-y offset-x item-height] {:nchildren 1}))
-  ;; detect Closeables
 
-  (deftype ___ [children]
-    (draw [_ ...]
-      (doit [c children]
-        (draw c ...)))
-    (recalculate [_ change-mask ...]
-      (bit-test change-mask 0))
-    (close [_] (doit [c children]
-                 (.close c))))
+;; use chunking for subview, but only draw visible
+  ;; for now, all file items in memory
+  (def --comparator)
+  (definterface IReplClass
+    (reset [paths])
+    (create [^java.nio.file.Path path])
+    (modify [^java.nio.file.Path path])
+    (delete [^java.nio.file.Path path]))
+  (deftype ReplClass [^:unsynchronized-mutable ^List file-names
+                      ^:unsynchronized-mutable ^List cmpts
+                      ^int cmpt-offset]
+    clojure.lang.ILookup
+    (valAt [self k] (.valAt self k nil))
+    (valAt [_ k nf]
+      (case k
+        :file-names file-names
+        :cmpts cmpts
+        nf))
 
-  (def ui-linear-treeview
-    (fnlet-widget
-     (fn [rect visible-rect scale
-          children-data offset-y offset-x item-height]
-       (let [{:keys [first-visible-idx last-visible-idxe content-x content-y]}
-             (let [nchildren (count children-data)]
-               (inline-fnsnip-multiretmap
-                calc-list-positions-fnsnip
-                [rect visible-rect offset-y offset-x item-height nchildren]))
-             font (Font. style/face-default ^float (* scale 14))
-             text-paint (huipaint/fill 0xEc000000)
-             ui-children (map-children-indexed
-                          {:keyfn :filename}
-                          (fn [i {:keys [filename]}]
-                            (ui-icon-and-label
-                             {:centre-y (+ content-y (* (+ 0.5 i) item-height))
-                              :x content-x
-                              :height item-height
-                              :textblob (.getTextBlob (uifont/shape-line-default font filename))
-                              :text-paint text-paint
-                              :cap-height (.getCapHeight (.getMetrics font))
-                              :wh->icon-image
-                              (fn [^int w ^int h]
-                                (with-open [surface (Surface/makeRasterN32Premul w h)]
-                                  (let [dom (with-open [data (maticons/svg-data (if (== 0 (math/round (rand)))
-                                                                                  "description"
-                                                                                  "folder") "outlined" "24px")]
-                                              (SVGDOM. data))
-                                        root (.getRoot dom)]
-                                    (.setWidth root (SVGLength. w))
-                                    (.setHeight root (SVGLength. h))
-                                    (.render dom (.getCanvas surface))
-                                    (.makeImageSnapshot surface))))}))
-                          children-data)]
-         {:draw
-          (fn [cnv]
-            (draw-children ui-children cnv))}))))
+    IReplClass
+    (reset [_ paths]
+      (let [file-names-tmp (.linear List/EMPTY)
+            a (to-array paths)]
+        (java.util.Arrays/sort a)
+        (doary [p a]
+          (.addLast file-names-tmp (fs/file-name p)))
+        (set! file-names (.forked file-names-tmp))))
 
-  (mapv
-   #(zipmap [:level :filename] %)
-   [[0 ".lsp"]
-    [0 "resources/clj"]
-    [0 "src"]
-    [1 "chic"]
-    [2 "clj"]
-    [2 "clj_editor"]
-    [3 "core.clj"]
-    [2 "controls"]
-    [3 "textbox"]
-    [4 "cursor.clj"]
-    [4 "keybindings.clj"]
-    [1 "oclj"]
-    [0 "dir-locals.el"]
-    [0 ".gitignore"]]))
+    (create [_ path]
+      (let [fname (fs/file-name path)
+            insert-idx (bcoll-search-insertion-idx
+                        (java.util.Comparator/naturalOrder) file-names fname)]
+        (set! file-names
+              (-> (.slice file-names 0 insert-idx)
+                  (.addLast fname)
+                  (.concat (.slice file-names insert-idx (.size file-names)))))))
 
-(defn a-view []
-  (let [font (Font. style/face-default (float 14))
-        ;; icols (mapv (fn [_] (cpaint/okhsv* (rand) 0.96 0.86)) (range 20))
-        icols (mapv (fn [r] (cpaint/okhsv* (* r 0.2) 0.96 0.86)) (range 20))
-        icon-label-gap 3.
-        item-pad-left 5.
-        icon-width 16.]
-    (ui2/on-mount
-     (fn [{:keys [scale]}]
-       (.setSize font (* 14. scale)))
-     (ui2/stack
-      (ui2/fill-rect (huipaint/fill (unchecked-int 0xFFeff2f7)))
-      ((ui2/direct-widget
-        {:draw (fn [_ _ rect cnv])}))
-      #_(ui2/column*
-       (mapv (fn [[f n p]]
-               (let [iw 2.
-                     idnt (* n iw)]
-                 (ui2/sized-with
-                  (fn [{:keys [scale]}]
-                    (Point. 400. (+ (* (or scale 1) 4.) (* (or scale 1.) (Math/ceil (.getHeight (.getMetrics font)))))))
-                  (ui2/stack
-                   ((ui2/direct-widget
-                     {:draw
-                      (fn [w {:keys [scale]} ^Rect rect ^Canvas cnv]
-                        (let [fil? (== p (dec n))
-                              x0 (+ (:x rect) idnt)]
-                          (dotimes [r n]
-                            (let [x (* (inc r) iw scale)
+    (modify [_ path])
+
+    (delete [_ path]
+      (let [fname (fs/file-name path)
+            idx (bcoll-search-insertion-idx
+                 (java.util.Comparator/naturalOrder) file-names fname)
+            size (.size file-names)]
+        (set! file-names
+              (-> (.slice file-names 0 idx)
+                  (cond-> (< idx size)
+                    (.concat (.slice file-names (unchecked-inc idx) size))))))))
+
+  (def --thing (->ReplClass List/EMPTY List/EMPTY 0))
+  (.create --thing (nth (fs/list-dir ".") 0))
+  (.reset --thing (take 3 (fs/list-dir ".")))
+  (doseq [p (drop 3 (fs/list-dir "."))]
+    (.create --thing p))
+
+  (seq (:file-names --thing))
+
+  (sort (fs/list-dir "."))
+
+  (let [lst (List/from [0 1 2 3 4])
+        lst2 (.slice lst 0 2)]
+    (.removeLast
+     (.concat (.addLast lst2 "x")
+              (.slice lst 2 5))))
+  #!
+  )
+
+;; (:input-syms ui-icon-and-label)
+(def ui-icon-and-label-apt
+  (ui3/fnlet-widget
+   (fn ui-icon-and-label-apt
+     [idx filename cap-height item-height content-y x text-paint font]
+     (let [textblob (.getTextBlob (uifont/shape-line-default font filename))
+           cmpt (ui3/new-cmpt ui-icon-and-label)]
+       {:draw
+        (fn [cnv]
+          (ui3/draw-cmpt
+           cnv cmpt
+           {:centre-y (+ content-y (* (+ 0.5 idx) item-height))
+            :x x
+            :height item-height
+            :textblob textblob
+            :text-paint text-paint
+            :cap-height cap-height
+            :wh->icon-image
+            (fn [^long w ^long h]
+              (let [w (unchecked-int w)
+                    h (unchecked-int h)]
+                (with-open [surface (Surface/makeRasterN32Premul w h)]
+                  (let [dom (with-open [data (maticons/svg-data (if (== 0 (math/round (rand)))
+                                                                  "description"
+                                                                  "folder") "outlined" "24px")]
+                              (SVGDOM. data))
+                        root (.getRoot ^SVGDOM dom)]
+                    (.setWidth root (SVGLength. w))
+                    (.setHeight root (SVGLength. h))
+                    (.render ^SVGDOM dom (.getCanvas surface))
+                    (.makeImageSnapshot surface)))))}))}))))
+
+;; detect Closeables
+
+(do
+  (def --tree-code
+    (util/quoted
+     (ui3/fnlet-widget
+      (fn ui-linear-treeview [^Rect rect ^Rect visible-rect ^float scale
+                              children-data ^int offset-y ^int offset-x ^int item-height]
+        (let [{:keys [first-visible-idx last-visible-idxe content-x content-y]}
+              (let [nchildren (count children-data)]
+                (inline-fnsnip-multiretmap
+                 calc-list-positions-fnsnip
+                 [rect visible-rect offset-y offset-x item-height nchildren]))
+              font (Font. style/face-default (unchecked-float
+                                              (unchecked-multiply scale (unchecked-float 14.))))
+              cap-height (.getCapHeight (.getMetrics font))
+              text-paint (huipaint/fill 0xEc000000)
+              #_#_ui-children (map-children-indexed
+                               {:keyfn :filename}
+
+                               children-data)]
+          {:draw
+           (fn [cnv]
+             (.drawRect cnv rect text-paint)
+             #_(draw-children ui-children cnv))})))))
+
+  (def ui-linear-treeview (eval --tree-code)))
+
+(comment
+  (binding [*print-meta* true]
+    (chic.debug/println-main
+     (zprint.core/zprint-str
+      (macroexpand --tree-code)
+      120)))
+
+  (instance? (:java-draw-interface ui-linear-treeview)
+             (:java-class ui-linear-treeview))
+  (instance? IUiLinearTreeview
+             UiLinearTreeview)
+  (.getClassLoader IUiLinearTreeview)
+  (.getClassLoader UiLinearTreeview)
+  (.getClassLoader (second (supers UiLinearTreeview)))
+  (contains? (supers UiLinearTreeview) IUiLinearTreeview)
+  (contains? (supers (:java-class ui-linear-treeview))
+             (:java-draw-interface ui-linear-treeview))
+  ;; (instance? IUiLinearTreeview (ui3/new-cmpt ui-linear-treeview))
+  (instance? (:java-draw-interface ui-linear-treeview)
+             (ui3/new-cmpt ui-linear-treeview))
+  ;; (cast IUiLinearTreeview (ui3/new-cmpt ui-linear-treeview))
+  (let [x (ui3/new-cmpt ui-linear-treeview)]
+    (.draw x nil 0 nil nil nil nil nil nil nil))
+  #!
+  )
+
+(do
+  (def --a-view-code
+    (util/quoted
+     (let [font (Font. style/face-default (float 14))
+           ;; icols (mapv (fn [_] (cpaint/okhsv* (rand) 0.96 0.86)) (range 20))
+           icols (mapv (fn [r] (cpaint/okhsv* (* r 0.2) 0.96 0.86)) (range 20))
+           icon-label-gap 3.
+           item-pad-left 5.
+           icon-width 16.
+           children-data (mapv
+                          #(zipmap [:level :filename] %)
+                          [[0 ".lsp"]
+                           [0 "resources/clj"]
+                           [0 "src"]
+                           [1 "chic"]
+                           [2 "clj"]
+                           [2 "clj_editor"]
+                           [3 "core.clj"]
+                           [2 "controls"]
+                           [3 "textbox"]
+                           [4 "cursor.clj"]
+                           [4 "keybindings.clj"]
+                           [1 "oclj"]
+                           [0 "dir-locals.el"]
+                           [0 ".gitignore"]])
+           ui-list (ui3/new-cmpt ui-linear-treeview)]
+       (ui2/on-mount
+        (fn [{:keys [scale]}]
+          (.setSize font (* 14. scale)))
+        (ui2/stack
+         (ui2/fill-rect (huipaint/fill (unchecked-int 0xFFeff2f7)))
+         (let [input-memory (ui3/cmpt-ext-input-memory ui-list)]
+           ((ui2/direct-widget
+             {:draw (fn [_ {:keys [scale]} rect ^Canvas cnv]
+                      (ui3/draw-cmpt-ext-memo
+                       ui-list cnv input-memory
+                       {:rect rect
+                        :visible-rect rect
+                        :scale scale
+                        :children-data children-data
+                        :offset-y 0.
+                        :offset-x 0.
+                        :item-height 40.}))}) {})))))))
+
+  (defn a-view []
+    (util/compile --a-view-code)))
+(comment
+  (vec (.getParameterTypes (first (.getDeclaredMethods IUiLinearTreeview))))
+
+  (chic.debug/println-main
+   (zprint.core/zprint-str
+    (clojure.tools.analyzer.jvm/macroexpand-all
+     ))))
+
+#_(ui2/column*
+   (mapv (fn [[f n p]]
+           (let [iw 2.
+                 idnt (* n iw)]
+             (ui2/sized-with
+              (fn [{:keys [scale]}]
+                (Point. 400. (+ (* (or scale 1) 4.) (* (or scale 1.) (Math/ceil (.getHeight (.getMetrics font)))))))
+              (ui2/stack
+               ((ui2/direct-widget
+                 {:draw
+                  (fn [w {:keys [scale]} ^Rect rect ^Canvas cnv]
+                    (let [fil? (== p (dec n))
+                          x0 (+ (:x rect) idnt)]
+                      (dotimes [r n]
+                        (let [x (* (inc r) iw scale)
                                   ;; col (if (even? r) buc (unchecked-int 0xFFd88013))
                                   ;; col (cpaint/okhsv* (rand) 0.96 0.86)
-                                  col (nth icols r)
-                                  x-inner (- x (* scale 2.))
-                                  x-mid (- x (* scale 1.))]
-                              (.drawRect cnv (Rect. x-inner (:y rect) x-mid (:bottom rect))
-                                         (huipaint/fill (- col 0x20000000)))
-                              (.drawRect cnv (Rect. x-mid (:y rect) x (:bottom rect))
-                                         (huipaint/fill col))
-                              (when (== r (dec n))
-                                (.drawRect cnv (Rect. x0 (:y rect)
-                                                      (+ x0 (* scale 2.)) (:bottom rect))
-                                           (huipaint/fill col))
-                                (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
-                                                      (+ x0 (* scale 3.)) (:bottom rect))
-                                           (huipaint/fill (- col 0x90000000))))))
-                          (when fil?
-                            (let [stick-y (- (:y rect) (* (:height rect) 0.3))
-                                  uh 4.]
+                              col (nth icols r)
+                              x-inner (- x (* scale 2.))
+                              x-mid (- x (* scale 1.))]
+                          (.drawRect cnv (Rect. x-inner (:y rect) x-mid (:bottom rect))
+                                     (huipaint/fill (- col 0x20000000)))
+                          (.drawRect cnv (Rect. x-mid (:y rect) x (:bottom rect))
+                                     (huipaint/fill col))
+                          (when (== r (dec n))
+                            (.drawRect cnv (Rect. x0 (:y rect)
+                                                  (+ x0 (* scale 2.)) (:bottom rect))
+                                       (huipaint/fill col))
+                            (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
+                                                  (+ x0 (* scale 3.)) (:bottom rect))
+                                       (huipaint/fill (- col 0x90000000))))))
+                      (when fil?
+                        (let [stick-y (- (:y rect) (* (:height rect) 0.3))
+                              uh 4.]
                               ;; underline
-                              (.drawPath cnv
-                                         (doto (Path.)
-                                           (.moveTo (+ x0 (* scale 10.))
-                                                    (- (:y rect) (* uh scale)))
-                                           (.lineTo (+ uh x0 8. (* n 8. scale))
-                                                    (- (:y rect) (* uh scale)))
-                                           (.lineTo (+ x0 8. (* n 8. scale))
-                                                    (:y rect))
-                                           (.lineTo (+ x0 (* scale 6.))
-                                                    (:y rect))
-                                           (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                                           (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
-                                         (huipaint/fill (- (nth icols (dec n))
-                                                           0xC0000000)))
+                          (.drawPath cnv
+                                     (doto (Path.)
+                                       (.moveTo (+ x0 (* scale 10.))
+                                                (- (:y rect) (* uh scale)))
+                                       (.lineTo (+ uh x0 8. (* n 8. scale))
+                                                (- (:y rect) (* uh scale)))
+                                       (.lineTo (+ x0 8. (* n 8. scale))
+                                                (:y rect))
+                                       (.lineTo (+ x0 (* scale 6.))
+                                                (:y rect))
+                                       (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
+                                       (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
+                                     (huipaint/fill (- (nth icols (dec n))
+                                                       0xC0000000)))
                               ;; tip behind
-                              (.drawRect cnv (Rect. (- x0 (* scale 2.))
-                                                    (+ 1. stick-y)
-                                                    (- x0 (* 1. scale))
-                                                    (:y rect))
-                                         (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
+                          (.drawRect cnv (Rect. (- x0 (* scale 2.))
+                                                (+ 1. stick-y)
+                                                (- x0 (* 1. scale))
+                                                (:y rect))
+                                     (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
                               ;; tip rect
-                              (.drawRect cnv (Rect. (- x0 (* scale 1.))
-                                                    stick-y
-                                                    (+ x0 (* 3. scale))
-                                                    (:y rect))
-                                         (huipaint/fill (nth icols (dec n))))
+                           (.drawRect cnv (Rect. (- x0 (* scale 1.))
+                                                stick-y
+                                                (+ x0 (* 3. scale))
+                                                (:y rect))
+                                     (huipaint/fill (nth icols (dec n))))
                               ;; tip
-                              (.drawPath
-                               cnv (doto (Path.)
-                                     (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
-                                     (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
-                                     (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                                     (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
-                               (huipaint/fill (nth icols (dec n))))))))})
-                    {})))))
-             (map vector
-                  (fs/list-dir (io/file "."))
-                  [0 0 0 1 1 2 3 4 4 1 2 2 2 1]
-                  [0 0 0 0 1 1 2 3 4 4 1 2 2 2])))))))
+                          (.drawPath
+                           cnv (doto (Path.)
+                                 (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
+                                 (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
+                                 (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
+                                 (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
+                           (huipaint/fill (nth icols (dec n))))))))})
+                {})))))
+         (map vector
+              (fs/list-dir (io/file "."))
+              [0 0 0 1 1 2 3 4 4 1 2 2 2 1]
+              [0 0 0 0 1 1 2 3 4 4 1 2 2 2])))
 
 (comment
   (windows/remount-all-windows)
@@ -312,6 +461,9 @@ lazy loading & watching:
     if so, get first/last child and recur
   chunking.
 "
+
+  ;; idea: initConstants method for component so consumer can pass inputs that do not change
+  ;; so the component can initialise fields that depend only on the constant inputs
   #!
   )
 (comment

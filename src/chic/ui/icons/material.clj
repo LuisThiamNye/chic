@@ -53,7 +53,7 @@
            "/materialicons" (if (= "filled" style) "" style)
            "/" size ".svg")))))
 
-(defn svg-data [title style size]
+(defn ^Data svg-data [title style size]
   #_(str "https://github.com/google/material-design-icons/tree/4.0.0/font/MaterialIcons"
        (case style
          "filled" ""
