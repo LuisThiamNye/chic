@@ -52,7 +52,74 @@
       "boolean" false
       "char" (unchecked-char 0))))
 
-(defmacro fnlet-widget [fexpr]
+(defn fnlet-widget-to-code*
+  [{:keys [bindings input-chmask-sym c-sym bindings-anas
+           unchanged-intf? i-sym body-ana draw-param-vec
+           raw-input-syms input-syms retexpr]}]
+  (let [draw-body (next (drop-while (complement vector?) (:draw retexpr)))
+        field-vec (mapv (fn [{:keys [^Class tag sym]}]
+                          (with-meta sym {:tag (symbol (.getName tag))
+                                          :unsynchronized-mutable true})) bindings)
+        field-chmask-sym (gensym "field-chmask")
+        fch-conds (remove
+                   nil?
+                   (map-indexed
+                    (fn [i {:keys [sym vexpr arg-deps-mask field-depmask]}]
+                      (let [arg-check (when-not (== 0 arg-deps-mask)
+                                        `(not (== 0 (bit-and ~input-chmask-sym ~arg-deps-mask))))
+                            field-check (when-not (== 0 field-depmask)
+                                          `(not (== 0 (bit-and ~field-chmask-sym ~field-depmask))))]
+                        (when (or arg-check field-check)
+                          `(as-> ~field-chmask-sym
+                                 (cond-> ~field-chmask-sym
+                                   ~(if (and arg-check field-check)
+                                      `(or ~arg-check ~field-check)
+                                      (or arg-check field-check))
+                                   (do (set! ~sym ~vexpr)
+                                       (bit-set ~field-chmask-sym ~i)))))))
+                    bindings))]
+    `(do
+      ~(when-not unchanged-intf?
+         `(definterface ~i-sym
+            (~'draw ~draw-param-vec)))
+      (eval
+       '(do
+          (deftype ~c-sym ~field-vec
+            ~i-sym
+            (draw ~(into ['_] (map #(with-meta % nil)) draw-param-vec)
+              (let [~field-chmask-sym
+                    ~(if (empty? fch-conds)
+                       ~(int 0)
+                       `(cond-> ~(int 0)
+                          (not (== 0 ~input-chmask-sym))
+                          (-> ~@fch-conds)))]
+                ~(binding
+                   [*component-ctx* {:raw-body-ana body-ana
+                                     :inputs (vec (map-indexed (fn [i sym] {:sym sym
+                                                                            :arg-id i})
+                                                               raw-input-syms))
+                                     :fields (mapv (fn [ana] {:ana-name (:name ana)
+                                                              :sym (:form ana)})
+                                                   bindings-anas)
+                                     :input-chmask-sym input-chmask-sym
+                                     :field-chmask-sym field-chmask-sym}]
+                   (ana/macroexpand-all `(do ~@draw-body)
+                                        (-> body-ana :env))))))
+          (let [ret# {:java-draw-interface (resolve '~i-sym)
+                      :java-class (resolve '~c-sym)
+                      ;; :classloader (.getContextClassLoader (Thread/currentThread))
+                      :constructor
+                      (fn [] (new ~c-sym ~@(map (fn [{:keys [arg-deps field-deps vexpr tag]}]
+                                                 (if (and (empty? arg-deps) (empty? field-deps))
+                                                   vexpr
+                                                   (class-default-value tag)))
+                                               bindings)))
+                      :input-syms '~input-syms}]
+            (swap! *class->cmpt assoc
+                   (.getName ^Class (resolve '~i-sym)) ret#)
+            ret#))))))
+
+(defn fnlet-widget-parse* [fexpr & [&env]]
   (let [raw-input-syms (first (filter vector? fexpr))
         input-syms (vec (sort raw-input-syms))
         kebab->pascal (fn [s] (str/replace s #"(?:^|-)([a-z])"
@@ -76,26 +143,33 @@
                             (gensym sym)
                             sym)
                       arg-deps (java.util.ArrayList.)
-                      field-deps (java.util.ArrayList.)]
-                  (ana.ast/prewalk
-                   init (fn [a]
-                          (cond
-                            (= :arg (:local a))
-                            (.add arg-deps (:form a))
-                            (.contains -visited-syms (:name a))
-                            (.add field-deps (:form a)))
-                          a))
+                      field-deps (java.util.ArrayList.)
+                      input-ana-names (set (map :name (:params method-ana)))
+                      _ (ana.ast/prewalk
+                         init (fn [a]
+                                (cond
+                                  (contains? input-ana-names (:name a))
+                                  (.add arg-deps (:form a))
+                                  (.contains -visited-syms (:name a))
+                                  (.add field-deps (:form a)))
+                                a))
+                      field-deps (set field-deps)]
                   (.add -visited-syms (:name ana))
                   (.add -visited-local-syms sym)
                   {:tag tag :sym sym
                    :vexpr vexpr
                    :arg-deps (set arg-deps)
-                   :field-deps (set field-deps)
-                   :arg-deps-mask (reduce (fn [acc sym]
-                                            (+ acc (bit-shift-left
-                                                    1 (util/index-of input-syms sym))))
-                                          0
-                                          arg-deps)}))
+                   :field-deps field-deps
+                   :arg-deps-mask
+                   (reduce (fn [acc input-sym]
+                             (bit-set acc (util/index-of input-syms input-sym)))
+                           0 arg-deps)
+                   :field-depmask
+                   (reduce + (remove nil?
+                                     (map-indexed
+                                      (fn [i {:keys [form]}]
+                                        (when (contains? field-deps form) i))
+                                      bindings-anas)))}))
               (eduction (partition-all 2) (second expr-let))
               bindings-anas)
         i-sym (symbol (str "I" nsym))
@@ -121,92 +195,29 @@
                                         (catch NoClassDefFoundError _
                                           ;; When existing interface is invalid
                                           nil)))))
-        expr-defint (when-not unchanged-intf?
-                      `(definterface ~i-sym
-                         (~'draw ~draw-param-vec)))
-        draw-body (next (drop-while (complement vector?) (:draw retexpr)))
-        field-vec (mapv (fn [{:keys [^Class tag sym]}]
-                          (with-meta sym {:tag (symbol (.getName tag))
-                                          :unsynchronized-mutable true})) bindings)
-        field-chmask-sym (gensym "field-chmask")
-        body-ana (-> method-ana :body :body)
-        fch-conds (remove
-                   nil?
-                   (map-indexed
-                    (fn [i {:keys [sym vexpr field-deps arg-deps-mask]}]
-                      (let [field-deps-mask
-                            (reduce + (remove nil?
-                                              (map-indexed
-                                               (fn [i {:keys [sym]}]
-                                                 (when (contains? field-deps sym) i))
-                                               bindings)))
-                            arg-check (when (< 0 arg-deps-mask)
-                                        `(< 0 (bit-and ~input-chmask-sym ~arg-deps-mask)))
-                            field-check (when (< 0 field-deps-mask)
-                                          `(< 0 (bit-and ~field-chmask-sym ~field-deps-mask)))]
-                        (when (or arg-check field-check)
-                          `(as-> ~field-chmask-sym
-                                 (cond-> ~field-chmask-sym
-                                   ~(if (and arg-check field-check)
-                                      `(or ~arg-check ~field-check)
-                                      (or arg-check field-check))
-                                   (do (set! ~sym ~vexpr)
-                                       (bit-set ~field-chmask-sym ~i)))))))
-                    bindings))]
-    `(do
-       ~expr-defint
-       (eval
-        '(do
-           (deftype ~nsym ~field-vec
-             ~i-sym
-             (draw ~(into ['_] (map #(with-meta % nil)) draw-param-vec)
-               (let [~field-chmask-sym
-                     ~(if (empty? fch-conds)
-                        0
-                        `(cond-> 0
-                           (< 0 ~input-chmask-sym)
-                           (-> ~@fch-conds)))]
-                 ~(binding
-                   [*component-ctx* {:raw-body-ana body-ana
-                                     :inputs (vec (map-indexed (fn [i sym] {:sym sym
-                                                                            :arg-id i})
-                                                               raw-input-syms))
-                                     :fields (mapv (fn [ana] {:ana-name (:name ana)
-                                                              :sym (:form ana)})
-                                                   bindings-anas)
-                                     :input-chmask-sym input-chmask-sym
-                                     :field-chmask-sym field-chmask-sym}]
-                    (ana/macroexpand-all `(do ~@draw-body)
-                                         (-> body-ana :env))))))
-           (let [ret# {:java-draw-interface (resolve '~i-sym)
-                       :java-class (resolve '~nsym)
-                       ;; :classloader (.getContextClassLoader (Thread/currentThread))
-                       :constructor
-                       (fn [] (new ~nsym ~@(map (fn [{:keys [arg-deps field-deps vexpr tag]}]
-                                                  (if (and (empty? arg-deps) (empty? field-deps))
-                                                    vexpr
-                                                    (class-default-value tag)))
-                                                bindings)))
-                       :input-syms '~input-syms}]
-             (swap! *class->cmpt assoc
-                    (.getName ^Class (resolve '~i-sym)) ret#)
-             ret#))))))
+        body-ana (-> method-ana :body :body)]
+    {:body-ana body-ana
+     :c-sym nsym
+     :bindings-anas bindings-anas
+     :retexpr retexpr
+     :bindings bindings
+     :raw-input-syms raw-input-syms
+     :input-syms input-syms
+     :unchanged-intf? unchanged-intf?
+     :i-sym i-sym
+     :input-chmask-sym input-chmask-sym
+     :draw-param-vec draw-param-vec}))
 
-(defmacro new-cmpt [cmpt-sym]
-  (let [cmpt @(resolve cmpt-sym)]
-    (with-meta `((:constructor ~cmpt-sym))
-      {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))
-       #_(:java-draw-interface cmpt)})))
+(defmacro fnlet-widget [fexpr]
+  (fnlet-widget-to-code* (fnlet-widget-parse* fexpr &env)))
 
 (defn draw-cmpt* [{:keys [raw-body-ana inputs fields
                           input-chmask-sym field-chmask-sym]}
-                  cmpt canvas-sym cmpt-sym argmap]
+                  cmpt canvas-sym cmpt-expr argmap]
   (let [param-syms (:input-syms cmpt)
         argmap-ana (let [*ret (volatile! nil)]
                      (ana.ast/prewalk raw-body-ana
                                       (fn [node]
-                                        (when (= argmap (:form node))
-                                          (chic.debug/println-main "ok"))
                                         (if (identical? argmap (:form node))
                                           (reduced (vreset! *ret node))
                                           node)))
@@ -257,15 +268,16 @@
                                         ([acc expr]
                                          `(bit-and ~acc ~expr)))
                                       (remove nil? (map (fn [[sym mask]]
-                                                          (when (< 0 mask)
+                                                          (when-not (== 0 mask)
                                                             `(bit-and ~sym ~mask)))
                                                         [[input-chmask-sym input-depmask]
                                                          [field-chmask-sym field-depmask]])))]
                           (when depmask-expr
-                            `(cond-> (< 0 ~depmask-expr)
+                            `(cond-> (not (== 0 ~depmask-expr))
                                (bit-set ~i)))))
                       args)))]
-    `(.draw ~cmpt-sym ~canvas-sym ~chmask-expr ~@(map :expr args))))
+    `(.draw ~(with-meta cmpt-expr {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})
+            ~canvas-sym ~chmask-expr ~@(map :expr args))))
 (comment
   (do (def --argmap '{:c 1 :b x :a (+ x y 4)})
       (def --argmapana (ana/analyze `(let [~'x 10 ~'y 20]
@@ -327,15 +339,27 @@
       (resolve tag)
       tag)))
 
-(defn resolve-cmpt [sym env]
-  (class->cmpt (env-binding->tag (env sym))))
+(defmacro new-cmpt [cmpt-sym]
+  (let [cmpt @(resolve cmpt-sym)]
+    (with-meta `((:constructor ~cmpt-sym))
+      {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})))
 
-(defmacro draw-cmpt [cnv-sym cmpt-sym argmap]
+(defn resolve-cmpt [expr env]
+  (or (let [sym (:cmpt (meta expr))
+            r (when (symbol? sym)
+                (resolve sym))]
+        (when (var? r)
+          @r))
+      (when (symbol? expr)
+        (class->cmpt (env-binding->tag (env expr))))
+      (throw (ex-info (str "Could not resolve component: " expr) {}))))
+
+(defmacro draw-cmpt [cmpt-expr cnv-sym argmap]
   (if (:fake? *component-ctx*)
     `(do ~argmap nil)
-    (let [cmpt (resolve-cmpt cmpt-sym &env)]
+    (let [cmpt (resolve-cmpt cmpt-expr &env)]
       (draw-cmpt* *component-ctx* cmpt
-                  cnv-sym cmpt-sym argmap))))
+                  cnv-sym cmpt-expr argmap))))
 
 (defn draw-cmpt-external*
   [cmpt cnv cmpt-sym chmask-expr argvec argmap]

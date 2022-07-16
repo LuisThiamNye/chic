@@ -1,4 +1,7 @@
 (ns chic.debug
+  (:require
+   [puget.printer :as puget]
+   [puget.color.ansi])
   (:import
    (java.lang StackWalker StackWalker$Option)
    (io.github.humbleui.jwm App)))
@@ -126,3 +129,68 @@
 
 #!
   )
+
+(alter-var-root
+ #'puget.color.ansi/sgr-code
+ (constantly
+  {:none        0
+   :bold        1
+   :underline   3
+   :blink       5
+   :reverse     7
+   :hidden      8
+   :strike      9
+   :black      30
+   :red        31
+   :green      32
+   :yellow     33
+   :blue       34
+   :magenta    35
+   :cyan       36
+   :white      37
+   :fg-256     38
+   :fg-reset   39
+   :bg-black   40
+   :bg-red     41
+   :bg-green   42
+   :bg-yellow  43
+   :bg-blue    44
+   :bg-magenta 45
+   :bg-cyan    46
+   :bg-white   47
+   :bg-256     48
+   :bg-reset   49
+   :dark-grey  90
+   :br-red     91
+   :br-green   92
+   :br-yellow  93
+   :br-blue    94
+   :br-magenta 95
+   :br-cyan    96
+   :br-white   97
+}))
+
+(alter-var-root
+ #'puget/*options*
+ (fn [opts]
+   (puget/merge-options
+    opts
+    {:print-color true
+     :color-scheme
+     {:delimiter [:bold :dark-grey]
+      :tag       [:blue]
+
+      :nil       [:magenta]
+      :boolean   [:br-magenta]
+      :number    [:br-cyan]
+      :string    [:bg-green]
+      :character [:bg-green]
+      :keyword   [:br-magenta]
+      :symbol    nil
+
+      :function-symbol [:br-yellow]
+      :class-delimiter [:dark-grey]
+      :class-name      [:bold :br-red]}})))
+
+(defn puget-prn [x]
+  (println-main (puget/pprint-str x)))

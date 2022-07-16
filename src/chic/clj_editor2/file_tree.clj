@@ -1,7 +1,7 @@
 (ns chic.clj-editor2.file-tree
   (:require
    [babashka.fs :as fs]
-   [chic.debug]
+   [chic.debug :as debug]
    [clojure.walk :as walk]
    [clojure.java.io :as io]
    [clojure.math :as math]
@@ -23,58 +23,6 @@
    (io.github.humbleui.skija.svg SVGDOM SVGSVG SVGLength)
    (io.github.humbleui.skija Paint Shader Canvas ClipMode Font ImageFilter Path Image Surface)
    (io.github.humbleui.types Rect Point)))
-
-;; (fs/list-dir (io/file "."))
-
-#_(with-open [ds (Files/newDirectoryStream (fs/path "."))]
-    (mapv str ds))
-
-(do
-  (def --code1
-    (util/quoted
-     (ui3/fnlet-widget
-      (fn ui-icon-and-label
-        [centre-y x height
-         textblob text-paint cap-height wh->icon-image]
-        (let [baseline-y (+ centre-y (/ cap-height 2))
-              text-x (+ x (* util/phi height))
-              icon-image (let [length (min height (* 1.2 cap-height))]
-                           ^Image (wh->icon-image length length))
-              icon-image-rect
-              (let [iheight (.getHeight icon-image)
-                    iwidth (.getWidth icon-image)]
-                (Rect/makeXYWH (+ x (/ (- height iwidth) 2)) (- centre-y (/ iheight 2)) iwidth iheight))]
-          {:draw
-           (fn [cnv]
-             (.drawImageRect cnv icon-image icon-image-rect)
-             (.drawTextBlob cnv textblob text-x baseline-y text-paint))})))))
-  (def ui-icon-and-label (eval --code1)))
-(comment
-  (binding [*print-meta* true]
-    (chic.debug/println-main
-     (zprint.core/zprint-str
-      (macroexpand-1
-       --code1)
-      120)))
-
-  (def --c1 (resolve 'UiIconAndLabel))
-  (= --c1 (resolve 'UiIconAndLabel))
-
-  (map #(.getType ^java.lang.reflect.Field %)
-       (.getDeclaredFields ^Class (resolve 'UiIconAndLabel)
-                           #_(Class/forName (str (munge (str *ns*)) "." 'UiIconAndLabel))))
-  (bit-and java.lang.reflect.Modifier/STATIC
-           (.getModifiers (last (.getDeclaredFields ^Class (resolve 'UiIconAndLabel)
-                                                    #_(Class/forName (str (munge (str *ns*)) "." 'UiIconAndLabel))))))
-  UiIconAndLabel/const__11
-  #_(let [x 4]
-      deftype __X []
-      java.lang.AutoCloseable)
-  #!
-  )
-#_(let [s 10]
-    (/ (.getCapHeight (.getMetrics (Font. style/face-code-default (float s))))
-       s))
 
 (defn swap-let-binding-input-syms [smap bindings]
   (:bindings
@@ -108,19 +56,6 @@
              :bindings ~bindings
              :ret-syms ~ret-syms-set})))
 
-(def calc-list-positions-fnsnip
-  (fnlet-snippet
-   (fn [rect visible-rect
-        nchildren offset-y offset-x ^int item-height]
-     (let [content-y (+ (:y rect) offset-y)
-           first-visible-idx (max 0 (Math/floorDiv (unchecked-int (- (:y visible-rect) content-y)) item-height))
-           last-visible-idxe (min nchildren
-                                  (Math/ceilDiv (unchecked-int (- (min (:bottom rect) (:bottom visible-rect))
-                                                                  content-y))
-                                                item-height))
-           content-x (+ (:x rect) offset-x)]
-       [first-visible-idx last-visible-idxe content-x content-y]))))
-
 (defmacro inline-fnsnip-multiretmap [varsym direct-syms & [smap]]
   (let [{:keys [bindings input-syms ret-syms]} @(resolve varsym)
         smap (or smap {})
@@ -131,101 +66,33 @@
                  (swap-let-binding-input-syms input-smap bindings))
        ~(zipmap (map keyword ret-syms) ret-syms))))
 
-(defn bcoll-search-insertion-idx
-  ^long [^java.util.Comparator cmptor ^io.lacuna.bifurcan.ICollection coll k]
-  (loop [min-idx 0
-         max-idx (.size coll)]
-    (if (== min-idx max-idx)
-      max-idx
-      (let [idx (unchecked-add
-                 min-idx (unchecked-int
-                          (Math/floor (unchecked-multiply
-                                       util/phi-1 (unchecked-subtract max-idx min-idx)))))
-            item (.nth coll idx)]
-        (if (< 0 (.compare cmptor item k))
-          (recur min-idx idx)
-          (recur (unchecked-inc idx) max-idx))))))
+(do
+  (def --code1
+    (util/quoted
+     (ui3/fnlet-widget
+      (fn ui-icon-and-label
+        [centre-y x height
+         textblob text-paint cap-height wh->icon-image]
+        (let [baseline-y (+ centre-y (/ cap-height 2))
+              icon-length (min height (* 1.2 cap-height))
+              icon-image ^Image (wh->icon-image icon-length icon-length)
+              icon-x (+ x (/ (- height icon-length) 2))
+              text-x (+ icon-x (* util/phi icon-length))
+              icon-image-rect
+              (let [iheight (.getHeight icon-image)
+                    iwidth (.getWidth icon-image)]
+                (Rect/makeXYWH icon-x (- centre-y (/ iheight 2)) iwidth iheight))]
+          {:draw
+           (fn [cnv]
+             (.drawImageRect cnv icon-image icon-image-rect)
+             (.drawTextBlob cnv textblob text-x baseline-y text-paint))})))))
+  (def ui-icon-and-label (eval --code1)))
 
 (comment
-  (let [lst (List/from [0 1 2 3 4 6 6 6 6 9 10])]
-    (and (= 9 (bcoll-search-insertion-idx compare lst 6))
-         (= 4 (bcoll-search-insertion-idx compare lst 3))
-         (= 0 (bcoll-search-insertion-idx compare lst -1))
-         (= 11 (bcoll-search-insertion-idx compare lst 11))))
-
-  (let [offset-y 0 offset-x 0 item-height (int 10) visible-rect (Rect. 0 0 30 30) rect (Rect. 0 0 50 50)]
-    (inline-fnsnip-multiretmap
-     calc-list-positions-fnsnip
-     [rect visible-rect offset-y offset-x item-height] {:nchildren 1}))
-
-;; use chunking for subview, but only draw visible
-  ;; for now, all file items in memory
-  (def --comparator)
-  (definterface IReplClass
-    (reset [paths])
-    (create [^java.nio.file.Path path])
-    (modify [^java.nio.file.Path path])
-    (delete [^java.nio.file.Path path]))
-  (deftype ReplClass [^:unsynchronized-mutable ^List file-names
-                      ^:unsynchronized-mutable ^List cmpts
-                      ^int cmpt-offset]
-    clojure.lang.ILookup
-    (valAt [self k] (.valAt self k nil))
-    (valAt [_ k nf]
-      (case k
-        :file-names file-names
-        :cmpts cmpts
-        nf))
-
-    IReplClass
-    (reset [_ paths]
-      (let [file-names-tmp (.linear List/EMPTY)
-            a (to-array paths)]
-        (java.util.Arrays/sort a)
-        (doary [p a]
-          (.addLast file-names-tmp (fs/file-name p)))
-        (set! file-names (.forked file-names-tmp))))
-
-    (create [_ path]
-      (let [fname (fs/file-name path)
-            insert-idx (bcoll-search-insertion-idx
-                        (java.util.Comparator/naturalOrder) file-names fname)]
-        (set! file-names
-              (-> (.slice file-names 0 insert-idx)
-                  (.addLast fname)
-                  (.concat (.slice file-names insert-idx (.size file-names)))))))
-
-    (modify [_ path])
-
-    (delete [_ path]
-      (let [fname (fs/file-name path)
-            idx (bcoll-search-insertion-idx
-                 (java.util.Comparator/naturalOrder) file-names fname)
-            size (.size file-names)]
-        (set! file-names
-              (-> (.slice file-names 0 idx)
-                  (cond-> (< idx size)
-                    (.concat (.slice file-names (unchecked-inc idx) size))))))))
-
-  (def --thing (->ReplClass List/EMPTY List/EMPTY 0))
-  (.create --thing (nth (fs/list-dir ".") 0))
-  (.reset --thing (take 3 (fs/list-dir ".")))
-  (doseq [p (drop 3 (fs/list-dir "."))]
-    (.create --thing p))
-
-  (seq (:file-names --thing))
-
-  (sort (fs/list-dir "."))
-
-  (let [lst (List/from [0 1 2 3 4])
-        lst2 (.slice lst 0 2)]
-    (.removeLast
-     (.concat (.addLast lst2 "x")
-              (.slice lst 2 5))))
+  (binding [*print-meta* true])
   #!
   )
 
-;; (:input-syms ui-icon-and-label)
 (def ui-icon-and-label-apt
   (ui3/fnlet-widget
    (fn ui-icon-and-label-apt
@@ -234,8 +101,9 @@
            cmpt (ui3/new-cmpt ui-icon-and-label)]
        {:draw
         (fn [cnv]
+          ;; (debug/println-main content-y idx)
           (ui3/draw-cmpt
-           cnv cmpt
+           cmpt cnv
            {:centre-y (+ content-y (* (+ 0.5 idx) item-height))
             :x x
             :height item-height
@@ -257,7 +125,18 @@
                     (.render ^SVGDOM dom (.getCanvas surface))
                     (.makeImageSnapshot surface)))))}))}))))
 
-;; detect Closeables
+(def calc-list-positions-fnsnip
+  (fnlet-snippet
+   (fn [rect visible-rect
+        nchildren offset-y offset-x ^int item-height]
+     (let [content-y (+ (:y rect) offset-y)
+           first-visible-idx (max 0 (Math/floorDiv (unchecked-int (- (:y visible-rect) content-y)) item-height))
+           last-visible-idxe (min nchildren
+                                  (Math/ceilDiv (unchecked-int (- (min (:bottom rect) (:bottom visible-rect))
+                                                                  content-y))
+                                                item-height))
+           content-x (+ (:x rect) offset-x)]
+       [first-visible-idx last-visible-idxe content-x content-y]))))
 
 (do
   (def --tree-code
@@ -270,44 +149,36 @@
                 (inline-fnsnip-multiretmap
                  calc-list-positions-fnsnip
                  [rect visible-rect offset-y offset-x item-height nchildren]))
-              font (Font. style/face-default (unchecked-float
-                                              (unchecked-multiply scale (unchecked-float 14.))))
+              font (Font. style/face-default
+                          (unchecked-float
+                           (unchecked-multiply
+                            scale (unchecked-float
+                                   (uifont/caph->size style/face-default 10.)))))
               cap-height (.getCapHeight (.getMetrics font))
               text-paint (huipaint/fill 0xEc000000)
-              #_#_ui-children (map-children-indexed
-                               {:keyfn :filename}
-
-                               children-data)]
+              ui-children (mapv (fn [x] (ui3/new-cmpt ui-icon-and-label-apt))
+                                children-data)]
           {:draw
            (fn [cnv]
-             (.drawRect cnv rect text-paint)
-             #_(draw-children ui-children cnv))})))))
-
+             (dotimes [i (count ui-children)]
+               (let [{:keys [level filename]} (nth children-data i)]
+                 (ui3/draw-cmpt ^{:cmpt ui-icon-and-label-apt}
+                                (nth ui-children i) cnv
+                               {:idx i
+                                :filename filename
+                                :cap-height cap-height
+                                :item-height item-height
+                                :content-y content-y
+                                :x (+ (* scale 2 level) content-x)
+                                :text-paint text-paint
+                                :font font}))))})))))
   (def ui-linear-treeview (eval --tree-code)))
 
 (comment
   (binding [*print-meta* true]
-    (chic.debug/println-main
-     (zprint.core/zprint-str
-      (macroexpand --tree-code)
-      120)))
-
-  (instance? (:java-draw-interface ui-linear-treeview)
-             (:java-class ui-linear-treeview))
-  (instance? IUiLinearTreeview
-             UiLinearTreeview)
-  (.getClassLoader IUiLinearTreeview)
-  (.getClassLoader UiLinearTreeview)
-  (.getClassLoader (second (supers UiLinearTreeview)))
-  (contains? (supers UiLinearTreeview) IUiLinearTreeview)
-  (contains? (supers (:java-class ui-linear-treeview))
-             (:java-draw-interface ui-linear-treeview))
-  ;; (instance? IUiLinearTreeview (ui3/new-cmpt ui-linear-treeview))
-  (instance? (:java-draw-interface ui-linear-treeview)
-             (ui3/new-cmpt ui-linear-treeview))
-  ;; (cast IUiLinearTreeview (ui3/new-cmpt ui-linear-treeview))
-  (let [x (ui3/new-cmpt ui-linear-treeview)]
-    (.draw x nil 0 nil nil nil nil nil nil nil))
+    (debug/puget-prn
+     (macroexpand --tree-code)))
+  (-> (ui3/fnlet-widget-parse* (second --tree-code)))
   #!
   )
 
@@ -317,9 +188,7 @@
      (let [font (Font. style/face-default (float 14))
            ;; icols (mapv (fn [_] (cpaint/okhsv* (rand) 0.96 0.86)) (range 20))
            icols (mapv (fn [r] (cpaint/okhsv* (* r 0.2) 0.96 0.86)) (range 20))
-           icon-label-gap 3.
-           item-pad-left 5.
-           icon-width 16.
+           item-pad-left 2
            children-data (mapv
                           #(zipmap [:level :filename] %)
                           [[0 ".lsp"]
@@ -353,17 +222,10 @@
                         :children-data children-data
                         :offset-y 0.
                         :offset-x 0.
-                        :item-height 40.}))}) {})))))))
+                        :item-height (Integer. (int (* scale 20)))}))}) {})))))))
 
   (defn a-view []
     (util/compile --a-view-code)))
-(comment
-  (vec (.getParameterTypes (first (.getDeclaredMethods IUiLinearTreeview))))
-
-  (chic.debug/println-main
-   (zprint.core/zprint-str
-    (clojure.tools.analyzer.jvm/macroexpand-all
-     ))))
 
 #_(ui2/column*
    (mapv (fn [[f n p]]
@@ -443,6 +305,9 @@
 (comment
   (windows/remount-all-windows)
 
+  ;; detect Closeables
+  ;; identify temp bindings that are not used in the draw function - make them local, not fields
+
 ;; ideas:
   ;; fade out underscore when folder not expanded
 
@@ -503,5 +368,101 @@ lazy loading & watching:
     (draw [_ inputs... ^Canvas cnv]
       '...)
     (recalculate [_ inputs... change-mask]))
+  #!
+  )
+
+(defn bcoll-search-insertion-idx
+  ^long [^java.util.Comparator cmptor ^io.lacuna.bifurcan.ICollection coll k]
+  (loop [min-idx 0
+         max-idx (.size coll)]
+    (if (== min-idx max-idx)
+      max-idx
+      (let [idx (unchecked-add
+                 min-idx (unchecked-int
+                          (Math/floor (unchecked-multiply
+                                       util/phi-1 (unchecked-subtract max-idx min-idx)))))
+            item (.nth coll idx)]
+        (if (< 0 (.compare cmptor item k))
+          (recur min-idx idx)
+          (recur (unchecked-inc idx) max-idx))))))
+
+(comment
+  (let [lst (List/from [0 1 2 3 4 6 6 6 6 9 10])]
+    (and (= 9 (bcoll-search-insertion-idx compare lst 6))
+         (= 4 (bcoll-search-insertion-idx compare lst 3))
+         (= 0 (bcoll-search-insertion-idx compare lst -1))
+         (= 11 (bcoll-search-insertion-idx compare lst 11))))
+
+;; use chunking for subview, but only draw visible
+  ;; for now, all file items in memory
+  (def --comparator)
+  (definterface IReplClass
+    (reset [paths])
+    (create [^java.nio.file.Path path])
+    (modify [^java.nio.file.Path path])
+    (delete [^java.nio.file.Path path]))
+  (deftype ReplClass [^:unsynchronized-mutable ^List file-names
+                      ^:unsynchronized-mutable ^List cmpts
+                      ^int cmpt-offset]
+    clojure.lang.ILookup
+    (valAt [self k] (.valAt self k nil))
+    (valAt [_ k nf]
+      (case k
+        :file-names file-names
+        :cmpts cmpts
+        nf))
+
+    IReplClass
+    (reset [_ paths]
+      (let [file-names-tmp (.linear List/EMPTY)
+            a (to-array paths)]
+        (java.util.Arrays/sort a)
+        (doary [p a]
+          (.addLast file-names-tmp (fs/file-name p)))
+        (set! file-names (.forked file-names-tmp))))
+
+    (create [_ path]
+      (let [fname (fs/file-name path)
+            insert-idx (bcoll-search-insertion-idx
+                        (java.util.Comparator/naturalOrder) file-names fname)]
+        (set! file-names
+              (-> (.slice file-names 0 insert-idx)
+                  (.addLast fname)
+                  (.concat (.slice file-names insert-idx (.size file-names)))))))
+
+    (modify [_ path])
+
+    (delete [_ path]
+      (let [fname (fs/file-name path)
+            idx (bcoll-search-insertion-idx
+                 (java.util.Comparator/naturalOrder) file-names fname)
+            size (.size file-names)]
+        (set! file-names
+              (-> (.slice file-names 0 idx)
+                  (cond-> (< idx size)
+                    (.concat (.slice file-names (unchecked-inc idx) size))))))))
+
+  (def --thing (->ReplClass List/EMPTY List/EMPTY 0))
+  (.create --thing (nth (fs/list-dir ".") 0))
+  (.reset --thing (take 3 (fs/list-dir ".")))
+  (doseq [p (drop 3 (fs/list-dir "."))]
+    (.create --thing p))
+
+  (seq (:file-names --thing))
+
+  (sort (fs/list-dir "."))
+
+  (let [lst (List/from [0 1 2 3 4])
+        lst2 (.slice lst 0 2)]
+    (.removeLast
+     (.concat (.addLast lst2 "x")
+              (.slice lst 2 5))))
+
+  ;; (fs/list-dir (io/file "."))
+
+  #_(with-open [ds (Files/newDirectoryStream (fs/path "."))]
+      (mapv str ds))
+
+
   #!
   )
