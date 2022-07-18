@@ -260,7 +260,10 @@
   (binding [*print-meta* true]
     (debug/puget-prn
      (macroexpand --tree-code)))
-  (-> (ui3/fnlet-widget-parse* (second --tree-code)))
+  (def --data (ui3/fnlet-widget-parse* (second --tree-code)))
+  (-> --data
+      :bindings butlast last)
+
 
   (def --data (debug/with-capture-data
                 (macroexpand --tree-code)))
@@ -288,11 +291,6 @@
                             [0 "dir-locals.el"]
                             [0 ".gitignore"]]))
 
-(comment
-
-#!
-  )
-
 (do
   (def --a-view-code
     (util/quoted
@@ -316,74 +314,13 @@
                         :offset-y 0.
                         :offset-x 0.
                         :item-height (Integer. (int (* scale 20)))}))}) {})))))))
-
   (defn a-view []
     (util/compile --a-view-code)))
 
 (comment
-  (mapv (fn [[f n p]]
-          (let [iw 2.
-                idnt (* n iw)]
-            (fn [w {:keys [scale]} ^Rect rect ^Canvas cnv]
-              (let [fil? (== p (dec n))
-                    x0 (+ (:x rect) idnt)]
-                (dotimes [r n]
-                  (let [x (* (inc r) iw scale)
-                        col (nth icols r)
-                        x-inner (- x (* scale 2.))
-                        x-mid (- x (* scale 1.))]
-                    (when (== r (dec n))
-                      (.drawRect cnv (Rect. x0 (:y rect)
-                                            (+ x0 (* scale 2.)) (:bottom rect))
-                                 (huipaint/fill col))
-                      (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
-                                            (+ x0 (* scale 3.)) (:bottom rect))
-                                 ))))
-                (when fil?
-                  (let [stick-y (- (:y rect) (* (:height rect) 0.3))
-                        uh 4.]
-                    ;; underline
-                    (.drawPath cnv
-                               (doto (Path.)
-                                 (.moveTo (+ x0 (* scale 10.))
-                                          (- (:y rect) (* uh scale)))
-                                 (.lineTo (+ uh x0 8. (* n 8. scale))
-                                          (- (:y rect) (* uh scale)))
-                                 (.lineTo (+ x0 8. (* n 8. scale))
-                                          (:y rect))
-                                 (.lineTo (+ x0 (* scale 6.))
-                                          (:y rect))
-                                 (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                                 (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
-                               (huipaint/fill (- (nth icols (dec n))
-                                                 0xC0000000)))
-                    ;; tip behind
-                    (.drawRect cnv (Rect. (- x0 (* scale 2.))
-                                          (+ 1. stick-y)
-                                          (- x0 (* 1. scale))
-                                          (:y rect))
-                               (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
-                    ;; tip rect
-                    (.drawRect cnv (Rect. (- x0 (* scale 1.))
-                                          stick-y
-                                          (+ x0 (* 3. scale))
-                                          (:y rect))
-                               (huipaint/fill (nth icols (dec n))))
-                    ;; tip
-                    (.drawPath
-                     cnv (doto (Path.)
-                           (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
-                           (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
-                           (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                           (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
-                     (huipaint/fill (nth icols (dec n))))))))))
-        (map vector
-             (fs/list-dir (io/file "."))
-             [0 0 0 1 1 2 3 4 4 1 2 2 2 1]
-             [0 0 0 0 1 1 2 3 4 4 1 2 2 2])))
-
-(comment
   (windows/remount-all-windows)
+  (debug/puget-prn
+   (clojure.tools.analyzer.jvm/macroexpand-all --a-view-code))
 
   ;; detect Closeables
   ;; identify temp bindings that are not used in the draw function - make them local, not fields

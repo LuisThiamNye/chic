@@ -18,6 +18,7 @@
    [clojure.tools.analyzer.utils :as ana.util]
    [clojure.tools.analyzer.ast :as ana.ast]
    [clojure.tools.analyzer.passes.jvm.infer-tag :as ana.jvm.infer-tag]
+   [clojure.tools.analyzer.passes.jvm.constant-lifter :as anap.constant-lifter]
    [clj-commons.primitive-math :as prim]
    [io.github.humbleui.core :as hui :refer [deftype+]]
    [io.github.humbleui.protocols :as huip :refer [IComponent]]
@@ -64,9 +65,9 @@
         fch-conds (remove
                    nil?
                    (map-indexed
-                    (fn [i {:keys [sym vexpr arg-deps-mask field-depmask]}]
-                      (let [arg-check (when-not (== 0 arg-deps-mask)
-                                        `(not (== 0 (bit-and ~input-chmask-sym ~arg-deps-mask))))
+                    (fn [i {:keys [sym vexpr input-depmask field-depmask]}]
+                      (let [arg-check (when-not (== 0 input-depmask)
+                                        `(not (== 0 (bit-and ~input-chmask-sym ~input-depmask))))
                             field-check (when-not (== 0 field-depmask)
                                           `(not (== 0 (bit-and ~field-chmask-sym ~field-depmask))))]
                         (when (or arg-check field-check)
@@ -160,16 +161,15 @@
                    :vexpr vexpr
                    :arg-deps (set arg-deps)
                    :field-deps field-deps
-                   :arg-deps-mask
+                   :input-depmask
                    (reduce (fn [acc input-sym]
                              (bit-set acc (util/index-of input-syms input-sym)))
                            0 arg-deps)
                    :field-depmask
-                   (reduce + (remove nil?
-                                     (map-indexed
-                                      (fn [i {:keys [form]}]
-                                        (when (contains? field-deps form) i))
-                                      bindings-anas)))}))
+                   (reduce (fn [acc [i {:keys [form]}]]
+                             (cond-> acc (contains? field-deps form)
+                                     (bit-set i)))
+                           0 (map-indexed vector bindings-anas))}))
               (eduction (partition-all 2) (second expr-let))
               bindings-anas)
         i-sym (symbol (str "I" nsym))
@@ -279,54 +279,6 @@
     (debug/report-data :draw-cmpt {:args args})
     `(.draw ~(with-meta cmpt-expr {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})
             ~canvas-sym ~chmask-expr ~@(map :expr args))))
-(comment
-  (do (def --argmap '{:c 1 :b x :a (+ x y 4)})
-      (def --argmapana (ana/analyze `(let [~'x 10 ~'y 20]
-                                       ~--argmap))))
-  (let [x 5]
-    (util/compile
-     (fn [&env]
-       (type (&env 'x)))))
-
-  (-> --argmapana
-      :body map?)
-  (reduce bit-and [])
-
-  (chic.debug/println-main
-   (zprint.core/zprint-str
-    (draw-cmpt* {:form-ana {:args ['... (-> --argmapana :body)]}
-                 :inputs []
-                 :fields []
-                 :input-chmask-sym 'input-chmask
-                 :field-chmask-sym 'field-chmask}
-                {:input-syms ['a 'b 'c]} 'cnv 'cmpt --argmap)))
-
-  (clojure.tools.analyzer.passes.jvm.emit-form/emit-form
-   (ana.ast/postwalk
-    (ana/analyze '(let [a 9]
-                    (into 1 2 3)))
-    (fn [ana]
-      (if (= #'into (:var (:fn ana)))
-        (assoc ana :raw-forms '((+ 3)))
-        ana))))
-
-  (-> (ana/analyze '(let [a 9]
-                      (transduce 1 2 -)))
-      :body :form)
-  (let [code '(let [a 9]
-                (into 1 2 3))
-        *out (atom nil)]
-    (ana.ast/postwalk
-     (ana/analyze code)
-     (fn [ana]
-       (if (identical? (:form ana) (last code))
-         (reset! *out ana)
-         ana)))
-    (-> @*out
-        :op))
-
-  #!
-  )
 
 (defn env-binding->tag ^Class [binding]
   (let [tag (util/local-binding-tag binding)]
@@ -409,10 +361,15 @@
           (map-indexed
            (fn [i sym]
              (let [vexpr (argmap (keyword sym))]
-               (if (= :const (:op (ana/analyze
-                                   vexpr (assoc (ana/empty-env)
-                                                :locals (update-vals
-                                                         &env util/localbinding->ana-ast)))))
+               (if (= :const
+                      (:op (binding [ana/run-passes
+                                     (ana.passes/schedule
+                                      #{#'anap.constant-lifter/constant-lift})]
+                             (ana/analyze
+                             vexpr (assoc (ana/empty-env)
+                                          :locals
+                                          (update-vals
+                                           &env util/localbinding->ana-ast))))))
                  {:const? true :i i}
                  {:i i :sym sym :val-sym (if (symbol? vexpr)
                                            vexpr
@@ -426,12 +383,13 @@
           argmap (reduce (fn [m {:keys [sym val-sym]}]
                            (assoc m (keyword sym) val-sym))
                          argmap varexpr-inputs)
-          chmask-bindings (mapcat (fn [{:keys [val-sym i]}]
-                                    `[chmask## (if (identical? ~val-sym (aget ~argary ~i))
-                                                 chmask##
-                                                 (do (aset ~argary ~i ~val-sym)
-                                                     (bit-set chmask## ~i)))])
-                                  variable-inputs)]
+          chmask-bindings
+          (mapcat (fn [{:keys [val-sym i]}]
+                    `[chmask## (if (identical? ~val-sym (aget ~argary ~(unchecked-int i)))
+                                 chmask##
+                                 (do (aset ~argary ~(unchecked-int i) ~val-sym)
+                                     (bit-set chmask## ~i)))])
+                  variable-inputs)]
       `(let [~@(mapcat (fn [{:keys [vexpr val-sym]}]
                          [val-sym vexpr])
                        varexpr-inputs)
@@ -439,11 +397,9 @@
                          `(if (nil? (aget ~argary ~init-idx))
                             (do (aset ~argary ~init-idx true)
                                 Integer/MAX_VALUE)
-                            (let [chmask## ~(unchecked-int 0)
-                                  ~@chmask-bindings]
-                              chmask##))
-                         ~(unchecked-int 0))
-             ~@(when-not init-idx chmask-bindings)]
+                            ~(unchecked-int 0))
+                         (unchecked-int 0))
+             ~@chmask-bindings]
          ~(draw-cmpt-external* cmpt cnv cmpt-sym `chmask## [] argmap)))))
 
 (comment
