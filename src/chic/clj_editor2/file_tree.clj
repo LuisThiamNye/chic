@@ -13,7 +13,7 @@
    [io.github.humbleui.paint :as huipaint]
    [io.github.humbleui.window :as huiwin]
    [chic.paint :as cpaint]
-   [chic.util :as util]
+   [chic.util :as util :refer [doit-zip]]
    [potemkin :refer [doary doit]]
    [chic.windows :as windows])
   (:import
@@ -21,7 +21,7 @@
    (io.lacuna.bifurcan List)
    (io.github.humbleui.jwm Window)
    (io.github.humbleui.skija.svg SVGDOM SVGSVG SVGLength)
-   (io.github.humbleui.skija Paint Shader Canvas ClipMode Font ImageFilter Path Image Surface)
+   (io.github.humbleui.skija PaintStrokeCap Paint Shader Canvas ClipMode Font ImageFilter Path Image Surface)
    (io.github.humbleui.types Rect Point)))
 
 (defn swap-let-binding-input-syms [smap bindings]
@@ -115,9 +115,7 @@
               (let [w (unchecked-int w)
                     h (unchecked-int h)]
                 (with-open [surface (Surface/makeRasterN32Premul w h)]
-                  (let [dom (with-open [data (maticons/svg-data (if (== 0 (math/round (rand)))
-                                                                  "description"
-                                                                  "folder") "outlined" "24px")]
+                  (let [dom (with-open [data (maticons/svg-data "description" "outlined" "24px")]
                               (SVGDOM. data))
                         root (.getRoot ^SVGDOM dom)]
                     (.setWidth root (SVGLength. w))
@@ -138,6 +136,78 @@
            content-x (+ (:x rect) offset-x)]
        [first-visible-idx last-visible-idxe content-x content-y]))))
 
+(def icols (mapv (fn [r] (cpaint/okhsv* (* r 0.2) 0.96 0.86)) (range 20)))
+
+(do
+  (def --indent-vline-code
+    (util/quoted
+     (ui3/fnlet-widget
+      (fn ui-indent-vline
+        [^float scale ^float content-x level ^float first-child-top ^float parent-top
+         ^float last-child-bottom]
+        (let [indent-x (+ content-x (* level 2. scale))
+              icon-centre-y (float (/ (+ first-child-top parent-top) 2))
+              icon-centre-x (float (+ indent-x (/ (- first-child-top parent-top) 2)))
+              thickness (* 3. scale)
+              botrad (+ thickness (* scale 2.))
+              vline-rect (Rect. indent-x first-child-top
+                                (+ indent-x thickness) (- last-child-bottom botrad))
+              vline-bleed-rect (Rect. (+ indent-x thickness) first-child-top
+                                      (+ indent-x thickness (* scale 1.)) last-child-bottom)
+              vline-shine-rect (Rect. indent-x first-child-top
+                                      (+ indent-x (* scale 1.)) (- last-child-bottom botrad))
+              paint (doto (huipaint/fill (nth icols level))
+                      (.setStrokeWidth thickness)
+                      (.setStrokeCap PaintStrokeCap/ROUND))
+              shine-paint (huipaint/fill 0x10ffffff)
+              bleed-paint (huipaint/fill (- (nth icols level) 0x90000000))
+              bottom-path (doto (Path.)
+                            (.moveTo indent-x (- last-child-bottom botrad))
+                            (.arcTo (Rect. indent-x (- last-child-bottom (* 2 botrad))
+                                           (+ indent-x (* 2 botrad)) last-child-bottom)
+                                    180. -90. false)
+                            (.lineTo (+ indent-x thickness botrad) last-child-bottom)
+                            (.lineTo (+ indent-x thickness) (- last-child-bottom botrad)))]
+          {:draw
+           (fn [cnv]
+             (.drawLine cnv icon-centre-x icon-centre-y
+                        (+ indent-x (* 0.5 thickness)) first-child-top
+                        paint)
+             (.drawCircle cnv icon-centre-x icon-centre-y (* 1.5 scale thickness) paint)
+             (.drawRect cnv vline-bleed-rect bleed-paint)
+             (.drawRect cnv vline-rect paint)
+             (.drawRect cnv vline-shine-rect shine-paint)
+             (.drawPath cnv bottom-path paint))})))))
+  (def ui-indent-vline (eval --indent-vline-code)))
+
+(comment
+  (binding [*print-meta* true *unchecked-math* true]
+    (debug/puget-prn (macroexpand --indent-vline-code)))
+  #!
+  )
+
+(defn children-data->group-ranges [children-data]
+  (let [it (util/to-iter children-data)]
+    (loop [i 0 prev-level nil
+           parents []
+           groups []]
+      (let [child (util/iter-next it)]
+        (if-some [level (or (:level child)
+                            (when (== i (count children-data)) 0))]
+          (let [level-change (- level (or prev-level level))]
+            (recur (unchecked-inc i)
+                   level
+                   (if (== 1 level-change)
+                     (conj parents (dec i))
+                     (subvec parents 0 (+ (count parents) (min 0 level-change))))
+                   (if (< level-change 0)
+                     (into groups (map (fn [p] [p i]))
+                           (subvec parents
+                                   (+ (count parents) level-change)
+                                   (count parents)))
+                     groups)))
+          (vec (sort-by first groups)))))))
+
 (do
   (def --tree-code
     (util/quoted
@@ -157,21 +227,33 @@
               cap-height (.getCapHeight (.getMetrics font))
               text-paint (huipaint/fill 0xEc000000)
               ui-children (mapv (fn [x] (ui3/new-cmpt ui-icon-and-label-apt))
-                                children-data)]
+                                children-data)
+              group-ranges (children-data->group-ranges children-data)
+              vline-cmpts (mapv (fn [_] (ui3/new-cmpt ui-indent-vline))
+                                group-ranges)]
           {:draw
            (fn [cnv]
-             (dotimes [i (count ui-children)]
-               (let [{:keys [level filename]} (nth children-data i)]
-                 (ui3/draw-cmpt ^{:cmpt ui-icon-and-label-apt}
-                                (nth ui-children i) cnv
-                               {:idx i
-                                :filename filename
-                                :cap-height cap-height
-                                :item-height item-height
-                                :content-y content-y
-                                :x (+ (* scale 2 level) content-x)
-                                :text-paint text-paint
-                                :font font}))))})))))
+             (doit-zip [{:keys [level filename]} (eduction children-data)
+                        i (util/int-range-it)]
+               (ui3/draw-cmpt ^{:cmpt ui-icon-and-label-apt}
+                (nth ui-children i) cnv
+                              {:idx i
+                               :filename filename
+                               :cap-height cap-height
+                               :item-height item-height
+                               :content-y content-y
+                               :x (+ (* scale 2 level) content-x)
+                               :text-paint text-paint
+                               :font font}))
+             (doit-zip [[start ende] ^Iterable group-ranges
+                        cmpt ^Iterable vline-cmpts]
+               (ui3/draw-cmpt ^{:cmpt ui-indent-vline} cmpt cnv
+                              {:scale scale
+                               :content-x content-x
+                               :level (:level (nth children-data start))
+                               :first-child-top (+ content-y (* item-height (inc start)))
+                               :parent-top (+ content-y (* item-height start))
+                               :last-child-bottom (+ content-y (* item-height ende))})))})))))
   (def ui-linear-treeview (eval --tree-code)))
 
 (comment
@@ -179,32 +261,43 @@
     (debug/puget-prn
      (macroexpand --tree-code)))
   (-> (ui3/fnlet-widget-parse* (second --tree-code)))
+
+  (def --data (debug/with-capture-data
+                (macroexpand --tree-code)))
+  (-> --data :draw-cmpt last :args
+      (->> (filter (comp #{'parent-top} :sym)))
+      first)
+
   #!
+  )
+
+(def sample-children-data (mapv
+                           #(zipmap [:level :filename] %)
+                           [[0 ".lsp"]
+                            [0 "resources/clj"]
+                            [0 "src"]
+                            [1 "chic"]
+                            [2 "clj"]
+                            [2 "clj_editor"]
+                            [3 "core.clj"]
+                            [2 "controls"]
+                            [3 "textbox"]
+                            [4 "cursor.clj"]
+                            [4 "keybindings.clj"]
+                            [1 "oclj"]
+                            [0 "dir-locals.el"]
+                            [0 ".gitignore"]]))
+
+(comment
+
+#!
   )
 
 (do
   (def --a-view-code
     (util/quoted
      (let [font (Font. style/face-default (float 14))
-           ;; icols (mapv (fn [_] (cpaint/okhsv* (rand) 0.96 0.86)) (range 20))
-           icols (mapv (fn [r] (cpaint/okhsv* (* r 0.2) 0.96 0.86)) (range 20))
-           item-pad-left 2
-           children-data (mapv
-                          #(zipmap [:level :filename] %)
-                          [[0 ".lsp"]
-                           [0 "resources/clj"]
-                           [0 "src"]
-                           [1 "chic"]
-                           [2 "clj"]
-                           [2 "clj_editor"]
-                           [3 "core.clj"]
-                           [2 "controls"]
-                           [3 "textbox"]
-                           [4 "cursor.clj"]
-                           [4 "keybindings.clj"]
-                           [1 "oclj"]
-                           [0 "dir-locals.el"]
-                           [0 ".gitignore"]])
+           children-data sample-children-data
            ui-list (ui3/new-cmpt ui-linear-treeview)]
        (ui2/on-mount
         (fn [{:keys [scale]}]
@@ -227,80 +320,67 @@
   (defn a-view []
     (util/compile --a-view-code)))
 
-#_(ui2/column*
-   (mapv (fn [[f n p]]
-           (let [iw 2.
-                 idnt (* n iw)]
-             (ui2/sized-with
-              (fn [{:keys [scale]}]
-                (Point. 400. (+ (* (or scale 1) 4.) (* (or scale 1.) (Math/ceil (.getHeight (.getMetrics font)))))))
-              (ui2/stack
-               ((ui2/direct-widget
-                 {:draw
-                  (fn [w {:keys [scale]} ^Rect rect ^Canvas cnv]
-                    (let [fil? (== p (dec n))
-                          x0 (+ (:x rect) idnt)]
-                      (dotimes [r n]
-                        (let [x (* (inc r) iw scale)
-                                  ;; col (if (even? r) buc (unchecked-int 0xFFd88013))
-                                  ;; col (cpaint/okhsv* (rand) 0.96 0.86)
-                              col (nth icols r)
-                              x-inner (- x (* scale 2.))
-                              x-mid (- x (* scale 1.))]
-                          (.drawRect cnv (Rect. x-inner (:y rect) x-mid (:bottom rect))
-                                     (huipaint/fill (- col 0x20000000)))
-                          (.drawRect cnv (Rect. x-mid (:y rect) x (:bottom rect))
-                                     (huipaint/fill col))
-                          (when (== r (dec n))
-                            (.drawRect cnv (Rect. x0 (:y rect)
-                                                  (+ x0 (* scale 2.)) (:bottom rect))
-                                       (huipaint/fill col))
-                            (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
-                                                  (+ x0 (* scale 3.)) (:bottom rect))
-                                       (huipaint/fill (- col 0x90000000))))))
-                      (when fil?
-                        (let [stick-y (- (:y rect) (* (:height rect) 0.3))
-                              uh 4.]
-                              ;; underline
-                          (.drawPath cnv
-                                     (doto (Path.)
-                                       (.moveTo (+ x0 (* scale 10.))
-                                                (- (:y rect) (* uh scale)))
-                                       (.lineTo (+ uh x0 8. (* n 8. scale))
-                                                (- (:y rect) (* uh scale)))
-                                       (.lineTo (+ x0 8. (* n 8. scale))
-                                                (:y rect))
-                                       (.lineTo (+ x0 (* scale 6.))
-                                                (:y rect))
-                                       (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                                       (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
-                                     (huipaint/fill (- (nth icols (dec n))
-                                                       0xC0000000)))
-                              ;; tip behind
-                          (.drawRect cnv (Rect. (- x0 (* scale 2.))
-                                                (+ 1. stick-y)
-                                                (- x0 (* 1. scale))
-                                                (:y rect))
-                                     (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
-                              ;; tip rect
-                           (.drawRect cnv (Rect. (- x0 (* scale 1.))
-                                                stick-y
-                                                (+ x0 (* 3. scale))
-                                                (:y rect))
-                                     (huipaint/fill (nth icols (dec n))))
-                              ;; tip
-                          (.drawPath
-                           cnv (doto (Path.)
-                                 (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
-                                 (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
+(comment
+  (mapv (fn [[f n p]]
+          (let [iw 2.
+                idnt (* n iw)]
+            (fn [w {:keys [scale]} ^Rect rect ^Canvas cnv]
+              (let [fil? (== p (dec n))
+                    x0 (+ (:x rect) idnt)]
+                (dotimes [r n]
+                  (let [x (* (inc r) iw scale)
+                        col (nth icols r)
+                        x-inner (- x (* scale 2.))
+                        x-mid (- x (* scale 1.))]
+                    (when (== r (dec n))
+                      (.drawRect cnv (Rect. x0 (:y rect)
+                                            (+ x0 (* scale 2.)) (:bottom rect))
+                                 (huipaint/fill col))
+                      (.drawRect cnv (Rect. (+ x0 (* scale 2.)) (:y rect)
+                                            (+ x0 (* scale 3.)) (:bottom rect))
+                                 ))))
+                (when fil?
+                  (let [stick-y (- (:y rect) (* (:height rect) 0.3))
+                        uh 4.]
+                    ;; underline
+                    (.drawPath cnv
+                               (doto (Path.)
+                                 (.moveTo (+ x0 (* scale 10.))
+                                          (- (:y rect) (* uh scale)))
+                                 (.lineTo (+ uh x0 8. (* n 8. scale))
+                                          (- (:y rect) (* uh scale)))
+                                 (.lineTo (+ x0 8. (* n 8. scale))
+                                          (:y rect))
+                                 (.lineTo (+ x0 (* scale 6.))
+                                          (:y rect))
                                  (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
-                                 (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
-                           (huipaint/fill (nth icols (dec n))))))))})
-                {})))))
-         (map vector
-              (fs/list-dir (io/file "."))
-              [0 0 0 1 1 2 3 4 4 1 2 2 2 1]
-              [0 0 0 0 1 1 2 3 4 4 1 2 2 2])))
+                                 (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5)))))
+                               (huipaint/fill (- (nth icols (dec n))
+                                                 0xC0000000)))
+                    ;; tip behind
+                    (.drawRect cnv (Rect. (- x0 (* scale 2.))
+                                          (+ 1. stick-y)
+                                          (- x0 (* 1. scale))
+                                          (:y rect))
+                               (huipaint/fill (- (nth icols (dec n)) 0x20000000)))
+                    ;; tip rect
+                    (.drawRect cnv (Rect. (- x0 (* scale 1.))
+                                          stick-y
+                                          (+ x0 (* 3. scale))
+                                          (:y rect))
+                               (huipaint/fill (nth icols (dec n))))
+                    ;; tip
+                    (.drawPath
+                     cnv (doto (Path.)
+                           (.moveTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.5))))
+                           (.lineTo (Point. (- x0 (* scale 1.)) (- (:y rect) (* (:height rect) 0.3))))
+                           (.lineTo (Point. (+ x0 (* scale 2.)) (:y rect)))
+                           (.lineTo (Point. (+ x0 (* scale 3.)) (- (:y rect) (* (:height rect) 0.2)))))
+                     (huipaint/fill (nth icols (dec n))))))))))
+        (map vector
+             (fs/list-dir (io/file "."))
+             [0 0 0 1 1 2 3 4 4 1 2 2 2 1]
+             [0 0 0 0 1 1 2 3 4 4 1 2 2 2])))
 
 (comment
   (windows/remount-all-windows)
@@ -463,6 +543,5 @@ lazy loading & watching:
   #_(with-open [ds (Files/newDirectoryStream (fs/path "."))]
       (mapv str ds))
 
-
-  #!
+#!
   )

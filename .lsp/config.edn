@@ -1,2 +1,3 @@
 ;
-{:cljfmt {:indents {case-mousebtn [[:inner 0]]}}}
+{:cljfmt {:indents {case-mousebtn [[:inner 0]]
+                    doit-zip [[:block 1]]}}}

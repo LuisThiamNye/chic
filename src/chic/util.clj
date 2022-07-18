@@ -1,5 +1,8 @@
 (ns chic.util
   (:require
+   [clojure.tools.analyzer.jvm :as ana]
+   [clojure.tools.analyzer.passes :as ana.passes]
+   [clojure.tools.analyzer.passes.jvm.infer-tag :as ana.jvm.infer-tag]
    [potemkin :refer [unify-gensyms doit]]
    [riddley.walk :as rwalk]))
 
@@ -150,3 +153,89 @@
         code##))))
 
 (defmacro  <<- [& forms] `(->> ~@(reverse forms)))
+
+(defn ana-ast-infer-tag ^Class [ast]
+  (:tag ((ana.passes/schedule
+          #{#'ana.jvm.infer-tag/infer-tag})
+         ast)))
+
+(defn local-binding-tag ^Class [binding]
+  (or (:tag binding)
+      (if (map? binding)
+        (ana-ast-infer-tag binding)
+        (let [binding ^clojure.lang.Compiler$LocalBinding binding]
+          (when (.hasJavaClass binding) (.getJavaClass binding))))))
+
+(defn localbinding->ana-ast [obj]
+  (if (map? obj)
+    obj
+    (let [obj ^clojure.lang.Compiler$LocalBinding obj]
+      {:op :binding
+       :name (.-sym obj)
+       :form (.-sym obj)
+       :local (if (.-isArg obj) :arg :let)
+       :tag (when (.hasJavaClass obj) (.getJavaClass obj))
+       ;; :init {}
+       :children [] #_[:init]})))
+
+(defn infer-tag ^Class [expr env]
+  (if-some [binding (get env expr)]
+    (local-binding-tag binding)
+    (binding [ana/run-passes (ana.passes/schedule #{#'ana.jvm.infer-tag/infer-tag})]
+      (:tag (ana/analyze expr (assoc (ana/empty-env) :locals env
+                                     #_(update-vals env localbinding->ana-ast)))))))
+
+(defmacro doit-zip
+  "Like doseq, but based on iterators. Zips through multiple iterables until one is exhausted."
+  [it-exprs & body]
+  (let [bindings (partitionv 2 it-exprs)
+        it-bindings
+        (mapv (fn [[_ coll-expr]]
+                (if (= java.util.Iterator (infer-tag coll-expr &env))
+                  {:it-sym (if (symbol? coll-expr) coll-expr (gensym "iterator"))
+                   :it-expr coll-expr
+                   :symbol? (symbol? coll-expr)}
+                  {:it-sym (gensym "iterator")
+                   :it-expr `(.iterator ~(with-meta (if (seq? coll-expr)
+                                                      coll-expr
+                                                      `(do ~coll-expr)) {:tag "Iterable"}))}))
+              bindings)
+        it-syms (mapv :it-sym it-bindings)]
+    `(let [~@(into [] (comp (remove :symbol?)
+                            (mapcat (fn [{:keys [it-sym it-expr]}]
+                                 [it-sym it-expr])))
+                   it-bindings)]
+       (loop []
+         (when (and ~@(map (fn [it-sym]
+                             `(.hasNext ~it-sym))
+                           it-syms))
+           (let [~@(mapcat (fn [[item-expr _] it-sym]
+                             [item-expr `(.next ~it-sym)])
+                           bindings it-syms)]
+             ~@body)
+           (recur))))))
+
+(deftype IntRangeIteratorInf [^:unsynchronized-mutable ^int i]
+  java.util.Iterator
+  (hasNext [_] true)
+  (next [_] (set! i (unchecked-inc-int i))))
+(deftype IntRangeIterator [^:unsynchronized-mutable ^int i ^int maximum]
+  java.util.Iterator
+  (hasNext [_] (< i maximum))
+  (next [_] (set! i (unchecked-inc-int i))))
+(defn ^java.util.Iterator int-range-it
+  ([]
+   (IntRangeIteratorInf. -1))
+  ([n]
+   (IntRangeIterator. -1 (dec n)))
+  ([start end]
+   (IntRangeIterator. (dec start) (dec end))))
+
+(definline iter-next [^java.util.Iterator it-expr]
+  (let-macro-syms [it it-expr]
+    `(when (.hasNext ~it) (.next ~it))))
+
+(defn to-iter ^java.util.Iterator [coll]
+  (if (instance? Iterable coll)
+    (.iterator ^Iterable coll)
+    (eduction coll)))

@@ -194,3 +194,17 @@
 
 (defn puget-prn [x]
   (println-main (puget/pprint-str x)))
+
+(defn ^:dynamic report-data [k data] nil)
+
+(def ^:dynamic *reported-data*)
+
+(defn report-data-default [k data]
+  (set! *reported-data*
+        (update *reported-data* k (fnil conj []) data)))
+
+(defmacro with-capture-data [& body]
+  `(binding [*reported-data* {}
+             report-data report-data-default]
+     ~@body
+     *reported-data*))

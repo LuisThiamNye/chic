@@ -11,6 +11,11 @@
     (- n 256)
     n))
 
+(alter-meta! #'huipaint/fill
+             assoc :tag "io.github.humbleui.skija.Paint")
+(alter-meta! #'huipaint/stroke
+             assoc :tag "io.github.humbleui.skija.Paint")
+
 (def transparent (huipaint/fill 0x00000000))
 
 ;; see https://bottosson.github.io/posts/colorpicker/

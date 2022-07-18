@@ -1,0 +1,1 @@
+{:lint-as {chic.util/doit-zip clojure.core/doseq}}

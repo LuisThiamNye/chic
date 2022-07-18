@@ -2,7 +2,7 @@
   (:require
    [chic.ui.font :as uifont]
    [insn.core :as insn]
-   [chic.debug]
+   [chic.debug :as debug]
    [chic.ui.interactor :as uii]
    [chic.style :as style]
    [io.github.humbleui.paint :as huipaint]
@@ -78,7 +78,7 @@
                                    (do (set! ~sym ~vexpr)
                                        (bit-set ~field-chmask-sym ~i)))))))
                     bindings))]
-    `(do
+    `(binding [*unchecked-math* true]
       ~(when-not unchanged-intf?
          `(definterface ~i-sym
             (~'draw ~draw-param-vec)))
@@ -266,7 +266,7 @@
                         (let [depmask-expr
                               (reduce (fn ([])
                                         ([acc expr]
-                                         `(bit-and ~acc ~expr)))
+                                         `(bit-or ~acc ~expr)))
                                       (remove nil? (map (fn [[sym mask]]
                                                           (when-not (== 0 mask)
                                                             `(bit-and ~sym ~mask)))
@@ -276,6 +276,7 @@
                             `(cond-> (not (== 0 ~depmask-expr))
                                (bit-set ~i)))))
                       args)))]
+    (debug/report-data :draw-cmpt {:args args})
     `(.draw ~(with-meta cmpt-expr {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})
             ~canvas-sym ~chmask-expr ~@(map :expr args))))
 (comment
@@ -328,13 +329,7 @@
   )
 
 (defn env-binding->tag ^Class [binding]
-  (let [tag (or (:tag binding)
-                (if (map? binding)
-                  (:tag ((ana.passes/schedule
-                          #{#'ana.jvm.infer-tag/infer-tag})
-                         binding))
-                  (let [binding ^clojure.lang.Compiler$LocalBinding binding]
-                    (when (.hasJavaClass binding) (.getJavaClass binding)))))]
+  (let [tag (util/local-binding-tag binding)]
     (if (symbol? tag)
       (resolve tag)
       tag)))
@@ -401,18 +396,6 @@
                               :tag nil}))})
       (persistent! (.-x *set))))
 
-(defn localbinding->map [obj]
-  (if (map? obj)
-    obj
-    (let [obj ^clojure.lang.Compiler$LocalBinding obj]
-      {:op :binding
-       :name (.-sym obj)
-       :form (.-sym obj)
-       :local (if (.-isArg obj) :arg :let)
-       :tag (when (.hasJavaClass obj) (.getJavaClass obj))
-      ;; :init {}
-       :children [] #_[:init]})))
-
 (defmacro cmpt-ext-input-memory [cmpt-sym]
   (let [cmpt (resolve-cmpt cmpt-sym &env)]
     `(object-array ~(count (:input-syms cmpt)))))
@@ -422,19 +405,21 @@
   (util/let-macro-syms [argary argary]
     (let [cmpt (resolve-cmpt cmpt-sym &env)
           input-syms (:input-syms cmpt)
-          inputs (map-indexed
-                  (fn [i sym]
-                    (let [vexpr (argmap (keyword sym))]
-                      (if (= :const (:op (ana/analyze
-                                          vexpr (assoc (ana/empty-env)
-                                                       :locals (update-vals &env localbinding->map)))))
-                        {:const? true :i i}
-                        {:i i :sym sym :val-sym (if (symbol? vexpr)
-                                                  vexpr
-                                                  (gensym sym))
-                         :vexpr vexpr
-                         :symbol? (symbol? vexpr)})))
-                  input-syms)
+          inputs
+          (map-indexed
+           (fn [i sym]
+             (let [vexpr (argmap (keyword sym))]
+               (if (= :const (:op (ana/analyze
+                                   vexpr (assoc (ana/empty-env)
+                                                :locals (update-vals
+                                                         &env util/localbinding->ana-ast)))))
+                 {:const? true :i i}
+                 {:i i :sym sym :val-sym (if (symbol? vexpr)
+                                           vexpr
+                                           (gensym sym))
+                  :vexpr vexpr
+                  :symbol? (symbol? vexpr)})))
+           input-syms)
           init-idx (:i (first (filter :const? inputs)))
           variable-inputs (remove :const? inputs)
           varexpr-inputs (remove :symbol? variable-inputs)
