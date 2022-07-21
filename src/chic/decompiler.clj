@@ -1,12 +1,13 @@
 (ns chic.decompiler
   (:require
+   [chic.debug :as debug]
    [babashka.fs :as fs]
    [clojure.java.io :as io])
   (:import
-   (org.objectweb.asm ClassVisitor MethodVisitor Opcodes)
+   (org.objectweb.asm ClassVisitor MethodVisitor Opcodes ClassWriter)
    (org.objectweb.asm.tree ClassNode MethodNode)
    (clojure.lang Compiler)
-   #_#_(com.strobel.decompiler Decompiler DecompilerSettings)
+   (com.strobel.decompiler Decompiler DecompilerSettings PlainTextOutput)
    (com.strobel.decompiler.languages Languages)))
 
 (def tmp-dir (fs/path (System/getProperty "java.io.tmpdir") "chic-decompiler"))
@@ -29,28 +30,44 @@
 (defn compiled-classfile-paths []
   (filterv #(= "class" (fs/extension %)) (fs/glob tmp-dir "**")))
 
-(comment
-  (clean-tmp-dir)
-  (compile-classfiles '(+ 1 2))
-
-  (let [bytecode (fs/read-all-bytes (first (compiled-classfile-paths)))
-        mn (MethodNode.)
-        cv (proxy [ClassVisitor] [Opcodes/ASM4]
-             (visitMethod [api mname & args]
-               (when (= "load" mname)
-                 mn)))
-        _ (.accept (ClassReader. bytecode) cv 0)]
-    (seq (.instructions mn)))
-
-
-  (let [path (first (compiled-classfile-paths))
-        w (com.strobel.decompiler.PlainTextOutput.)]
+(defn decompile [path lang]
+  (let [w (com.strobel.decompiler.PlainTextOutput.)]
     (Decompiler/decompile
      (str path)
      w
      (doto (DecompilerSettings/javaDefaults)
-       (.setLanguage (Languages/bytecode))))
-    (chic.debug/println-main(str w)))
+       (.setLanguage (case lang
+                       :java (Languages/java)
+                       :bytecode (Languages/bytecode)
+                       :bytecode-ast (Languages/bytecodeAst)))))
+    (str w)))
+
+(comment
+  (clean-tmp-dir)
+  (compile-classfiles '(case 4 :x 1 :y 2 :else))
+
+  (taoensso.encore/case-eval Compiler Compiler 1 Thread 2 :else)
+
+  (let [path (first (compiled-classfile-paths))]
+    (debug/println-main (decompile path :java)))
+
+  (let [m (MethodNode. (+ Opcodes/ACC_PUBLIC)
+                       "close"
+                       "()V"
+                       nil nil)
+        clsname "chic/ui/ui3/ICmpt3"
+        cn (ClassNode.)
+        _ (do (set! (.-access cn)
+                    (+ #_Opcodes/ACC_PUBLIC Opcodes/ACC_INTERFACE Opcodes/ACC_ABSTRACT))
+              (set! (.-version cn) Opcodes/V19)
+              (set! (.-name cn) clsname)
+              (set! (.-superName cn) "java/lang/Object")
+              #_(.add (.-interfaces cn))
+              (.add (.-methods cn) m))
+        cw (ClassWriter. Opcodes/ASM9)]
+    (.accept cn cw)
+    (.defineClass (.getContextClassLoader (Thread/currentThread))
+                  (clojure.string/replace clsname #"/" ".") (.toByteArray cw) nil))
 
   #!
   )

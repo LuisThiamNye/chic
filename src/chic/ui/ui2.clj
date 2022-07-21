@@ -282,7 +282,8 @@ parents set position
         on-mount (or on-mount (fn [_ctx]))
         mouse-pos (types/->XyIMunsync 0 0)
         *text-input-handler (volatile! nil)
-        keys->locs (HashMap.)]
+        keys->locs (HashMap.)
+        close-fns (ArrayList.)]
     (cui/generic
      {:draw
       (fn [_ ctx ^IRect rect ^Canvas cnv]
@@ -294,6 +295,7 @@ parents set position
           (draw ui (assoc ctx
                           :jwm-window (:window-obj (:chic/current-window ctx))
                           ::mouse-pos mouse-pos
+                          ::register-close (fn [f] (.add close-fns f))
                           ::add-event-listener
                           (fn [typ f]
                             (case typ
@@ -320,7 +322,7 @@ parents set position
                    ;; (let [ ])
                    nil)
                  nil))
-      :close (fn [_])})))
+      :close (fn [_] (doit [c close-fns] (c)))})))
 
 (defn get-mouse-pos [ctx]
   (get ctx ::mouse-pos))
@@ -421,14 +423,19 @@ parents set position
          (f ctx rect)))
      child)))
 
-(defn on-mount [f child]
-  (let [old-draw (:draw child)
-        *unmounted? (volatile! true)]
-    (assoc child :draw (fn [self ctx rect cnv]
-                         (when @*unmounted?
-                           (f ctx)
-                           (vreset! *unmounted? false))
-                         (old-draw self ctx rect cnv)))))
+(defn on-mount
+  ([fopen fclose child]
+   (let [old-draw (:draw child)
+         *unmounted? (volatile! true)]
+     (assoc child :draw (fn [self ctx rect cnv]
+                          (when @*unmounted?
+                            (fopen ctx)
+                            (when-some [r (and fclose (::register-close ctx))]
+                              (r (fn [] (fclose child))))
+                            (vreset! *unmounted? false))
+                          (old-draw self ctx rect cnv)))))
+  ([f child]
+   (on-mount f nil child)))
 
 (defn attach-interactor [{:keys [cursor-style
                                  on-mouse-down
@@ -464,6 +471,13 @@ parents set position
        (vreset! *mgr (uii/new-mgr {:jwm-window (:jwm-window ctx)})))
      (updating-ctx (fn [ctx _] (assoc ctx ::interactor-manager @*mgr))
                    child))))
+
+(defn on-event [f child]
+  (on-mount
+   (fn [ctx]
+     ((::add-event-listener ctx)
+      :all f)) ;; [ctx evt]
+   child))
 
 (def svg-w
   (direct-widget

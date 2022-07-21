@@ -98,6 +98,8 @@
   (when-some [f (::event.schedule-after event)]
     (f callback)))
 
+((def ^ThreadLocal *root-ctx (ThreadLocal.)))
+
 (defn on-event-handler [{:keys [window-obj *ctx] :as win} jwmevt]
   (try
     (profile/reset "event")
@@ -116,7 +118,7 @@
                           :chic.ui/mouse-win-pos pos
                           ;; :hui.event/pos pos
                           }]
-               (swap! *ctx assoc :chic.ui/mouse-win-pos pos)
+               (.set *root-ctx (swap! *ctx assoc :chic.ui/mouse-win-pos pos))
                (send-event win event))
 
              EventMouseButton
@@ -154,7 +156,7 @@
          (cb))
        (when (or changed? (not (or (instance? EventFrame jwmevt)
                                    (instance? EventFrameSkija jwmevt)
-                                   (instance? EventMouseMove jwmevt)
+                                   ;(instance? EventMouseMove jwmevt)
                                    ;(instance? EventKey jwmevt)
                                    ;; (instance? EventMouseButton jwmevt)
                                    #_(instance? EventTextInput jwmevt))))
@@ -166,6 +168,7 @@
       #_(profile/log "event"))))
 
 (defn remount-window [window]
+  (ui/child-close @(:*app-root window))
   (vreset!
    (:*app-root window)
    ((:build-app-root window)))
@@ -230,7 +233,8 @@
     (vswap! (:*profiling w) assoc :paint-start-time (System/nanoTime))
     (profile/measure
      "frame"
-     (try (huip/-draw @*app-root ctx bounds canvas)
+     (try (.set *root-ctx ctx)
+          (huip/-draw @*app-root ctx bounds canvas)
           (catch Throwable e
             (vreset! *ui-error {:bitmap (error/canvas->bitmap canvas bounds)
                                 :throwable e
@@ -239,7 +243,9 @@
                                 :cs bounds})
             (.clear canvas (unchecked-int 0xFFF6F6F6))
             (vreset! *app-root (cui/dyncomp (error-view)))
-            (huip/-draw @*app-root ctx bounds canvas))))
+            (huip/-draw @*app-root ctx bounds canvas))
+          (finally
+            (.remove *root-ctx))))
     (vswap! (:*profiling w) assoc :latest-paint-duration
             (unchecked-subtract (System/nanoTime) (:paint-start-time @(:*profiling w))))
     #_(enc/after-timeout 1000 (request-frame w))
@@ -301,8 +307,9 @@
     w))
 
 (defn remount-all-windows []
-  (doseq [w (vals @*windows)]
-    (remount-window w)))
+  (safe-dosendui
+   (doseq [w (vals @*windows)]
+     (remount-window w))))
 
 (comment
   (remount-window (val (first @*windows)))
