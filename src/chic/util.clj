@@ -362,3 +362,6 @@
     (mapv (fn [^java.lang.reflect.Field field]
             [(.getName field) (.getName (.getType field))])
           (.getDeclaredFields cls)))
+
+(definline equals [x y]
+  `(clojure.lang.Util/equals ~x ~y))
