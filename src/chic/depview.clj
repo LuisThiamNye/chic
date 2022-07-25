@@ -5,7 +5,6 @@
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.paint :as huipaint]
    [clj-kondo.core :as kondo]
-   [clojure-lsp.api :as lsp]
    [clojure.java.io :as io]
    [clojure.math :as math]
    [clojure.string :as str]

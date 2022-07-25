@@ -1,5 +1,7 @@
 (ns chic.debug
   (:require
+    [taoensso.truss :as truss]
+   [nrepl.middleware :as nreplm]
    [puget.printer :as puget]
    [puget.color.ansi])
   (:import
@@ -8,14 +10,24 @@
 
 (defonce ^java.io.OutputStreamWriter main-out *out*)
 
+#_(defn nrepl-handle-out [handler]
+  (fn [msg]
+    ))
+
+#_(nreplm/set-descriptor! #'nrepl-handle-out
+ {:requires #{#'nrepl.middleware.session/session}
+  :expects #{"eval"}
+  :handles {"stdout"
+            {:doc "Bind *out*."}}})
+
 (defn println-main [& args]
   (doseq [a (interpose " " args)]
     (.write main-out (str a)))
   (.write main-out "\n")
   (.flush main-out))
 
-(defn ^com.sun.jdi.ThreadReference vm-thread-named
-  [^com.sun.jdi.VirtualMachine vm thread-name]
+(defn vm-thread-named
+  ^com.sun.jdi.ThreadReference [^com.sun.jdi.VirtualMachine vm thread-name]
   (some (fn [^com.sun.jdi.ThreadReference thread]
           (when (.equals (.name thread) thread-name)
             thread))
@@ -208,3 +220,12 @@
              report-data report-data-default]
      ~@body
      *reported-data*))
+
+(truss/set-error-fn!
+  (fn [*data]
+    (let [data @*data]
+      (binding [*print-length* 1200]
+        (puget-prn (dissoc data :msg_)))
+      (throw (AssertionError. @(:msg_ data))))))
+
+

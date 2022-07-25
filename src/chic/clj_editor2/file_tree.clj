@@ -64,7 +64,7 @@
      [idx filename cap-height item-height content-y widthch->xbounds text-paint font]
      (let [[textblob text-width] (let [textline (uifont/shape-line-default font filename)]
                                    [(.getTextBlob textline) (.getWidth textline)])
-           *prev-width (volatile! nil)
+           *prev-width (volatile! 0)
            cmpt (ui3/new-cmpt ui-icon-and-label)]
        {:draw
         (fn [cnv]
@@ -185,9 +185,10 @@
     (util/quoted
      (ui3/fnlet-widget
       (fn ui-linear-treeview
-        [width->xbounds height->ybounds ^Rect visible-rect ^float scale mouse-pos
-         children-data ^int item-height]
-        (let [content-y (:y (height->ybounds (* item-height (count children-data))))
+        [width->xbounds height->ybounds ^Rect frame-rect ^Rect visible-rect ^float scale mouse-pos
+         children-data ^int item-height intrmgr]
+        (let [ybounds (height->ybounds (* item-height (count children-data)))
+              content-y (:y ybounds)
               #_#_{:keys [first-visible-idx last-visible-idxe content-x content-y]}
               (let [nchildren (count children-data)]
                 (inline-fnsnip-multiretmap
@@ -205,6 +206,7 @@
               group-ranges (children-data->group-ranges children-data)
               vline-cmpts (mapv (fn [_] (ui3/new-cmpt ui-indent-vline))
                                 group-ranges)
+              intr (uii3/open-interactor intrmgr {})
               hover-idx (when (util/<=< (:x visible-rect) (:x mouse-pos) (:right visible-rect))
                           (let [idx (long (Math/floor (/ (- (:y mouse-pos) content-y) item-height)))]
                             (when (util/<=< 0 idx (count children-data))
@@ -214,16 +216,16 @@
                                           (:right visible-rect) (+ content-y (* (inc hover-idx) item-height))))
               hover-paint (huipaint/fill 0x10000000)
               *child-widths (volatile! (sorted-set))
-              *content-x (volatile! 0)
-              ^:always ^:diff content-x @*content-x
+              *xbounds (volatile! {:x 0 :right 0})
+              ^:always ^:diff xbounds @*xbounds
               _ (when-some [width (first (rseq @*child-widths))]
-                  (vreset! *content-x (:x (width->xbounds width))))]
+                  (vreset! *xbounds (width->xbounds width)))]
           {:draw
            (fn [cnv]
              (when hover-idx
                (.drawRect cnv visible-hover-rect hover-paint))
-             (prn "treeview: in" (ui3/get-input-chmask) (ui3/get-changed-input-syms))
-             (prn "treeview: f" (ui3/get-field-chmask) (ui3/get-changed-field-syms))
+             ;; (prn "treeview: in" (ui3/get-input-chmask) (ui3/get-changed-input-syms))
+             ;; (prn "treeview: f" (ui3/get-field-chmask) (ui3/get-changed-field-syms))
 
              (doit-zip [{:keys [level filename]} (eduction children-data)
                         i (util/int-range-it)]
@@ -236,80 +238,40 @@
                                :content-y content-y
                                :widthch->xbounds
                                (fn -widthch->xbounds [prev-width width]
-                                 (let [max-width1 (first (rseq @*child-widths))
-                                       child-widths (vswap! *child-widths #(-> % (disj prev-width)
-                                                                               (conj width)))
+                                 (let [xindent (* scale 2 level)
+                                       full-prev-width (+ xindent prev-width)
+                                       full-width (+ xindent width)
+                                       max-width1 (first (rseq @*child-widths))
+                                       child-widths (vswap! *child-widths #(-> % (disj full-prev-width)
+                                                                               (conj full-width)))
                                        max-width2 (first (rseq child-widths))
-                                       x (+ (* scale 2 level)
-                                            (if (= max-width1 max-width2)
-                                              @*content-x
-                                              (vreset! *content-x (:x (width->xbounds max-width2)))))]
-                                   {:x x :right (+ x width)}))
+                                       {:keys [x right]} (if (= max-width1 max-width2)
+                                                       @*xbounds
+                                                       (vreset! *xbounds (width->xbounds max-width2)))]
+                                   {:x (+ xindent x) :right right}))
                                :text-paint text-paint
                                :font font}))
              (doit-zip [[start ende] ^Iterable group-ranges
                         cmpt ^Iterable vline-cmpts]
                (ui3/draw-cmpt ^{:cmpt ui-indent-vline} cmpt cnv
                               {:scale scale
-                               :content-x content-x
+                               :content-x (max (:x xbounds) (:x frame-rect))
                                :level (:level (nth children-data start))
                                :first-child-top (+ content-y (* item-height (inc start)))
                                :parent-top (+ content-y (* item-height start))
-                               :last-child-bottom (+ content-y (* item-height ende))})))})))))
+                               :last-child-bottom (+ content-y (* item-height ende))}))
+             (when (not= xbounds @*xbounds)
+               (uii3/refresh-intr intr {:rect (Rect. (:x @*xbounds) content-y
+                                                     (:right @*xbounds) (:bottom ybounds))
+                                        :on-mousedown (fn [_ _ctx evt]
+                                                        (prn 'hi))})))})))))
   (def ui-linear-treeview (eval --tree-code)))
 
 (comment
   (binding [*print-meta* true]
     (debug/puget-prn
      (macroexpand --tree-code)))
-  ;; TODO need the tree to calculate size then later receive position
-  ;; separate recalculate function? - similar params as draw function
-  ;;   - additional position params for draw function
-  ;; "prepare" or measure function?
-  ;; benefit of dedicated measure function is potentially fewer args than draw function
-  ;;   but dividing up the field calculations seems wrong
-
-  ;; direct components can still exist
-
-  ;; issue where parent may invalidate calculations of child:
-  "child calcs visible elements based on position.
-but parent can change position.
-Extra tricky if size eg width depends on the visible elements.
-   - but this is a special case where behaviour has to be carefully considered anyway
-So it may make sense to have a two-phase component with a clear distinction
-between pre-and-post position data availability
-
-What if it were implemented like a callback eg
-..size calcs
-rect (measure-self) ;; finishes off parent calcs and returns size
-..rest of calcs
-
-This feels complicated to implement, but is a nice way to express the divide.
-More generally, this can be 'deferred inputs' - depends on both inputs
-and fields
-
-How would this look on the parent side? Perhaps something like blocking.
-And then what about multiple children?
-
-What about different size constraints? infinite vs fixed.
-If fixed, the component should not calculate size at all.
-Component may depend on size for its content, but if no size restrictions
-then content determines size (reverse).
-Note: stretch and shrink are very different behaviours.
-
-Constraints useful here? max-size, min-size, stretch, shrink
-Constraints on rect: max-boundary, min-boundary, max-size, min-size
-Align: stretch, shrink + horiz/vertical
-Arrange: relative to other things
-(instead of returning size, the absolute rect is calcd from constraints)
-
-If position can be expressed in terms on constraints on size, then
-you get the benefit of declarative code and less freaky control flow.
-Simple constraint on position is probably enough for simple scroll rect view.
-TODO do this.
-"
-
-#!
+  #!
   )
 
 (def sample-children-data
@@ -361,16 +323,18 @@ TODO do this.
               ^:always ^:diff mouse-pos (ui3/get-mouse-pos)]
           {:draw (fn [cnv]
                    (.drawRect cnv visible-rect bg-paint)
-                   (prn "dev: in: "(ui3/get-input-chmask) (ui3/get-changed-input-syms))
-                   (prn "dev: f: " (ui3/get-field-chmask) (ui3/get-changed-field-syms))
+                   ;; (prn "dev: in: "(ui3/get-input-chmask) (ui3/get-changed-input-syms))
+                   ;; (prn "dev: f: " (ui3/get-field-chmask) (ui3/get-changed-field-syms))
                    (ui3/draw-cmpt
                     ui-list cnv
                     {:-init? @*init?
+                     :intrmgr intrmgr
                      :width->xbounds (fn [width] content-rect
                                        (size->rect (+ width (* 10 scale)) (:height @*content-rect)))
                      :height->ybounds (fn [height] content-rect
                                         (size->rect (:width @*content-rect) height))
                      :visible-rect visible-rect
+                     :frame-rect rect
                      :mouse-pos mouse-pos
                      :scale scale
                      :children-data children-data
@@ -418,7 +382,6 @@ TODO do this.
    (clojure.tools.analyzer.jvm/macroexpand-all --a-view-code))
   (= --x1 (aget (object-array [(unchecked-float 1.0)]) 0))
   (:input-syms ui-dev-view)
-
 
   ;; detect Closeables
   #!

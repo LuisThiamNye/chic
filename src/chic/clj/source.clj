@@ -1,8 +1,5 @@
 (ns chic.clj.source
   (:require
-   [clojure-lsp.api :as lsp.api]
-   [clojure-lsp.db :as lsp.db]
-   [clojure-lsp.handlers :as lsp.handlers]
    [clojure.java.io :as io]
    [clojure.repl :as repl]
    [clojure.string :as str])
@@ -37,6 +34,10 @@
       (pop-thread-bindings))))
 
 (comment
+  (require
+    '[clojure-lsp.api :as lsp.api]
+    '[clojure-lsp.db :as lsp.db]
+    '[clojure-lsp.handlers :as lsp.handlers])
   (crude-source-of-var #'read-var-source-code)
   (read-var-source-code #'chic.cljbwr/basic-view)
   (meta #'chic.main/-main)

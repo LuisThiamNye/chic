@@ -32,12 +32,30 @@
                               (f intr ctx evt) true))]
           (when-not handled? (recur)))))))
 
-(defn -handle-mousedown [mgr ctx evt])
-(defn -handle-mouseup [mgr ctx evt])
+(defn -handle-mousedown [mgr ctx evt]
+  (prn (:intrs mgr))
+  (let [it (util/to-iter (:intrs mgr))]
+    (loop []
+      (when-some [intr (util/iter-next it)]
+        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
+                         (when-some [f (.get ^java.util.Map (:handlers intr) :om-mousedown)]
+                           (f intr ctx evt) true)) ]
+          (when-not handled? (recur)))))))
+
+(defn -handle-mouseup [mgr ctx evt]
+  (let [it (util/to-iter (:intrs mgr))]
+    (loop []
+      (when-some [intr (util/iter-next it)]
+        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
+                         (when-some [f (.get ^java.util.Map (:handlers intr) :om-mouseup)]
+                           (f intr ctx evt) true)) ]
+          (when-not handled? (recur)))))))
+
 (defn -handle-mouse-move [mgr ctx evt])
 (defn -handle-keydown [mgr ctx evt])
 (defn -handle-keyup [mgr ctx evt])
 (defn -handle-textinput [mgr ctx evt])
+;; handle mouse down lost (eg focus out)
 
 (defn -handle-jwm-event [mgr ctx evt]
   (ievt/case-event evt
@@ -63,7 +81,7 @@
   java.lang.AutoCloseable
   (close [self] (-unreg-interactor mgr self)))
 
-(defn open-interactor [mgr opts]
+(defn open-interactor ^java.lang.AutoCloseable [mgr opts]
   (let [intr (->StdIntr mgr (Rect. -1. -1. -1. -1.)
                         (java.util.HashMap.))]
     (.add ^java.util.List (:intrs mgr) intr)
@@ -73,4 +91,6 @@
   (setf! intr :rect (:rect opts))
   (let [handlers ^java.util.Map (:handlers intr)]
     (when (contains? opts :on-scroll)
-      (.put handlers :on-scroll (:on-scroll opts)))))
+      (.put handlers :on-scroll (:on-scroll opts)))
+    (when (contains? opts :on-mousedown)
+      (.put handlers :on-mousedown (:on-mousedown opts)))))

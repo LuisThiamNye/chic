@@ -98,7 +98,7 @@
   (when-some [f (::event.schedule-after event)]
     (f callback)))
 
-((def ^ThreadLocal *root-ctx (ThreadLocal.)))
+(def ^ThreadLocal *root-ctx (ThreadLocal.))
 
 (defn on-event-handler [{:keys [window-obj *ctx] :as win} jwmevt]
   (try

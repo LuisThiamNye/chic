@@ -145,3 +145,51 @@ lazy loading & watching:
 
 #!
   )
+
+
+  ;; TODO need the tree to calculate size then later receive position
+  ;; separate recalculate function? - similar params as draw function
+  ;;   - additional position params for draw function
+  ;; "prepare" or measure function?
+  ;; benefit of dedicated measure function is potentially fewer args than draw function
+  ;;   but dividing up the field calculations seems wrong
+
+  ;; direct components can still exist
+
+  ;; issue where parent may invalidate calculations of child:
+  "child calcs visible elements based on position.
+but parent can change position.
+Extra tricky if size eg width depends on the visible elements.
+   - but this is a special case where behaviour has to be carefully considered anyway
+So it may make sense to have a two-phase component with a clear distinction
+between pre-and-post position data availability
+
+What if it were implemented like a callback eg
+..size calcs
+rect (measure-self) ;; finishes off parent calcs and returns size
+..rest of calcs
+
+This feels complicated to implement, but is a nice way to express the divide.
+More generally, this can be 'deferred inputs' - depends on both inputs
+and fields
+
+How would this look on the parent side? Perhaps something like blocking.
+And then what about multiple children?
+
+What about different size constraints? infinite vs fixed.
+If fixed, the component should not calculate size at all.
+Component may depend on size for its content, but if no size restrictions
+then content determines size (reverse).
+Note: stretch and shrink are very different behaviours.
+
+Constraints useful here? max-size, min-size, stretch, shrink
+Constraints on rect: max-boundary, min-boundary, max-size, min-size
+Align: stretch, shrink + horiz/vertical
+Arrange: relative to other things
+(instead of returning size, the absolute rect is calcd from constraints)
+
+If position can be expressed in terms on constraints on size, then
+you get the benefit of declarative code and less freaky control flow.
+Simple constraint on position is probably enough for simple scroll rect view.
+TODO do this.
+"

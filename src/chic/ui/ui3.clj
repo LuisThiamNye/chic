@@ -1,6 +1,7 @@
 (ns chic.ui.ui3
   (:require
    [chic.ui.font :as uifont]
+    [clojure.data]
    [insn.core :as insn]
    [chic.debug :as debug]
    [chic.ui.interactor :as uii]
@@ -192,17 +193,10 @@
                            (.getName c) c))
           (.getParameterTypes method))))
 
-(defn param-vec->sig* [pv]
-  (mapv #(let [tag (:tag (meta %) Object)
-               typ (if (or (symbol? tag) (string? tag))
-                     (let [r (resolve (symbol tag))]
-                       (if (class? r) r (str tag)))
-                     tag)]
-           (if (class? typ)
-             (let [c ^Class typ]
-               (if (.isPrimitive c) (.getName c) c))
-             typ))
-        pv))
+(defn param-vec->sig*
+  "A type is a class object or string if primitive."
+  [pv]
+  (mapv util/get-sym-tag pv))
 
 (defn fnlet-widget-parse* [fexpr & [&env]]
   (let [raw-input-syms (first (filter vector? fexpr))
@@ -302,107 +296,111 @@
 (defn draw-cmpt* [{:keys [raw-body-ana inputs fields
                           input-chmask-sym field-chmask-sym] :as ctx}
                   cmpt canvas-sym cmpt-expr argmap]
-  (let [param-syms (:input-syms cmpt)
-        [cmpt-expr-ana
-         argmap-ana] (let [*ret (volatile! nil)
-                           *cmpt-ana (volatile! nil)]
-                       (ana.ast/prewalk raw-body-ana
-                                        (fn [{:keys [form] :as node}]
-                                          (cond-> (cond
-                                                    (identical? argmap form)
-                                                    (vreset! *ret node)
-                                                    (identical? cmpt-expr form)
-                                                    (vreset! *cmpt-ana node)
-                                                    :else node)
-                                            (and @*ret @*cmpt-ana) reduced)))
-                       [@*cmpt-ana @*ret])
-        _ (assert (some? argmap-ana))
-        ;; _ (assert (some? cmpt-expr-ana))
-        spc-init-expr (:-init? argmap)
-        specified-param-keys (into #{} (keys (dissoc argmap :-init?)))
-        input-arg-ids (set (map :arg-id inputs))
-        field-ana-names (set (map :ana-name fields))
-        args
-        (mapv (fn [sym]
-                (let [argmap-idx (some identity
+  (util/with-merge-assert-data {:inputs inputs :fields fields 'cmpt cmpt
+                                'argmap argmap}
+    (let [param-syms (:input-syms cmpt)
+          specified-param-keys (into #{} (keys (dissoc argmap :-init?)))
+          param-kws (into #{} (map keyword) param-syms)
+          _ (enc/have? true? (= param-kws specified-param-keys)
+              :data {:msg "Specified param keys do not match component"
+                     :excess (first (clojure.data/diff specified-param-keys param-kws))
+                     :missing (first (clojure.data/diff param-kws specified-param-keys))})
+          [cmpt-expr-ana
+           argmap-ana] (let [*ret (volatile! nil)
+                             *cmpt-ana (volatile! nil)]
+                         (ana.ast/prewalk raw-body-ana
+                                          (fn [{:keys [form] :as node}]
+                                            (cond-> (cond
+                                                      (identical? argmap form)
+                                                      (vreset! *ret node)
+                                                      (identical? cmpt-expr form)
+                                                      (vreset! *cmpt-ana node)
+                                                      :else node)
+                                              (and @*ret @*cmpt-ana) reduced)))
+                         [@*cmpt-ana @*ret])
+          _ (enc/have map? argmap-ana)
+          spc-init-expr (:-init? argmap)
+          input-arg-ids (set (map :arg-id inputs))
+          field-ana-names (set (map :ana-name fields))
+          args
+          (mapv (fn [sym]
+                  (util/with-merge-assert-data {'sym sym}
+                    (let [argmap-idx (some identity
                                        (map-indexed
-                                        (fn [i kana]
-                                          (when (= (keyword sym) (:val kana)) i))
-                                        (-> argmap-ana :keys)))
-                      expr-ana (-> argmap-ana :vals (nth argmap-idx))
-                      input-deps (java.util.ArrayList.)
-                      field-deps (java.util.ArrayList.)
-                      process-subexpr-ana
-                      (fn [a]
-                        (cond
-                          (contains? input-arg-ids (:arg-id a))
-                          (.add input-deps (:form a))
-                          (contains? field-ana-names (:name a))
-                          (.add field-deps (:form a)))
-                        a)
-                      const? (:const (:op expr-ana))
-                      _ (ana.ast/prewalk expr-ana process-subexpr-ana)
-                      ;; _ (when (and (empty? input-deps) (empty? field-deps))
-                      ;;     (process-subexpr-ana cmpt-expr-ana))
-                      input-deps (set input-deps)
-                      field-deps (set field-deps)
-                      make-mask (fn [deps variables]
-                                  (reduce + (map (fn [i]
-                                                   (let [sym (:sym (nth variables i))]
-                                                     (if (contains? deps sym)
-                                                       (bit-shift-left 1 i) 0)))
-                                                 (range (count variables)))))]
-                  {:expr (argmap (keyword sym))
-                   :expr-ana expr-ana
-                   :const? const?
-                   :sym sym
-                   :input-deps input-deps
-                   :field-deps field-deps
-                   :input-depmask (make-mask input-deps inputs)
-                   :field-depmask (make-mask field-deps fields)}))
-              param-syms)
-        chmask-conds
-        `(-> ~(int 0)
-             ~@(eduction
-                (map-indexed
-                 (fn [i {:keys [input-depmask field-depmask] :as arg}]
-                   (let [depmask-expr
-                         (reduce (fn ([])
-                                   ([acc expr]
-                                    `(bit-or ~acc ~expr)))
-                                 (sequence
-                                  (comp (map (fn [[sym mask]]
-                                               (when-not (== 0 mask)
-                                                 `(bit-and ~sym ~mask))))
-                                        (remove nil?))
-                                  [[input-chmask-sym input-depmask]
-                                   [field-chmask-sym field-depmask]]))]
-                     (when depmask-expr
-                       `(cond-> (not (== 0 ~depmask-expr))
-                          (bit-set ~i))))))
-                (remove nil?)
-                args))
-        chmask-expr
-        (if spc-init-expr
-          `(if ~spc-init-expr
-             Integer/MAX_VALUE
-             ~chmask-conds)
-          chmask-conds)]
-    (debug/report-data :draw-cmpt {:args args
-                                   :cmpt-expr-ana cmpt-expr-ana
-                                   :field-ana-names field-ana-names
-                                   :ctx ctx
-                                   :cmpt-expr cmpt-expr})
-    #_(when (nil? cmpt-expr-ana)
-        (throw (ex-info "Could not find cmpt-expr analysis ast" {})))
-    (assert (= (into #{} (map keyword) param-syms) specified-param-keys)
-            "Specified param keys do not match component")
-    (when-not spc-init-expr
-      (doit [{:keys [input-depmask field-depmask sym]} args]
-        (when (== 0 input-depmask field-depmask)
-          (throw (ex-info (format "Arg for %s cannot be independent" sym) {})))))
-    `(.draw ~(with-meta cmpt-expr {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})
-            ~canvas-sym ~chmask-expr ~@(map :expr args))))
+                                         (fn [i kana]
+                                           (when (= (keyword sym) (:val kana)) i))
+                                         (-> argmap-ana :keys)))
+                          _ (enc/have? integer? argmap-idx)
+                          expr-ana (-> argmap-ana :vals (nth argmap-idx))
+                          input-deps (java.util.ArrayList.)
+                          field-deps (java.util.ArrayList.)
+                          process-subexpr-ana
+                          (fn [a]
+                            (cond
+                              (contains? input-arg-ids (:arg-id a))
+                              (.add input-deps (:form a))
+                              (contains? field-ana-names (:name a))
+                              (.add field-deps (:form a)))
+                            a)
+                          const? (:const (:op expr-ana))
+                          _ (ana.ast/prewalk expr-ana process-subexpr-ana)
+                          ;; _ (when (and (empty? input-deps) (empty? field-deps))
+                          ;;     (process-subexpr-ana cmpt-expr-ana))
+                          input-deps (set input-deps)
+                          field-deps (set field-deps)
+                          make-mask (fn [deps variables]
+                                      (reduce + (map (fn [i]
+                                                       (let [sym (:sym (nth variables i))]
+                                                         (if (contains? deps sym)
+                                                           (bit-shift-left 1 i) 0)))
+                                                  (range (count variables)))))]
+                      {:expr (argmap (keyword sym))
+                       :expr-ana expr-ana
+                       :const? const?
+                       :sym sym
+                       :input-deps input-deps
+                       :field-deps field-deps
+                       :input-depmask (make-mask input-deps inputs)
+                       :field-depmask (make-mask field-deps fields)})))
+                param-syms)
+          chmask-conds
+          `(-> ~(int 0)
+               ~@(eduction
+                  (keep-indexed
+                   (fn [i {:keys [input-depmask field-depmask] :as arg}]
+                     (let [depmask-expr
+                           (reduce (fn ([])
+                                     ([acc expr]
+                                      `(bit-or ~acc ~expr)))
+                                   (sequence
+                                    (comp (keep (fn [[sym mask]]
+                                                  (when-not (== 0 mask)
+                                                    `(bit-and ~sym ~mask)))))
+                                    [[input-chmask-sym input-depmask]
+                                     [field-chmask-sym field-depmask]]))]
+                       (when depmask-expr
+                         `(cond-> (not (== 0 ~depmask-expr))
+                            (bit-set ~i))))))
+                  args))
+          chmask-expr
+          (if spc-init-expr
+            `(if ~spc-init-expr
+               Integer/MAX_VALUE
+               ~chmask-conds)
+            chmask-conds)]
+      (debug/report-data :draw-cmpt {:args args
+                                     :cmpt-expr-ana cmpt-expr-ana
+                                     :field-ana-names field-ana-names
+                                     :ctx ctx
+                                     :cmpt-expr cmpt-expr})
+      #_(when (nil? cmpt-expr-ana)
+          (throw (ex-info "Could not find cmpt-expr analysis ast" {})))
+      (when-not spc-init-expr
+        (doit [{:keys [input-depmask field-depmask sym]} args]
+          (when (== 0 input-depmask field-depmask)
+            (throw (ex-info (format "Arg for %s cannot be independent" sym) {})))))
+      `(.draw ~(with-meta cmpt-expr {:tag (symbol (.getName ^Class (:java-draw-interface cmpt)))})
+              ~canvas-sym ~chmask-expr ~@(map :expr args)))))
 
 (defn env-binding->tag ^Class [binding]
   (let [tag (util/local-binding-tag binding)]
@@ -428,9 +426,8 @@
         (draw-cmpt* ctx cmpt cnv-sym cmpt-expr argmap)))))
 
 (defn select-from-mask* [mask coll]
-  (into #{} (comp (map-indexed
-                   (fn [i x] (when (bit-test mask i) x)))
-                  (remove nil?))
+  (into #{} (keep-indexed
+              (fn [i x] (when (bit-test mask i) x)))
         coll))
 
 (defmacro get-assert* [m k pred]

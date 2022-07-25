@@ -1,22 +1,11 @@
 (ns chic.demo
   (:require
-   [chic.ui.ui2 :as ui2]
-   [chic.example.constraints :as eg.constraints]
+   [chic.style]
    [chic.ui.event :as uievt]
-   [chic.colour.picker-ui :as picker-ui]
-   [chic.clj-editor2.core :as clj-editor2]
-   [chic.quantum.demo :as quantum.demo]
-   [chic.digger :as digger]
-   [chic.cljbwr :as cljbwr]
-   [chic.mccs.ui-basic :as mccs.ui-basic]
-   [chic.depview :as depview]
    [io.github.humbleui.paint :as huipaint]
-   [chic.filebwr :as filebwr]
    [chic.ui.error :as cui.error]
    [chic.ui :as cui]
-   [chic.controls-demo :as controls-demo]
    [chic.ui.layout :as cuilay]
-   [chic.ui.text-input :as text-input]
    [io.github.humbleui.ui :as ui])
   (:import
    [io.github.humbleui.skija Paint]))
@@ -71,11 +60,51 @@
       (cuilay/vscrollbar
        (cuilay/vscroll
         (cuilay/size-dependent
-         (fn [cs]
+         (fn [_cs]
            ;; (prn cs)
            (cuilay/column
            (a) (b) (a) (b ) (a)))))))
      [:stretch 1 (ui/gap 0 10)])))
+
+(defn font-scaling-demo [] ;; tests scaling of font in response to change in container size
+  (let [text "Sample"
+        ref-size 50. ;; bigger -> more accurate & less excess trailing space
+        ratio (/ (:width (.measureText (io.github.humbleui.skija.Font. chic.style/face-default ref-size) text))
+                ref-size)]
+    (ui/dynamic
+      ctx [{:keys [fill-text]} ctx]
+      (cui/on-draw
+          (fn [_ctx cs ^io.github.humbleui.skija.Canvas canvas]
+            (if false
+              ;; Canvas-Scaling implementation transitions more smoothly when scaling because it permits subpixel alignment
+              ;; Also, individual letters jitter when adjusting height only whilst text is width-limited
+              (let [font (io.github.humbleui.skija.Font.
+                           chic.style/face-default (float (:height cs)))
+                    metrics (.getMetrics font)
+                    line (.shapeLine cui/shaper text font
+                           io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
+                    width (.getWidth line)
+                    layer (.save canvas)
+                    sf (min 1 (/ (:width cs) width))]
+                (.scale canvas sf sf)
+                (.drawTextLine
+                  canvas line
+                  0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text)
+                (.restoreToCount canvas layer))
+              ;; Font-size scaling: Letters may look to jitter slightly relative to each other when scaling
+              ;; as it ensures proper pixel alignment at every size.
+              (let [height (float (min (/ (:width cs) ratio) (:height cs)))
+                    font (io.github.humbleui.skija.Font.
+                           chic.style/face-default height)
+                    metrics (.getMetrics font)
+                    line (.shapeLine cui/shaper text font
+                           io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
+                    width (.getWidth line)
+                    _sf (min 1 (/ (:width cs) width))]
+                (.drawTextLine
+                  canvas line
+                  0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text))))
+          (ui/gap 0 0)))))
 
 (defn basic-view []
   (ui/dynamic
@@ -97,8 +126,8 @@
                    :digger
                    :picker
                    :namespaces
-                   #_:quantum
-                   #_:font]]
+                   :quantum
+                   :font]]
           (cui/clickable
            (uievt/on-primary-down (fn [_] (swap! *state assoc :selected-tab tab)))
            (ui/dynamic
@@ -130,7 +159,8 @@
                                  (ui/fill
                                   (huipaint/fill 0xFFFFFFFF)
                                   (cuilay/width
-                                   300 (cui/dyncomp (text-input/make))))))
+                                   300 ((requiring-resolve 
+                                          'chic.ui.text-input/make))))))
                        (ui/gap 0 30)
                        (cui/dyncomp (error-button :draw))
                        (ui/gap 0 30)
@@ -160,50 +190,15 @@
                                      (cuilay/padding
                                       10 (cui/dyncomp (error-button :measure)))))))
                        (ui/gap 0 30)))))
-         :browser (cui/dyncomp (filebwr/basic-view))
-         :cljbrowser (cui/dyncomp (cljbwr/basic-view))
-         :textbox (cui/dyncomp (controls-demo/textbox-demo))
-         :constraints (cui/dyncomp (eg.constraints/view1))
-         :edit2 (cui/dyncomp (clj-editor2/sample-view))
-         :namespaces (cui/dyncomp (depview/basic-view))
-         :quantum (cui/dyncomp (quantum.demo/basic-view))
-         :digger (cui/dyncomp (digger/basic-view))
-         :controls (cui/dyncomp (controls-demo/basic-view))
-         :screens (cui/dyncomp (mccs.ui-basic/basic-view))
-         :picker (cui/dyncomp (picker-ui/basic-view))
-         :font (let [text "Sample"
-                     ref-size 50. ;; bigger -> more accurate & less excess trailing space
-                     ratio (/ (:width (.measureText (io.github.humbleui.skija.Font. chic.style/face-default ref-size) text))
-                              ref-size)]
-                 (cui/on-draw
-                  (fn [ctx cs ^io.github.humbleui.skija.Canvas canvas]
-                    (if false
-                      ;; Scaling implementation transitions more smoothly when scaling because it permits subpixel alignment
-                      ;; Also, individual letters jitter when adjusting height only whilst text is width-limited
-                      (let [font (io.github.humbleui.skija.Font.
-                                  chic.style/face-default (float (:height cs)))
-                            metrics (.getMetrics font)
-                            line (.shapeLine cui/shaper text font
-                                             io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
-                            width (.getWidth line)
-                            layer (.save canvas)
-                            sf (min 1 (/ (:width cs) width))]
-                        (.scale canvas sf sf)
-                        (.drawTextLine
-                         canvas line
-                         0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text)
-                        (.restoreToCount canvas layer))
-                      ;; Letters may look to jitter slightly relative to each other when scaling
-                      ;; as it ensures proper pixel alignment at every size.
-                      (let [height (float (min (/ (:width cs) ratio) (:height cs)))
-                            font (io.github.humbleui.skija.Font.
-                                  chic.style/face-default height)
-                            metrics (.getMetrics font)
-                            line (.shapeLine cui/shaper text font
-                                             io.github.humbleui.skija.shaper.ShapingOptions/DEFAULT)
-                            width (.getWidth line)
-                            sf (min 1 (/ (:width cs) width))]
-                        (.drawTextLine
-                         canvas line
-                         0 (Math/ceil (- 0 (.getBottom metrics) (.getTop metrics))) fill-text))))
-                  (ui/gap 0 0)))))])))
+         :browser ((requiring-resolve 'chic.filebwr/basic-view))
+         :cljbrowser ((requiring-resolve 'chic.cljbwr/basic-view))
+         :textbox ((requiring-resolve 'chic.controls-demo/textbox-demo))
+         :constraints ((requiring-resolve 'chic.example.constraints/view1))
+         :edit2 ((requiring-resolve 'chic.clj-editor2.core/sample-view))
+         :namespaces ((requiring-resolve 'chic.depview/basic-view))
+         :quantum ((requiring-resolve 'chic.quantum.demo/basic-view))
+         :digger ((requiring-resolve 'chic.digger/basic-view))
+         :controls ((requiring-resolve 'chic.controls-demo/basic-view))
+         :screens ((requiring-resolve 'chic.mccs.ui-basic/basic-view))
+         :picker ((requiring-resolve 'chic.colour.picker-ui/basic-view))
+         :font (cui/dyncomp (font-scaling-demo))))])))
