@@ -183,88 +183,90 @@
 (do
   (def --tree-code
     (util/quoted
-     (ui3/fnlet-widget
-      (fn ui-linear-treeview
-        [width->xbounds height->ybounds ^Rect frame-rect ^Rect visible-rect ^float scale mouse-pos
-         children-data ^int item-height intrmgr]
-        (let [ybounds (height->ybounds (* item-height (count children-data)))
-              content-y (:y ybounds)
-              #_#_{:keys [first-visible-idx last-visible-idxe content-x content-y]}
-              (let [nchildren (count children-data)]
-                (inline-fnsnip-multiretmap
-                 calc-list-positions-fnsnip
-                 [rect visible-rect offset-y offset-x item-height nchildren]))
-              font (Font. style/face-default
-                          (unchecked-float
-                           (unchecked-multiply
-                            scale (unchecked-float
+      (ui3/fnlet-widget
+        (fn ui-linear-treeview
+          [width->xbounds height->ybounds ^Rect frame-rect ^Rect visible-rect ^float scale mouse-pos
+           children-data ^int item-height intrmgr]
+          (let [ybounds (height->ybounds (* item-height (count children-data)))
+                content-y (:y ybounds)
+                ; {:keys [first-visible-idx last-visible-idxe content-x content-y]}
+                ; (let [nchildren (count children-data)]
+                ;   (inline-fnsnip-multiretmap
+                ;     calc-list-positions-fnsnip
+                ;     [rect visible-rect offset-y offset-x item-height nchildren]))
+                font (Font. style/face-default
+                       (unchecked-float
+                         (unchecked-multiply
+                           scale (unchecked-float
                                    (uifont/caph->size style/face-default 10.)))))
-              cap-height (.getCapHeight (.getMetrics font))
-              text-paint (huipaint/fill 0xEc000000)
-              ui-children (mapv (fn [_] (ui3/new-cmpt ui-icon-and-label-apt))
-                                children-data)
-              group-ranges (children-data->group-ranges children-data)
-              vline-cmpts (mapv (fn [_] (ui3/new-cmpt ui-indent-vline))
-                                group-ranges)
-              intr (uii3/open-interactor intrmgr {})
-              hover-idx (when (util/<=< (:x visible-rect) (:x mouse-pos) (:right visible-rect))
-                          (let [idx (long (Math/floor (/ (- (:y mouse-pos) content-y) item-height)))]
-                            (when (util/<=< 0 idx (count children-data))
-                              idx)))
-              visible-hover-rect (when hover-idx
-                                   (Rect. (:x visible-rect) (+ content-y (* hover-idx item-height))
-                                          (:right visible-rect) (+ content-y (* (inc hover-idx) item-height))))
-              hover-paint (huipaint/fill 0x10000000)
-              *child-widths (volatile! (sorted-set))
-              *xbounds (volatile! {:x 0 :right 0})
-              ^:always ^:diff xbounds @*xbounds
-              _ (when-some [width (first (rseq @*child-widths))]
-                  (vreset! *xbounds (width->xbounds width)))]
-          {:draw
-           (fn [cnv]
-             (when hover-idx
-               (.drawRect cnv visible-hover-rect hover-paint))
-             ;; (prn "treeview: in" (ui3/get-input-chmask) (ui3/get-changed-input-syms))
-             ;; (prn "treeview: f" (ui3/get-field-chmask) (ui3/get-changed-field-syms))
+                cap-height (.getCapHeight (.getMetrics font))
+                text-paint (huipaint/fill 0xEc000000)
+                ui-children (mapv (fn [_] (ui3/new-cmpt ui-icon-and-label-apt))
+                              children-data)
+                group-ranges (children-data->group-ranges children-data)
+                vline-cmpts (mapv (fn [_] (ui3/new-cmpt ui-indent-vline))
+                              group-ranges)
+                intr (uii3/open-interactor intrmgr {})
+                hover-idx (when (util/<=< (:x visible-rect) (:x mouse-pos) (:right visible-rect))
+                            (let [idx (long (Math/floor (/ (- (:y mouse-pos) content-y) item-height)))]
+                              (when (util/<=< 0 idx (count children-data))
+                                idx)))
+                visible-hover-rect (when hover-idx
+                                     (Rect. (:x visible-rect) (+ content-y (* hover-idx item-height))
+                                       (:right visible-rect) (+ content-y (* (inc hover-idx) item-height))))
+                hover-paint (huipaint/fill 0x10000000)
+                *child-widths (volatile! (sorted-set))
+                *xbounds (volatile! {:x 0 :right 0})
+                ^:always ^:diff xbounds @*xbounds
+                _ (when-some [width (first (rseq @*child-widths))]
+                    (vreset! *xbounds (width->xbounds width)))
+                _ (uii3/refresh-intr intr {:on-mousedown
+                                           (fn [_ _ctx evt]
+                                             (prn (nth children-data hover-idx)))})]
+            {:draw
+             (fn [cnv]
+               (when hover-idx
+                 (.drawRect cnv visible-hover-rect hover-paint))
+               ;; (prn "treeview: in" (ui3/get-input-chmask) (ui3/get-changed-input-syms))
+               ;; (prn "treeview: f" (ui3/get-field-chmask) (ui3/get-changed-field-syms))
 
-             (doit-zip [{:keys [level filename]} (eduction children-data)
-                        i (util/int-range-it)]
-               (ui3/draw-cmpt ^{:cmpt ui-icon-and-label-apt} (nth ui-children i)
-                              cnv
-                              {:idx (do children-data i)
-                               :filename (do children-data filename)
-                               :cap-height cap-height
-                               :item-height item-height
-                               :content-y content-y
-                               :widthch->xbounds
-                               (fn -widthch->xbounds [prev-width width]
-                                 (let [xindent (* scale 2 level)
-                                       full-prev-width (+ xindent prev-width)
-                                       full-width (+ xindent width)
-                                       max-width1 (first (rseq @*child-widths))
-                                       child-widths (vswap! *child-widths #(-> % (disj full-prev-width)
-                                                                               (conj full-width)))
-                                       max-width2 (first (rseq child-widths))
-                                       {:keys [x right]} (if (= max-width1 max-width2)
-                                                       @*xbounds
-                                                       (vreset! *xbounds (width->xbounds max-width2)))]
-                                   {:x (+ xindent x) :right right}))
-                               :text-paint text-paint
-                               :font font}))
-             (doit-zip [[start ende] ^Iterable group-ranges
-                        cmpt ^Iterable vline-cmpts]
-               (ui3/draw-cmpt ^{:cmpt ui-indent-vline} cmpt cnv
-                              {:scale scale
-                               :content-x (max (:x xbounds) (:x frame-rect))
-                               :level (:level (nth children-data start))
-                               :first-child-top (+ content-y (* item-height (inc start)))
-                               :parent-top (+ content-y (* item-height start))
-                               :last-child-bottom (+ content-y (* item-height ende))}))
-             (when (not= xbounds @*xbounds)
-               (uii3/refresh-intr intr {:rect (Rect. (:x @*xbounds) content-y
-                                                     (:right @*xbounds) (:bottom ybounds))
-                                        :on-mousedown (fn [_ _ctx evt]
-                                                        (prn 'hi))})))})))))
+               (doit-zip [{:keys [level filename]} (eduction children-data)
+                          i (util/int-range-it)]
+                 (ui3/draw-cmpt ^{:cmpt ui-icon-and-label-apt} (nth ui-children i)
+                   cnv
+                   {:idx (do children-data i)
+                    :filename (do children-data filename)
+                    :cap-height cap-height
+                    :item-height item-height
+                    :content-y content-y
+                    :widthch->xbounds
+                    (fn -widthch->xbounds [prev-width width]
+                      (let [xindent (* scale 2 level)
+                            full-prev-width (+ xindent prev-width)
+                            full-width (+ xindent width)
+                            max-width1 (first (rseq @*child-widths))
+                            child-widths (vswap! *child-widths #(-> % (disj full-prev-width)
+                                                                  (conj full-width)))
+                            max-width2 (first (rseq child-widths))
+                            {:keys [x right]} (if (= max-width1 max-width2)
+                                                @*xbounds
+                                                (vreset! *xbounds (width->xbounds max-width2)))]
+                        {:x (+ xindent x) :right right}))
+                    :text-paint text-paint
+                    :font font}))
+               (doit-zip [[start ende] ^Iterable group-ranges
+                          cmpt ^Iterable vline-cmpts]
+                 (ui3/draw-cmpt ^{:cmpt ui-indent-vline} cmpt cnv
+                   {:scale scale
+                    :content-x (max (:x xbounds) (:x frame-rect))
+                    :level (:level (nth children-data start))
+                    :first-child-top (+ content-y (* item-height (inc start)))
+                    :parent-top (+ content-y (* item-height start))
+                    :last-child-bottom (+ content-y (* item-height ende))}))
+               (when (or (not= xbounds @*xbounds) (ui3/changed? ybounds))
+                 (uii3/refresh-intr intr {:rect (Rect. (:x @*xbounds) content-y
+                                                  (max (:right frame-rect) (:right @*xbounds))
+                                                  (:bottom ybounds))})))})))))
   (def ui-linear-treeview (eval --tree-code)))
 
 (comment

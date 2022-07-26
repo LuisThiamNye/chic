@@ -3,6 +3,7 @@
   (:require
     [clojure.walk :as walk]
     [taoensso.encore :as enc]
+    [clojure.string :as str]
     [tech.droit.fset :as fset]
     [clojure.tools.analyzer.jvm :as ana]
     [clojure.tools.analyzer.passes :as ana.passes]
@@ -38,7 +39,9 @@
 (defmacro quoted [expr]
   `(quote ~expr))
 
-(defn index-of [coll x]
+(defn index-of ^long 
+  "Works on APersistentVector. Returns -1 if not found."
+  [coll x]
   (.indexOf ^clojure.lang.APersistentVector coll x))
 
 (defn remove-index
@@ -206,18 +209,38 @@
                     :locals
                     (update-vals env localbinding->ana-ast)))))))
 
+(defn primitive-name->class [nam]
+  (.componentType ^Class
+    (case nam
+      "byte" (Class/forName "[B")
+      "short" (Class/forName "[S")
+      "int" (Class/forName "[I")
+      "long" (Class/forName "[J")
+      "char" (Class/forName "[C")
+      "double" (Class/forName "[D")
+      "float" (Class/forName "[F")
+      "boolean" (Class/forName "[Z"))))
+
+(defn normalise-tag ^Class [tag]
+  (if (or (symbol? tag) (string? tag))
+    (let [r (resolve (symbol tag))]
+      (if (class? r) r 
+        (case (str tag)
+          "bytes" (Class/forName "[B")
+          "shorts" (Class/forName "[S")
+          "ints" (Class/forName "[I")
+          "longs" (Class/forName "[J")
+          "chars" (Class/forName "[C")
+          "doubles" (Class/forName "[D")
+          "floats" (Class/forName "[F")
+          "booleans" (Class/forName "[Z")
+          (primitive-name->class (str tag)))))
+    tag))
+
 (defn get-sym-tag
   "Class object or string if primitive."
   [sym]
-  (let [tag (:tag (meta sym) Object)
-        typ (if (or (symbol? tag) (string? tag))
-              (let [r (resolve (symbol tag))]
-                (if (class? r) r (str tag)))
-              tag)]
-    (if (class? typ)
-      (let [c ^Class typ]
-        (if (.isPrimitive c) (.getName c) c))
-      typ)))
+  (normalise-tag (:tag (meta sym) Object)))
 
 (defmacro doit-zip
   "Like doseq, but based on iterators. Zips through multiple iterables until one is exhausted."
@@ -286,12 +309,12 @@
 (defmacro oaccess-field [o fld]
   `(. ~o ~(symbol (str "-" fld))))
 
-(def ^:dynamic *unquote-exprs* nil)
+#_(def ^:dynamic *unquote-exprs* nil)
 
-(defmacro compile-dynamic-unquote [n]
+#_(defmacro compile-dynamic-unquote [n]
   (nth *unquote-exprs* n))
 
-(defmacro reify-template [code]
+#_(defmacro reify-template [code]
   (let [*unquotes (volatile! [])
         code2 (rwalk/walk-exprs (fn [node] (and (seq? node) (= `unquote (first node))))
                 (fn [expr]
@@ -309,13 +332,17 @@
   `(let* [~@(mapcat (fn [sym]
                         [sym `(gensym ~(str sym "_"))]) syms)]
      ~@body))
-#_
+
+(def ^:dynamic *macroexpand-creates-class* true)
+
 (defmacro instantiate-compiled [& forms]
   (let [init-args (butlast forms)
-        cls ^Class (with-bindings [clojure.lang.Compiler/LOADER
-                                   (clojure.lang.RT/makeClassLoader)]
-                     (eval (last forms)))]
-    `(new ~(symbol (.getName cls)) ~@init-args)))
+        cls ^Class 
+        (when *macroexpand-creates-class*
+          (with-bindings {clojure.lang.Compiler/LOADER
+                          (clojure.lang.RT/makeClassLoader)}
+            (eval (last forms))))]
+    `(new ~(symbol (if cls (.getName cls) "placeholder")) ~@init-args)))
 
 (defn -specialised-lookupthunk-reify-method [userclsname #_usercls-sym fld-sym]
   (unify-gensyms
@@ -330,15 +357,15 @@
 (defn -generic-lookupthunk-reify-method [userclsname #_usercls-sym fld-syms idx-sym]
   (let [mapsym (gensym "map-thing_")
         hinted-mapsym (with-meta mapsym {:tag userclsname})]
-      `(get [thunk# ~mapsym]
-         (case ~idx-sym
-           ~@(eduction
-               (map-indexed 
-                 (fn [i fld-sym]
-                       ~[(int i) `(oaccess-field ~hinted-mapsym ~fld-sym)]))
-               cat
-               fld-syms)
-           thunk#))))
+    `(get [thunk# ~mapsym]
+       (case ~idx-sym
+         ~@(eduction
+             (map-indexed 
+               (fn [i fld-sym]
+                 [(int i) `(oaccess-field ~hinted-mapsym ~fld-sym)]))
+             cat
+             fld-syms)
+         thunk#))))
 
 #_(defn -specialised-lookupthunk-method []
   `(getLookupThunk [self# k#]
@@ -362,7 +389,7 @@
                                          [(keyword fld-sym) (int i)]))
                                      cat ksyms))]
         (reify clojure.lang.ILookupThunk
-          ~(-generic-lookupthunk-reify-method userclsname ksyms ~'idx))))))
+          ~(-generic-lookupthunk-reify-method userclsname ksyms 'idx))))))
 
 (defn +deftype-lookup-pass* [userclsname kopt fields opts+specs]
   (let [ksyms (if (or (vector? kopt) (set? kopt))
@@ -385,6 +412,7 @@
              (case-expr nil)))
         (valAt [_# ~k-sym ~nf-sym]
           ~(case-expr nf-sym))
+        clojure.lang.ILookupThunk
         ~(-generic-lookupthunk-method userclsname ksyms)])))
 
 (defn +deftype-meta-pass* [opt fields opts+specs]
@@ -407,28 +435,42 @@
 
 (definterface IPrintableObjectFields)
 
-#_(set! *warn-on-reflection* true)
-#_(defmethod print-method IPrintableObjectFields [o ^java.io.Writer w]
-    print-meta
-    (.write w "#")
-    (.write w (.getName (class o)))
-  
-    )
-#_
-(let [o []
-      fields (.getFields (class o))]
-  (loopr [fmap {}
-          mta nil]
-    [fld fields]
-    (let [nam (.getName fld)
-          v (.get fld o)]
-      (if (= "__metaExt" nam)
-        (recur fmap v)
-        (recur (assoc fmap v) mta)))
-    (let [show-meta? (and *print-meta* *print-readably* (seq mta))]
-      (when show-meta?
-        )
-      fmap)))
+(def ^:dynamic ^io.lacuna.bifurcan.Set *observed-print-objects* 
+  (io.lacuna.bifurcan.Set. 
+    (reify java.util.function.ToLongFunction
+      (applyAsLong [_ o]
+        (hash o)))
+    (reify java.util.function.BiPredicate
+      (test [_ a b]
+        (identical? a b)))))
+
+(defmethod print-method IPrintableObjectFields [o ^java.io.Writer w]
+  (if (.contains *observed-print-objects* o)
+    (do (.write w "#")
+      (.write w (.getName (class o)))
+      (.write w "[<repeat>]"))
+    (binding [*observed-print-objects* 
+              (.add *observed-print-objects* o)]
+      (let [fields (.getDeclaredFields (class o))]
+        (chic.util.loopr/loopr [fld fields]
+          [fmap {} mta nil]
+          (<- (do (.setAccessible fld true))
+            (let [nam (.getName fld)
+                  v (.get fld o)])
+            (if (and (nil? mta) 
+                  (= "__metaExt" nam))
+              (recur fmap v)
+              (if (str/starts-with? nam "const__")
+                (recur fmap mta)
+                (recur (assoc fmap (symbol nam) v) mta))))
+          (let [show-meta? (and #_*print-meta* *print-readably* (some? mta))]
+            (when show-meta?
+              (.write w "^")
+              (print-method mta w)
+              (.write w " "))
+            (.write w "#")
+            (.write w (.getName (class o)))
+            (print-method fmap w)))))))
 
 (definterface IFieldSettable
   (__setField [^clojure.lang.Keyword kw v]))
@@ -468,6 +510,8 @@
         [optseq cust-opts (vec (drop (* 2 nopts) opts+specs))]))))
 
 (defmacro deftype+ [nam fields & opts+specs]
+  (enc/have vector? fields)
+  (enc/have symbol? nam)
   (let [cust-opt-keys #{:meta :keys :settable}
         [optseq cust-opts specs] (-parse-custom-opts+specs cust-opt-keys opts+specs)
         [fields specs] (if (:settable cust-opts)

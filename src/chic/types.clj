@@ -1,5 +1,6 @@
 (ns chic.types
   (:require
+    [chic.util :as util :refer [deftype+]]
    [clj-commons.primitive-math :as prim])
   (:import
    (java.text CharacterIterator)
@@ -9,21 +10,11 @@
   (reset-xyi [_ x y])
   (to-ipoint [_]))
 
-(deftype XyIMunsync [^:unsynchronized-mutable ^int x
-                     ^:unsynchronized-mutable ^int y]
+(deftype+ XyIMunsync [^:mut ^int x ^:mut ^int y]
+  :keys true
   PXyIM
   (reset-xyi [_ x2 y2] (set! x (int x2)) (set! y (int y2)))
-  (to-ipoint [_] (IPoint. x y))
-
-  clojure.lang.ILookup
-  (valAt [_ k notFound]
-    (case k
-      :x x :y y
-      notFound))
-  (valAt [_ k]
-    (case k
-      :x x :y y
-      nil)))
+  (to-ipoint [_] (IPoint. x y)))
 
 (deftype EmptyCharacterIterator []
   CharacterIterator

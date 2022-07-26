@@ -1,22 +1,32 @@
 (ns chic.util.analyzer
   (:require
     [chic.debug :as debug]
-   [clojure.tools.analyzer.jvm :as ana]
-   [clojure.tools.analyzer.passes :as ana.passes]))
+    [clojure.tools.analyzer.jvm :as ana]
+    [clojure.tools.analyzer.passes.jvm.emit-form :as jvm.emit-form]
+    [clojure.tools.analyzer.passes :as ana.passes]))
 
 (defn walk-tails [f ast]
   (case (:op ast)
-    :do (walk-tails f (:ret ast))
-    (:let :letfn) (walk-tails f (:body ast))
-    :if (do (walk-tails f (:then ast))
-          (walk-tails f (:else ast)))
-    :case (do (run! (partial walk-tails f) (eduction (map :then) (:thens ast)))
-            (walk-tails f (:default ast)))
-    (f ast))
-  nil)
+    :do (assoc ast :ret (walk-tails f (:ret ast)))
+    (:let :letfn) (assoc ast :body (walk-tails f (:body ast)))
+    :if (-> ast
+          (assoc :then (walk-tails f (:then ast)))
+          (assoc :else (walk-tails f (:else ast))))
+    :case 
+    (-> ast 
+      (assoc :thens (mapv(fn [x]
+                           (assoc x :then (walk-tails f (:then x))))
+                      (:thens ast)))
+      (assoc :default (walk-tails f (:default ast))))
+    (f ast)))
 
 (defn ast-env [bindings-env]
   (assoc (ana/empty-env) :locals bindings-env))
+
+(defn jvm-passes [ks]
+  (set (eduction (map name)
+         (map {"emit-form" #'jvm.emit-form/emit-form})
+         ks)))
 
 (defn build-ast 
   ([form] (build-ast form (ana/empty-env) {}))
@@ -34,8 +44,12 @@
   (binding [ana/run-passes (ana.passes/schedule #{#'identity})]
     (ana/analyze '(case 4 t 'p))))
 
-(walk-tails #(do (prn (:form %)) %) --ast)
+(comment
+  (walk-tails #(do (prn (:form %)) %) --ast)
 
-(-> --ast :body :ret :thens debug/puget-prn)
+  (-> --ast :body :ret :thens debug/puget-prn)
 
-(ana/macroexpand-all '(case 4 t 'p))
+  (ana/macroexpand-all '(case 4 t 'p))
+  (ana/macroexpand-all '(new "nil"))
+  
+  )

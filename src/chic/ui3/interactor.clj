@@ -33,12 +33,11 @@
           (when-not handled? (recur)))))))
 
 (defn -handle-mousedown [mgr ctx evt]
-  (prn (:intrs mgr))
   (let [it (util/to-iter (:intrs mgr))]
     (loop []
       (when-some [intr (util/iter-next it)]
         (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
-                         (when-some [f (.get ^java.util.Map (:handlers intr) :om-mousedown)]
+                         (when-some [f (.get ^java.util.Map (:handlers intr) :on-mousedown)]
                            (f intr ctx evt) true)) ]
           (when-not handled? (recur)))))))
 
@@ -47,7 +46,7 @@
     (loop []
       (when-some [intr (util/iter-next it)]
         (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
-                         (when-some [f (.get ^java.util.Map (:handlers intr) :om-mouseup)]
+                         (when-some [f (.get ^java.util.Map (:handlers intr) :on-mouseup)]
                            (f intr ctx evt) true)) ]
           (when-not handled? (recur)))))))
 
@@ -88,8 +87,9 @@
     intr))
 
 (defn refresh-intr [intr opts]
-  (setf! intr :rect (:rect opts))
   (let [handlers ^java.util.Map (:handlers intr)]
+    (when (contains? opts :rect)
+       (setf! intr :rect (:rect opts)))
     (when (contains? opts :on-scroll)
       (.put handlers :on-scroll (:on-scroll opts)))
     (when (contains? opts :on-mousedown)

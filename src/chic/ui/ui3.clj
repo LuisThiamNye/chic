@@ -1,41 +1,19 @@
 (ns chic.ui.ui3
   (:require
-   [chic.ui.font :as uifont]
-    [clojure.data]
-   [insn.core :as insn]
    [chic.debug :as debug]
-   [chic.ui.interactor :as uii]
-   [chic.style :as style]
-   [io.github.humbleui.paint :as huipaint]
-   [clojure.string :as str]
-   [chic.util :as util]
-   [chic.ui :as cui]
-   [clojure.pprint :as pp]
+   [chic.util :as util :refer [<- inline<-]]
    [chic.windows :as windows]
-   [chic.types :as types]
-   [proteus :refer [let-mutable]]
-   [potemkin :refer [doit] :as pot]
-   [clojure.tools.analyzer.jvm :as ana]
-   [clojure.tools.analyzer.passes :as ana.passes]
-   [clojure.tools.analyzer.utils :as ana.util]
+   [clojure.data]
+   [clojure.string :as str]
    [clojure.tools.analyzer.ast :as ana.ast]
-   [clojure.tools.analyzer.passes.jvm.infer-tag :as ana.jvm.infer-tag]
-   [clojure.tools.analyzer.passes.jvm.constant-lifter :as anap.constant-lifter]
-   [clj-commons.primitive-math :as prim]
-   [io.github.humbleui.core :as hui :refer [deftype+]]
-   [io.github.humbleui.protocols :as huip :refer [IComponent]]
-   [io.github.humbleui.profile :as profile]
-   [io.github.humbleui.ui :as ui]
+   [clojure.tools.analyzer.jvm :as ana]
+   [insn.core :as insn]
+   [potemkin :refer [doit] :as pot]
    [taoensso.encore :as enc])
   (:import
-   (io.lacuna.bifurcan LinearList)
-   (io.github.humbleui.skija.svg SVGLengthContext SVGDOM SVGSVG SVGLengthType)
-   (java.util ArrayList HashMap)
-   (io.github.humbleui.skija Data Canvas Font Paint TextLine FontMetrics)
-   (io.github.humbleui.skija.shaper ShapingOptions Shaper)
-   (io.github.humbleui.types IPoint IRect Rect Point)
-   (io.github.humbleui.jwm EventMouseMove EventTextInput EventKey)
-   (java.lang AutoCloseable)))
+   (io.github.humbleui.skija Canvas)
+   (java.lang AutoCloseable)
+   (java.util ArrayList)))
 
 ;; (defn rect->xbounds [^Rect rect])
 ;; (defn rect->ybounds [^Rect rect])
@@ -461,6 +439,16 @@
     (when-not (:fake? ctx)
       `(select-from-mask* (get-field-chmask)
                           '~(mapv :sym (:fields ctx))))))
+
+(defmacro changed? [sym]
+  (let [ctx *component-ctx*]
+    (when-not (:fake? ctx)
+      (<-
+        (let [i (util/index-of (mapv :sym (:fields ctx)) sym)])
+        (if (<= i 0) `(bit-test (get-field-chmask) ~i))
+        (let [i (util/index-of (mapv :sym (:inputs ctx)) sym)])
+        (if (<= i 0) `(bit-test (get-field-chmask) ~i))
+        (throw (Exception. "Not an input nor field symbol"))))))
 
 (defmacro new-cmpt [cmpt-sym]
   (let [cmpt @(resolve cmpt-sym)]
