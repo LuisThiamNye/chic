@@ -1,14 +1,18 @@
 (ns chic.debug
   (:require
+    [potemkin :as pot]
+    [chic.debug.nrepl :as debug.nrepl]
     [taoensso.truss :as truss]
-   [nrepl.middleware :as nreplm]
-   [puget.printer :as puget]
-   [puget.color.ansi])
+    [chic.util :as util :refer [deftype+ <-]]
+    [chic.puget]
+    [nrepl.middleware :as nreplm]
+    [puget.printer :as puget]
+    [puget.color.ansi])
   (:import
-   (java.lang StackWalker StackWalker$Option)
-   (io.github.humbleui.jwm App)))
+    (java.lang StackWalker StackWalker$Option)
+    (io.github.humbleui.jwm App)))
 
-(defonce ^java.io.OutputStreamWriter main-out *out*)
+(defonce ^java.io.Writer main-out *out*)
 
 #_(defn nrepl-handle-out [handler]
   (fn [msg]
@@ -205,7 +209,7 @@
       :class-name      [:bold :br-red]}})))
 
 (defn puget-prn [x]
-  (println-main (puget/pprint-str x)))
+  (println-main (puget/render-str (chic.puget/pretty-printer nil) x)))
 
 (defn ^:dynamic report-data [k data] nil)
 
@@ -221,11 +225,65 @@
      ~@body
      *reported-data*))
 
+(def ^:dynamic *last-error* nil)
+
+(swap! debug.nrepl/*root-session-bindings assoc #'*last-error* nil)
+
+(defn ^:dynamic report-error-data [data]
+  (set! *last-error* data))
+
 (truss/set-error-fn!
   (fn [*data]
     (let [data @*data]
       (binding [*print-length* 1200]
         (puget-prn (dissoc data :msg_)))
       (throw (AssertionError. @(:msg_ data))))))
+
+(definterface IObjectCljView
+  (getCurrentMap []))
+
+(deftype+ ObjectCljView [object fields ^java.lang.reflect.Field meta-field]
+  :default-print true
+  IObjectCljView
+  (getCurrentMap [_] 
+    (into (sorted-map) 
+      (map (fn [[nam f]]
+             [(symbol nam) (.get ^java.lang.reflect.Field f object)]))
+      fields))
+  clojure.lang.ILookup
+  (valAt [self k] (.valAt self k nil))
+  (valAt [_ k nf]
+    (let [fld ^java.lang.reflect.Field (get fields (name k))]
+      (if fld
+        (.get fld object)
+        nf)))
+  clojure.lang.Counted
+  (count [_] (count fields))
+  clojure.lang.Seqable
+  (seq [self]
+    (seq (.getCurrentMap self)))
+  clojure.lang.IMeta
+  (meta [_] (when meta-field (.get meta-field object)))
+  Object
+  (toString [self] (pr-str (.getCurrentMap self))))
+
+(defmethod print-method IObjectCljView [^IObjectCljView o ^java.io.Writer w]
+  (print-method (.getCurrentMap o) w))
+
+(defn obj->clj [o]
+  (let [fields (.getDeclaredFields (class o))]
+    (util/loopr [fld fields]
+      [fmap (sorted-map) mta nil]
+      (<- (do (.setAccessible fld true))
+        (let [nam (.getName fld)])
+        (if (and (nil? mta) 
+              (contains? #{"_meta" "__metaExt"} nam))
+          (recur fmap fld)
+          (if (java.lang.reflect.Modifier/isStatic (.getModifiers fld))
+            (recur fmap mta)
+            (recur (assoc fmap nam fld) mta))))
+      (->ObjectCljView o fmap mta))))
+
+
 
 

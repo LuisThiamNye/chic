@@ -1,8 +1,8 @@
 (ns chic.windows
   (:require
-   [potemkin :refer [doit]]
+   [potemkin :as pot :refer [doit]]
    [chic.debug :as debug]
-   [chic.util :as util]
+   [chic.util :as util :refer [<- inline<-]]
    [taoensso.encore :as enc]
    [chic.ui.event :as uievt]
    [io.github.humbleui.paint :as huipaint]
@@ -11,6 +11,8 @@
    [chic.error.stacktrace :as error.stacktrace]
    [chic.style :as style]
    [chic.ui :as cui]
+    [chic.ui2.event :as ievt]
+    [chic.ui.canvas :as cnv]
    [chic.ui.error :as cui.error]
    [chic.ui.layout :as cuilay]
    [io.github.humbleui.core :as hui]
@@ -19,10 +21,12 @@
    [io.github.humbleui.ui :as ui]
    [io.github.humbleui.window :as huiwin])
   (:import
+    (java.lang AutoCloseable)
    (io.github.humbleui.jwm EventMouseButton EventMouseMove EventMouseScroll
-                           EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
-                           EventFrame)
-   (io.github.humbleui.jwm.skija EventFrameSkija)
+     EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+     EventFrame Platform Event EventWindowClose EventWindowCloseRequest)
+   (io.github.humbleui.jwm.skija 
+     EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
    (io.github.humbleui.skija Canvas Font Paint)
    (io.github.humbleui.types IPoint)))
 
@@ -155,6 +159,8 @@
        (doit [cb post-handlers]
          (cb))
        (when (or changed? (not (or (instance? EventFrame jwmevt)
+                                 (instance? EventWindowClose jwmevt)
+                                 (instance? EventWindowCloseRequest jwmevt)
                                    (instance? EventFrameSkija jwmevt)
                                    ;(instance? EventMouseMove jwmevt)
                                    ;(instance? EventKey jwmevt)
@@ -176,7 +182,6 @@
     (huiwin/request-frame (:window-obj window))))
 
 (defn set-visible [window tf]
-  ;; (vreset! (:*visible? window) tf)
   (huiwin/set-visible (:window-obj window) tf))
 
 (defn error-view []
@@ -273,7 +278,8 @@
            :*ctx (or *ctx (atom {}))
            :window-obj (huiwin/make
                         {:on-close #(do (swap! *windows dissoc id)
-                                        (on-close))
+                                      (ui/child-close @*app-root)
+                                      (on-close))
                          :on-paint #(on-paint (get @*windows id) %2)
                          :on-event #(on-event (get @*windows id) %2)})}
         w (with-meta w
@@ -286,7 +292,9 @@
   {:pre [(on-ui-thread?)]}
   (let [on-paint (or on-paint #'on-paint-handler)
         on-event (or on-event #'on-event-handler)
+        on-close (or on-close (constantly nil))
         *app-root (or *app-root (volatile! nil))
+        id (or id (random-uuid))
         w {:id id
            :*app-root *app-root
            :*ui-error (volatile! nil)
@@ -297,7 +305,8 @@
            :*ctx (or *ctx (atom {}))
            :window-obj (huiwin/make
                         {:on-close #(do (swap! *windows dissoc id)
-                                        (on-close))
+                                      (ui/child-close @*app-root)
+                                      (on-close))
                          :on-paint #(on-paint (get @*windows id) %2)
                          :on-event #(on-event (get @*windows id) %2)})}
         w (with-meta w
@@ -305,6 +314,39 @@
     (vreset! *app-root (build-app-root))
     (swap! *windows assoc id w)
     w))
+
+(definterface PaintAndEventHandler
+  (^void paint [^io.github.humbleui.skija.Canvas canvas])
+  (^void notifyEvent [^io.github.humbleui.jwm.Event _event]))
+
+(defn make-jwm-window
+  (^Window [^PaintAndEventHandler handler]
+    (doto (App/makeWindow)
+      (.setLayer
+        (util/case-enum Platform/CURRENT
+          WINDOWS (LayerD3D12Skija.)
+          MACOS (LayerMetalSkija.)
+          X11 (LayerGLSkija.)))
+      (.setEventListener
+        (reify java.util.function.Consumer
+          (accept [_ evt]
+            (ievt/case-event evt
+              :frame-skija
+              (let [cnv (.getCanvas (.getSurface evt))]
+                (cnv/with-save cnv
+                  (try (.paint handler cnv)
+                    (catch Throwable e
+                      (.printStackTrace e)))))
+              (.notifyEvent handler evt))))))))
+
+(def *window-registry (atom #{}))
+(comment (count @*window-registry))
+
+(defn register-window! [win]
+  (swap! *window-registry conj win))
+
+(defn unreg-window! [win]
+  (swap! *window-registry disj win))
 
 (defn remount-all-windows []
   (safe-dosendui
@@ -314,94 +356,14 @@
 (comment
   (remount-window (val (first @*windows)))
   (request-frame (val (first @*windows)))
-  (:window-obj (second (vals @*windows)))
-  (dosendui
-   (.setTitlebarVisible (:window-obj (first (vals @*windows))) true))
 
-  (io.github.humbleui.jwm.Log/setLogger
-   (reify java.util.function.Consumer
-     (accept [self data]
-       (chic.debug/println-main data))))
+  (-> (debug/obj->clj (first @*window-registry))
+    (get 'root)
+    debug/obj->clj
+    (get 'dev_view)
+    debug/obj->clj
+    (->> (into {}))
+    clojure.pprint/pprint)
 
-  (def --app
-    (ui/dynamic
-     _ [x (rand)]
-     (cuilay/valign
-      x
-      (cuilay/halign
-       0 (ui/fill
-          (huipaint/fill 0xff000000)
-          (ui/gap 20 20))))))
-
-  (def --c (atom 1))
-  (defn --on-paint [window ^Canvas canvas]
-    ;; (chic.debug/println-main "pspdf")
-    (.clear canvas (unchecked-int 0xFFF6F6F6))
-    (let [bounds (huiwin/content-rect window)
-          ctx {:scale (huiwin/scale window)}
-          ctx (assoc ctx
-                     :chic.ui/component-rect bounds
-                     :chic.ui/window-content-bounds bounds)]
-      ;; (huip/-measure --app ctx (io.github.humbleui.types.IRect/makeXYWH
-      ;;                          0 0 (:width bounds) (:height bounds)))
-      (huip/-draw --app ctx
-                  (io.github.humbleui.types.IRect/makeXYWH
-                   0 0 (:width bounds) (:height bounds)) canvas)
-      (if (< 2 @--c)
-        (do (chic.debug/println-main "Paint")
-            (huiwin/request-frame window))
-        (do
-          (chic.debug/println-main "PAINT without request-frame")
-          (swap! --c inc)))))
-
-  (defn --on-event [window event]
-    (chic.debug/println-main "Event: " event)
-    (when-let [changed? (huip/-event --app {:event event})]
-      (huiwin/request-frame window)))
-  (def --window (atom nil))
-
-  (defn --make-window []
-    (let [screen (last (App/getScreens))
-          scale (.getScale screen)
-          width (* 600 scale)
-          height (* 400 scale)
-          area (.getWorkArea screen)
-          x (:x area)
-          y (-> (:height area) (- height) (/ 2) (+ (:y area)))
-          window (huiwin/make
-                  {:on-close #(reset! --window nil)
-                   :on-paint #'--on-paint
-                   :on-event #'--on-event})]
-      (chic.debug/println-main "Setting window title...")
-      (huiwin/set-title window "Humble UI")
-      (chic.debug/println-main "Setting window size...")
-      (huiwin/set-window-size window width height)
-      (chic.debug/println-main "Setting window position...")
-      (huiwin/set-window-position window x y)
-      (chic.debug/println-main "Setting window visible...")
-      ;; (huiwin/request-frame window)
-      (huiwin/set-visible window true)))
-
-  (dosendui
-   (.close @--window))
-  (dosendui
-   (try
-     (reset! --c 1#_3)
-     (reset! --window (--make-window))
-        (catch Exception e
-          (chic.debug/println-main (pr-str e)))))
-  (dosendui
-   ;; (prn 2)
-   (try (huiwin/request-frame @--window)
-        ;; (prn 3)
-        (catch Exception e
-          (chic.debug/println-main (pr-str e)))))
-
-  (dosendui
-   (prn 2)
-   (try (huiwin/request-frame (:window-obj (first (vals @*windows))))
-        (prn 3)
-        (catch Exception e
-          (chic.debug/println-main (pr-str e)))))
   #!
   )

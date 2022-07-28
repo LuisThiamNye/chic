@@ -1,3 +1,3 @@
 ;;
-{:tasks {repl (clojure "-M:repl/cider:dev")
+{:tasks {repl (apply clojure "-M:repl/cider:dev" *command-line-args*)
          dev (clojure "-M:dev")}}

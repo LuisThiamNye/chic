@@ -1,13 +1,16 @@
 (ns chic.ui2.event
-  #_(:require
-     [])
+  (:require
+    [chic.util :as util])
   (:import
-   (io.github.humbleui.jwm MouseButton Event EventFrame EventKey EventMouseButton
-                           EventMouseMove EventMouseScroll EventTextInput EventTextInputMarked
-                           EventWindowClose EventWindowCloseRequest EventWindowFocusIn
-                           EventWindowFocusOut EventWindowMaximize EventWindowMinimize
-                           EventWindowMove EventWindowResize EventWindowRestore
-                           EventWindowScreenChange)))
+    (io.github.humbleui.jwm.skija EventFrameSkija)
+    (io.github.humbleui.jwm MouseButton Event EventFrame EventKey 
+      EventMouseButton EventMouseMove EventMouseScroll EventTextInput EventTextInputMarked
+      EventWindowClose EventWindowCloseRequest EventWindowFocusIn
+      EventWindowFocusOut EventWindowMaximize EventWindowMinimize
+      EventWindowMove EventWindowResize EventWindowRestore
+      EventWindowScreenChange)) 
+  (:require
+    [io.github.humbleui.ui :as ui]))
 
 (def kw->mouse-button
   {:primary MouseButton/PRIMARY
@@ -48,6 +51,7 @@
 
 (def kw->event-class
   {:frame EventFrame
+   :frame-skija EventFrameSkija
    :key EventKey
    :mouse-button EventMouseButton
    :mouse-move EventMouseMove
@@ -66,12 +70,19 @@
    :window-screen-change EventWindowScreenChange})
 
 (defmacro case-event [evt & clauses]
-  `(case (.getClass ~(with-meta evt {:tag `Event}))
-     ~@(into [] (mapcat (fn [[k expr]]
-                          [(kw->event-class k) expr]))
-             (partitionv 2 clauses))
-     ~(when (odd? (count clauses))
-        (last clauses))))
+  (let [fallback (when (odd? (count clauses))
+                   (last clauses))
+        pairs (mapcat (fn [[k expr]]
+                        [(kw->event-class k) expr])
+                (partitionv 2 clauses))]
+    `(util/case-instance ~evt ~@pairs ~fallback)))
 
 (defn key-down? [^EventKey evt]
   (.-_isPressed evt))
+
+(defmacro mouse-x [evt]
+  `(.-_x ~(vary-meta evt assoc :tag `EventMouseMove)))
+
+(defmacro mouse-y [evt]
+  `(.-_y ~(vary-meta evt assoc :tag `EventMouseMove)))
+

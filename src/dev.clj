@@ -1,31 +1,25 @@
 (ns dev 
   (:require
-    [nrepl.cmdline :as nreplcmd]))
+    [riddley.walk :as rwalk]
+    [chic.debug.nrepl :refer [*last-eval*]]
+    [user]
+    [chic.debug :as debug :refer [*last-error*]]))
 
-(require '[nrepl.cmdline :as nreplcmd] '[nrepl.server :as server] '[rebel-readline.core] '[rebel-readline.clojure.line-reader]   '[rebel-readline.clojure.service.local]   '[rebel-readline.clojure.main] '[cider.nrepl :refer [cider-nrepl-handler]])
 
-(def server
-  (let [r (promise)]
-    (.start (Thread. 
-              (fn [] (deliver r
-                       (server/start-server
-                         :port 7890
-                         {:handler cider-nrepl-handler}))))) r))
+(do
+  (def last-eval (let [le *last-eval*]
+                 {:code (read-string (:code le))
+                  :ns (find-ns (:ns le))}))
+  (def last-code (:code last-eval)))
 
-(defn start-rebel []
-  (rebel-readline.core/with-line-reader
-    (rebel-readline.clojure.line-reader/create
-      (rebel-readline.clojure.service.local/create))
-    (clojure.main/repl
-      :prompt (fn [])
-      :read (rebel-readline.clojure.main/create-repl-read))))
+(debug/puget-prn
+  last-code)
 
-(def rebel
-  (let [r (promise)]
-    (.start
-      (Thread.
-        (fn []
-          (deliver r (start-rebel)))))
-    r))
-    
-(defn -main [& args])
+(binding [*ns* (:ns last-eval)]
+  (debug/puget-prn
+    (rwalk/macroexpand-all last-code)))
+
+
+(-> (:ctx *last-error*)
+  :raw-body-ana
+  :body :op)

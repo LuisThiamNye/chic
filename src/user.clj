@@ -1,17 +1,22 @@
-(ns user)
-
-;;(require '[nrepl.server :as server] '[rebel-readline.core] '[rebel-readline.clojure.line-reader]   '[rebel-readline.clojure.service.local]   '[rebel-readline.clojure.main] '[cider.nrepl :refer [cider-nrepl-handler]])
+(ns user
+  (:require
+    [debux.core]))
 
 ;(defn -main [& args])
+(comment
+  (set! *print-length* 2000)
+  (set! *print-level* 8)
+  (set! *warn-on-reflection* true))
 
 (comment
   (require '[lambdaisland.classpath.watch-deps :as watch-deps])
-  (watch-deps/start! {:aliases [:dev]})
+  
+  (defonce --watcher
+    (watch-deps/start! {:aliases [:dev]}))
   
   (require '[clojure.tools.deps.alpha.repl])
   (clojure.tools.deps.alpha.repl/add-libs
-    '{philoskim/debux {:mvn/version "0.8.2"}
-      com.lambdaisland/classpath {:mvn/version "0.0.27"}})
+    '{})
   
-  (require 'debux.core)
+  (run! prn (sort (map #(.getName %) (.keySet (Thread/getAllStackTraces)))))
   )

@@ -13,7 +13,8 @@
    [io.github.humbleui.ui :as ui]
    [io.github.humbleui.window :as huiwin])
   (:import
-   [io.github.humbleui.skija Font Paint]))
+    (io.github.humbleui.jwm App Screen)
+    (io.github.humbleui.skija Font Paint)))
 
 (def *pressed-keys (volatile! #{}))
 (def focus-manager (focus/new-manager))
@@ -131,13 +132,14 @@
                       0.5 (cuilay/padding 20 0 (ui/label "Reload" font-ui fill-text)))))))))))))
 
 (defn make-main-window []
-  (let [screen (last (hui/screens))
-        scale (:scale screen)
+  (let [screen ^Screen (last (App/getScreens))
+        scale (.getScale screen)
         width (* 600 scale)
         height (* 400 scale)
-        area (:work-area screen)
+        area (.getWorkArea screen)
         x (:x area)
         y (-> (:height area) (- height))
+        _ (prn y)
         w (windows/make2
             {:id "main"
              :*app-root *app-root
@@ -149,8 +151,7 @@
       (huiwin/set-window-position x y))
     (windows/set-visible w true)))
 
-(debugger/install-debug-ctx!)
-
 (defn start-ui []
-  (hui/start make-main-window))
+  (debugger/install-debug-ctx!)
+  (App/start make-main-window))
 

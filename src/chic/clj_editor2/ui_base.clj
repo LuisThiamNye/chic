@@ -1,69 +1,117 @@
 (ns chic.clj-editor2.ui-base
   (:require
-   [chic.style :as style]
-   [chic.ui.font :as uifont]
-   [chic.clj-editor2.file-tree :as file-tree]
-   [chic.ui :as cui]
-   [chic.ui.ui2 :as ui2]
-   [chic.clj-editor.ast :as ast]
-   [io.github.humbleui.paint :as huipaint]
-   [io.github.humbleui.window :as huiwin]
-   [chic.paint :as cpaint]
-   [chic.ui.layout :as cuilay]
-   [chic.windows :as windows]
-   [io.github.humbleui.ui :as ui]
-   [chic.clj-editor.parser :as parser])
+    [chic.style :as style]
+    [chic.ui.font :as uifont]
+    [chic.clj-editor2.file-tree :as file-tree]
+    [chic.ui :as cui]
+    [chic.debug :as debug]
+    [chic.types :as types]
+    [chic.ui2.event :as ievt]
+    [chic.ui.ui2 :as ui2]
+    [chic.ui.ui3 :as ui3]
+    [chic.ui3.interactor :as uii3]
+    [chic.clj-editor.ast :as ast]
+    [io.github.humbleui.paint :as huipaint]
+    [chic.paint :as cpaint]
+    [chic.util :as util :refer [deftype+ <-]]
+    [chic.windows :as windows]
+    [io.github.humbleui.ui :as ui]
+    [chic.clj-editor.parser :as parser])
   (:import
-   (io.github.humbleui.jwm Window)
-   (io.github.humbleui.skija Paint Font)
-   (io.github.humbleui.types Rect Point)))
+    (java.lang AutoCloseable)
+    (chic.types IXyIM)
+    (io.github.humbleui.jwm Window)
+    (io.github.humbleui.skija Paint Font)
+    (io.github.humbleui.types Rect Point)))
 
-(def sample-ast (parser/read-fresh (java.io.StringReader. (slurp "src/chic/ui.clj"))))
+;(def sample-ast (parser/read-fresh (java.io.StringReader. (slurp "src/chic/ui.clj"))))
 
-#_(defn ui-coll-container [{}]
-    (cui2/layout
-     {:init {}}
-     (ui/clip-rrect
-      5
-      (ui/fill (huipaint/fill 0x20000000)
-               (ui/gap 100 100)))))
+(ui3/deffnletcmpt ui-root [intrmgr ^float scale rect]
+  (let [dev-view (ui3/new-cmpt file-tree/ui-dev-view)]
+    {:draw 
+     (fn [cnv]
+       (.clear cnv (unchecked-int 0xFFffffff))
+       (ui3/draw-cmpt
+         dev-view cnv
+         {:rect rect
+          :visible-rect rect
+          :scale scale
+          :intrmgr intrmgr}))}))
 
-;; (def *layout (atom {1 {}}))
+(deftype+ EditorWindowV3 [^:mut ^Window jwm-window
+                          ^:mut ctx
+                          ^:mut ^float scale
+                          ^:mut ^Rect rect
+                          ^IXyIM mouse-pos
+                          intrmgr
+                          ^:mut ^int chmask
+                          root]
+  :keys [jwm-window] 
+  :settable [jwm-window]
+  chic.windows.PaintAndEventHandler
+  (paint [_ cnv]
+    (util/clearing-thread-locals 
+      [windows/*root-ctx ctx]
+      (ui3/draw-cmpt-ext ^{:cmpt ui-root} root cnv chmask
+        {:intrmgr intrmgr
+         :rect rect
+         :scale scale}))
+    (set! chmask (unchecked-int 0)))
+  (notifyEvent [self evt]
+    (ievt/case-event evt
+      :frame nil
+      :window-close-req (.close jwm-window)
+      :window-close (.close self)
+      (do (ievt/case-event evt
+            :window-resize
+            (let [content-rect (.getContentRect jwm-window)]
+              (set! rect (Rect. 0 0 (.getWidth content-rect) (.getHeight content-rect)))
+              (set! chmask (unchecked-int (bit-set chmask 1))))
+            :window-screen-change
+            (do (set! scale (.getScale (.getScreen jwm-window)))
+              (set! chmask (unchecked-int (bit-set chmask 2))))
+            :mouse-move
+            (.resetXy mouse-pos (ievt/mouse-x evt) (ievt/mouse-y evt)))
+        (uii3/-handle-jwm-event intrmgr ctx evt)
+        (.requestFrame jwm-window))))
+  java.lang.AutoCloseable
+  (close [self]
+    (do (windows/unreg-window! self)
+      (.close ^AutoCloseable root))))
 
-(defn build-menu-window-root [{}]
-  (ui/dynamic
-    ctx [{:keys [scale]} ctx]
-    (ui/with-context
-      {:font-ui (Font. style/face-code-default (float (* scale 12)))
-       :fill-text (huipaint/fill 0xFF000000)
-       :font-code (Font. style/face-code-default (float (* 12 scale)))}
-      (ui2/v1-root
-       {}
-       (ui2/stack
-        (file-tree/a-view))))))
+(defn new-window-box []
+  (let [mouse-pos (types/->XyIMunsync -1 -1)
+        ctx {:chic.ui/mouse-win-pos mouse-pos}]
+    (doto (->EditorWindowV3 nil 
+              #_ctx ctx
+              #_scale 1.
+              #_rect (Rect. -1 -1 -1 -1)
+              #_mouse-pos mouse-pos
+              #_intrmgr (uii3/new-manager)
+              #_chmask Integer/MAX_VALUE
+              #_root (util/clearing-thread-locals
+                       [windows/*root-ctx ctx]
+                       (ui3/new-cmpt ui-root)))
+      (windows/register-window!))))
 
 (defn make-bwr-window [{:keys [window]}]
   {:pre [(map? window)]}
   (let [screen (.getScreen ^Window (:window-obj window))
         scale (.getScale screen)
-        ;; area (.getWorkArea screen)
+        area (.getWorkArea screen)
         width (* 800 scale)
-        height (* 500 scale)
-        window-rect (huiwin/window-rect (:window-obj window))
-        ;; x (+ (:x window-rect) (:x mouse-pos))
-        ;; y (+ (:y window-rect) (:y mouse-pos))
-        w (windows/make2
-           {:id (random-uuid)
-            :build-app-root (fn [] (cui/dyncomp (build-menu-window-root {})))
-            :on-close (fn [])})
-        wo (:window-obj w)]
-    (doto wo
-      (huiwin/set-title (str "Browser"))
-      (huiwin/set-window-size width height)
-      #_(huiwin/set-window-position x y))
-    ;; (huiwin/set-visible wo true)
-    (windows/set-visible w true)
-    (.focus wo)))
+        height (* 500 scale)]
+    (util/with-keep-open 
+      [w (new-window-box)
+       jw (windows/make-jwm-window w)]
+      (util/setf! w :jwm-window jw)
+      (doto jw
+        (.setTitle "Browser")
+        (.setWindowSize width height)
+        (.setWindowPosition (:x area) (:y area))
+        (.setVisible true)
+        #_(.requestFrame))
+      (.focus jw))))
 
 (defn sample-view []
   (let [font (Font. style/face-code-default (float 24))

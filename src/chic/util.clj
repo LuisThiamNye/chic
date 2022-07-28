@@ -1,16 +1,29 @@
 (ns chic.util
   (:refer-clojure :exclude [compile])
   (:require
+    [chic.util.impl.base :as impl.base]
+    [chic.util.impl.analyzer :as impl.ana]
+    [chic.util.impl.loopr :as impl.loopr]
     [clojure.walk :as walk]
+    [chic.util.ns :as util.ns]
     [taoensso.encore :as enc]
     [clojure.string :as str]
     [tech.droit.fset :as fset]
-    [clojure.tools.analyzer.jvm :as ana]
-    [clojure.tools.analyzer.passes :as ana.passes]
-    [clojure.tools.analyzer.passes.jvm.constant-lifter :as anap.constant-lifter]
-    [clojure.tools.analyzer.passes.jvm.infer-tag :as ana.jvm.infer-tag]
     [potemkin :refer [unify-gensyms doit]]
-    [riddley.walk :as rwalk]))
+    [riddley.walk :as rwalk]
+    [io.github.humbleui.paint :as huipaint]))
+
+(util.ns/inherit-vars
+  util.ns/inherit-vars
+  impl.base/<-
+  impl.base/primitive-name->class
+  impl.base/local-binding-tag
+  impl.base/tag-class
+  impl.base/case-instance
+  impl.base/simple-symbol
+  impl.ana/infer-tag
+  impl.ana/analyze-const?
+  impl.loopr/loopr)
 
 (def ^:constant phi-1 (double (/ (- (Math/sqrt 5) 1) 2)))
 (def ^:constant phi (double (/ (+ 1 (Math/sqrt 5)) 2)))
@@ -39,9 +52,9 @@
 (defmacro quoted [expr]
   `(quote ~expr))
 
-(defn index-of ^long 
+(defn index-of
   "Works on APersistentVector. Returns -1 if not found."
-  [coll x]
+  ^long [coll x]
   (.indexOf ^clojure.lang.APersistentVector coll x))
 
 (defn remove-index
@@ -49,6 +62,34 @@
   ([coll from to-exclusive]
    (into (subvec coll 0 from)
      (subvec coll to-exclusive))))
+
+(defn nther 
+  ([index] #(nth % index))
+  ([index not-found] #(nth % index not-found)))
+
+#_(defmacro binding-thread-locals [bindvec & body]
+  (let* []
+    ))
+
+(defmacro clearing-thread-locals [bindvec & body]
+  (let [bindings (partitionv 2 bindvec)
+        _ (assert (every? symbol? (map (nther 0) bindings)))]
+    `(try ~@(map (fn [[sym expr]]
+                  `(.set ~sym ~expr))
+             bindings)
+       ~@body
+       (finally ~@(map (fn [[sym _]]
+                         `(.set ~sym nil))
+                    bindings)))))
+
+(defmacro with-keep-open [bindvec & body]
+  (if (zero? (count bindvec))
+    `(do ~@body)
+    (let [[sym init & rest] bindvec]
+      `(let [~sym ~init]
+         (try (with-keep-open ~(vec rest)
+                ~@body)
+           (catch Throwable _# (. ~sym close)))))))
 
 (def *template-var->generated-var
   (atom {}))
@@ -145,10 +186,6 @@
            code##)
          code##))))
 
-(defmacro <- [& forms] `(->> ~@(reverse forms)))
-
-(macroexpand-1 '(as-> 1 x (prn 1) (prn 2) (prn 3)))
-
 (defmacro inline<- [sym & exprs]
   (loop [templates (reverse (butlast exprs))
          child (last exprs)]
@@ -168,79 +205,29 @@
             `(->> ~child ~st))))
       child)))
 
-(defn ana-ast-infer-tag ^Class [ast]
-  (:tag ((ana.passes/schedule
-           #{#'ana.jvm.infer-tag/infer-tag})
-         ast)))
+(defn get-form-tag
+  "Returns class object. Fall backs to Object."
+  [form]
+  (tag-class (:tag (meta form) Object)))
 
-(defn local-binding-tag ^Class [binding]
-  (or (:tag binding)
-    (if (map? binding)
-      (ana-ast-infer-tag binding)
-      (let [binding ^clojure.lang.Compiler$LocalBinding binding]
-        (when (.hasJavaClass binding) (.getJavaClass binding))))))
+(defn prim-or-obj-class [^Class c]
+  (if (.isPrimitive c) c Object))
 
-(defn localbinding->ana-ast [obj]
-  (if (map? obj)
-    obj
-    (let [obj ^clojure.lang.Compiler$LocalBinding obj]
-      {:op :binding
-       :name (.-sym obj)
-       :form (.-sym obj)
-       :local (if (.-isArg obj) :arg :let)
-       :tag (when (.hasJavaClass obj) (.getJavaClass obj))
-       ;; :init {}
-       :children [] #_[:init]})))
-
-(defn infer-tag ^Class [expr env]
-  (if-some [binding (get env expr)]
-    (local-binding-tag binding)
-    (binding [ana/run-passes (ana.passes/schedule #{#'ana.jvm.infer-tag/infer-tag})]
-      (:tag (ana/analyze expr (assoc (ana/empty-env) :locals env
-                                #_(update-vals env localbinding->ana-ast)))))))
-
-(defn analyze-const? [expr env]
-  (= :const
-    (:op (binding [ana/run-passes
-                   (ana.passes/schedule
-                     #{#'anap.constant-lifter/constant-lift})]
-           (ana/analyze
-             expr (assoc (ana/empty-env)
-                    :locals
-                    (update-vals env localbinding->ana-ast)))))))
-
-(defn primitive-name->class [nam]
-  (.componentType ^Class
-    (case nam
-      "byte" (Class/forName "[B")
-      "short" (Class/forName "[S")
-      "int" (Class/forName "[I")
-      "long" (Class/forName "[J")
-      "char" (Class/forName "[C")
-      "double" (Class/forName "[D")
-      "float" (Class/forName "[F")
-      "boolean" (Class/forName "[Z"))))
-
-(defn normalise-tag ^Class [tag]
-  (if (or (symbol? tag) (string? tag))
-    (let [r (resolve (symbol tag))]
-      (if (class? r) r 
-        (case (str tag)
-          "bytes" (Class/forName "[B")
-          "shorts" (Class/forName "[S")
-          "ints" (Class/forName "[I")
-          "longs" (Class/forName "[J")
-          "chars" (Class/forName "[C")
-          "doubles" (Class/forName "[D")
-          "floats" (Class/forName "[F")
-          "booleans" (Class/forName "[Z")
-          (primitive-name->class (str tag)))))
-    tag))
-
-(defn get-sym-tag
-  "Class object or string if primitive."
-  [sym]
-  (normalise-tag (:tag (meta sym) Object)))
+(defmacro case-enum [enum & clauses]
+  (let [cls (or (tag-class (:tag (meta enum))) (infer-tag enum &env))
+        names->ordinals
+        (when cls (reduce (fn [m ^Enum e]
+                            (assoc m (.name e) (.ordinal e)))
+                    {} (.getEnumConstants cls)))]
+    `(case (.ordinal ~(cond-> enum (nil? cls) 
+                        (vary-meta assoc :tag 'Enum)))
+       ~@(mapcat (fn [[variant expr]]
+                   [(or (when (simple-symbol? variant)
+                          (get names->ordinals (name variant)))
+                      (.ordinal ^Enum (eval variant))) expr])
+           (partitionv 2 clauses))
+       ~@(when (odd? (count clauses))
+           [(last clauses)]))))
 
 (defmacro doit-zip
   "Like doseq, but based on iterators. Zips through multiple iterables until one is exhausted."
@@ -344,27 +331,28 @@
             (eval (last forms))))]
     `(new ~(symbol (if cls (.getName cls) "placeholder")) ~@init-args)))
 
-(defn -specialised-lookupthunk-reify-method [userclsname #_usercls-sym fld-sym]
+(defn -specialised-lookupthunk-reify-method [userclsname usercls-sym fld-sym]
   (unify-gensyms
     `(get [thunk# mapthing##]
-       ;(if (identical? (class mapthing##) ~usercls-sym)
+       (if (identical? (class mapthing##) ~usercls-sym)
          (oaccess-field
            ~(with-meta 'mapthing## {:tag userclsname})
            ~fld-sym)
-         ;thunk#)
-    )))
+         thunk#))))
 
-(defn -generic-lookupthunk-reify-method [userclsname #_usercls-sym fld-syms idx-sym]
+(defn -generic-lookupthunk-reify-method [userclsname usercls-sym fld-syms idx-sym]
   (let [mapsym (gensym "map-thing_")
         hinted-mapsym (with-meta mapsym {:tag userclsname})]
     `(get [thunk# ~mapsym]
-       (case ~idx-sym
-         ~@(eduction
-             (map-indexed 
-               (fn [i fld-sym]
-                 [(int i) `(oaccess-field ~hinted-mapsym ~fld-sym)]))
-             cat
-             fld-syms)
+       (if (identical? (class ~mapsym) ~usercls-sym)
+         (case ~idx-sym
+           ~@(eduction
+               (map-indexed 
+                 (fn [i fld-sym]
+                   [(int i) `(oaccess-field ~hinted-mapsym ~fld-sym)]))
+               cat
+               fld-syms)
+           thunk#)
          thunk#))))
 
 #_(defn -specialised-lookupthunk-method []
@@ -389,12 +377,10 @@
                                          [(keyword fld-sym) (int i)]))
                                      cat ksyms))]
         (reify clojure.lang.ILookupThunk
-          ~(-generic-lookupthunk-reify-method userclsname ksyms 'idx))))))
+          ~(-generic-lookupthunk-reify-method userclsname 'usercls ksyms 'idx))))))
 
-(defn +deftype-lookup-pass* [userclsname kopt fields opts+specs]
-  (let [ksyms (if (or (vector? kopt) (set? kopt))
-                kopt (mapv enc/without-meta fields))
-        k-sym (gensym "k")
+(defn +deftype-lookup-pass* [userclsname ksyms fields opts+specs]
+  (let [k-sym (gensym "k")
         case-expr (fn [nf]
                     `(case ~k-sym
                        ~@(mapcat (fn [sym]
@@ -452,7 +438,7 @@
     (binding [*observed-print-objects* 
               (.add *observed-print-objects* o)]
       (let [fields (.getDeclaredFields (class o))]
-        (chic.util.loopr/loopr [fld fields]
+        (loopr [fld fields]
           [fmap {} mta nil]
           (<- (do (.setAccessible fld true))
             (let [nam (.getName fld)
@@ -460,7 +446,7 @@
             (if (and (nil? mta) 
                   (= "__metaExt" nam))
               (recur fmap v)
-              (if (str/starts-with? nam "const__")
+              (if (java.lang.reflect.Modifier/isStatic (.getModifiers fld))
                 (recur fmap mta)
                 (recur (assoc fmap (symbol nam) v) mta))))
           (let [show-meta? (and #_*print-meta* *print-readably* (some? mta))]
@@ -472,8 +458,18 @@
             (.write w (.getName (class o)))
             (print-method fmap w)))))))
 
+(prefer-method print-method IPrintableObjectFields clojure.lang.IDeref)
+
 (definterface IFieldSettable
-  (__setField [^clojure.lang.Keyword kw v]))
+  (__setField [^clojure.lang.Keyword kw v])
+  (__setField [^clojure.lang.Keyword kw ^byte v])
+  (__setField [^clojure.lang.Keyword kw ^short v])
+  (__setField [^clojure.lang.Keyword kw ^int v])
+  (__setField [^clojure.lang.Keyword kw ^long v])
+  (__setField [^clojure.lang.Keyword kw ^float v])
+  (__setField [^clojure.lang.Keyword kw ^double v])
+  (__setField [^clojure.lang.Keyword kw ^char v])
+  (__setField [^clojure.lang.Keyword kw ^boolean v]))
 
 (defn setf! [^IFieldSettable o k v]
   (.__setField o k v))
@@ -481,20 +477,36 @@
 (defn alterf! [^IFieldSettable o k f & args]
   (.__setField o k (apply f (get o k) args)))
 
-(defn +deftype-settable-pass* [fields opts+specs]
-  (let [mut-fields (into [] (comp
-                              (filter (fn [sym]
-                                        (seq (fset/select-keys (meta sym) #{:mut :vmut}))))
-                              (map enc/without-meta))
+(defn +deftype-settable-pass* [settable-syms kflds fields opts+specs]
+  (let [mut-fields (into #{} 
+                     (filter (fn [sym]
+                               (seq (fset/select-keys (meta sym) 
+                                      #{:mut :vmut}))))
                      fields)
-        v-sym (gensym "v")]
-    [fields (into opts+specs
-              `[IFieldSettable
-                (__setField [_# k# ~v-sym]
-                  (case k#
-                    ~@(mapcat (fn [sym]
-                                [(keyword sym) `(set! ~sym ~v-sym)])
-                        mut-fields)))])]))
+        settable-syms (cond
+                        (sequential? settable-syms) settable-syms
+                        (true? settable-syms) 
+                        (if kflds
+                          (mapv (set kflds) mut-fields)
+                          (mapv enc/without-meta mut-fields))
+                        :else (throw (Exception. "Invalid :settable")))
+        _ (assert (every? mut-fields settable-syms))
+        by-tag (group-by (comp prim-or-obj-class get-form-tag) 
+                 (map mut-fields settable-syms))
+        v-sym (gensym "v")
+        k-sym (with-meta (gensym "k")
+                {:tag "clojure.lang.Keyword"})]
+    [fields 
+     (into (conj opts+specs `IFieldSettable)
+       (map
+         (fn [[^Class tag syms]]
+           `(__setField [_# ~k-sym ~(with-meta v-sym 
+                                      {:tag (.getName tag)})]
+              (case ~k-sym
+                ~@(mapcat (fn [sym]
+                            [(keyword sym) `(set! ~(enc/without-meta sym) ~v-sym)])
+                        syms)))))
+       by-tag)]))
 
 (defn -parse-custom-opts+specs [cust-opt-keys opts+specs]
   (let [it (to-iter (eduction (partition-all 2)
@@ -512,10 +524,13 @@
 (defmacro deftype+ [nam fields & opts+specs]
   (enc/have vector? fields)
   (enc/have symbol? nam)
-  (let [cust-opt-keys #{:meta :keys :settable}
+  (let [cust-opt-keys #{:meta :keys :settable :default-print}
         [optseq cust-opts specs] (-parse-custom-opts+specs cust-opt-keys opts+specs)
-        [fields specs] (if (:settable cust-opts)
-                         (+deftype-settable-pass* fields specs)
+        kflds (when-some [kopt (:keys cust-opts)]
+                (if (vector? kopt)
+                  kopt (mapv enc/without-meta fields)))
+        [fields specs] (if-some [settable-syms (:settable cust-opts)]
+                         (+deftype-settable-pass* settable-syms kflds fields specs)
                          [fields specs])
         fields (mapv (fn [sym] (vary-meta sym #(when %
                                                  (fset/rename-keys
@@ -523,13 +538,16 @@
                                                       :vmut :volatile-mutable}))))
                  fields)
         specs (vec specs)
-        specs (if-some [kopt (:keys cust-opts)]
-                (+deftype-lookup-pass* nam kopt fields specs)
+        specs (if kflds
+                (+deftype-lookup-pass* nam kflds fields specs)
                 specs)
         [fields specs] (if-some [opt (:meta cust-opts)]
                          (+deftype-meta-pass* opt fields specs)
                          [fields specs])
-        specs (conj specs `IPrintableObjectFields)]
+        specs (cond-> specs 
+                (and (nil? (:default-print cust-opts))
+                  (not-any? #{'clojure.lang.IDeref 'IDeref 'IPrintableObjectFields} specs))
+                (conj `IPrintableObjectFields))]
     `(deftype ~nam ~fields
        ~@optseq
        ~@specs)))
@@ -559,10 +577,6 @@
                 (+reify-lookup-pass* kopt specs)
                 specs)]
     `(reify ~@optseq ~@specs)))
-
-(defn nther 
-  ([index] #(nth % index))
-  ([index not-found] #(nth % index not-found)))
 
 (defmacro minirec [& kvs]
     (let [kvs (partitionv 2 kvs)

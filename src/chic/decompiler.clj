@@ -42,11 +42,19 @@
                        :bytecode-ast (Languages/bytecodeAst)))))
     (str w)))
 
+(defn decompile-clj-expr [lang form]
+  (try (compile-classfiles form)
+    (mapv (fn [path]
+            [(str (fs/relativize tmp-dir path)) (decompile path lang)])
+      (compiled-classfile-paths))
+    (finally (clean-tmp-dir))))
+
 (comment
   (clean-tmp-dir)
-  (compile-classfiles '(case 4 :x 1 :y 2 :else))
-
-  (taoensso.encore/case-eval Compiler Compiler 1 Thread 2 :else)
+  (doseq [[p c] (decompile-clj-expr :bytecode 
+                  '(type (Boolean/valueOf (.booleanValue false))))]
+    (println p)
+    (println c))
 
   (let [path (first (compiled-classfile-paths))]
     (debug/println-main (decompile path :java)))
@@ -71,3 +79,4 @@
 
   #!
   )
+

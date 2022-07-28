@@ -27,7 +27,7 @@
     (loop []
       (when-some [intr (util/iter-next it)]
         (let [rect (:rect intr)
-              handled? (and (point-in-rect? rect (:chic.ui.ui2/mouse-pos ctx))
+              handled? (and (point-in-rect? rect (:chic.ui/mouse-win-pos ctx))
                             (when-some [f (.get ^java.util.Map (:handlers intr) :on-scroll)]
                               (f intr ctx evt) true))]
           (when-not handled? (recur)))))))
@@ -36,7 +36,7 @@
   (let [it (util/to-iter (:intrs mgr))]
     (loop []
       (when-some [intr (util/iter-next it)]
-        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
+        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui/mouse-win-pos ctx))
                          (when-some [f (.get ^java.util.Map (:handlers intr) :on-mousedown)]
                            (f intr ctx evt) true)) ]
           (when-not handled? (recur)))))))
@@ -45,7 +45,7 @@
   (let [it (util/to-iter (:intrs mgr))]
     (loop []
       (when-some [intr (util/iter-next it)]
-        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui.ui2/mouse-pos ctx))
+        (let [handled? (and (point-in-rect? (:rect intr) (:chic.ui/mouse-win-pos ctx))
                          (when-some [f (.get ^java.util.Map (:handlers intr) :on-mouseup)]
                            (f intr ctx evt) true)) ]
           (when-not handled? (recur)))))))

@@ -1,6 +1,7 @@
 (ns chic.ui.ui2
   (:require
    [chic.ui.font :as uifont]
+    [chic.ui.canvas :as cnv]
    [chic.debug]
    [chic.ui.interactor :as uii]
    [chic.style :as style]
@@ -38,13 +39,8 @@ If winodw ctx, Makes sense to have the special mount function rather than a comm
 subscription-like dependency system because the window ctx should only change
 if moved between windows (or when EventScreenChange so scale can be in win ctx).
 "
-
-(defmacro with-save [canvas & body]
-  (assert (symbol? canvas))
-  `(let [c# (.save ^Canvas ~canvas)]
-     (try
-       ~@body
-       (finally (.restoreToCount ^Canvas ~canvas c#)))))
+(util/inherit-vars
+  cnv/with-save)
 
 (defn -transmit-rect [widget ctx rect]
   (if-some [adapt-rect (get widget :adapt-rect)]

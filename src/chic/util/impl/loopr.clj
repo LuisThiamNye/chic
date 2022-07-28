@@ -1,13 +1,10 @@
-(ns chic.util.loopr
+(ns chic.util.impl.loopr
   (:require
-    [chic.util :as util :refer [deftype+ <- inline<-]]
-    [chic.util.analyzer :as util.ana]
-    [clojure.walk :as walk]
+    [chic.util.impl.base :refer [<- tag-class]]
+    [chic.util.impl.analyzer :as impl.ana]
     [taoensso.encore :as enc]
     [tech.droit.fset :as fset]
     [clojure.tools.analyzer.jvm :as ana]
-    [clojure.tools.analyzer.ast :as ana.ast]
-    [clojure.tools.analyzer.passes :as ana.passes]
     [potemkin :refer [unify-gensyms doit]]
     [riddley.walk :as rwalk]))
 
@@ -35,10 +32,10 @@
     (fn
       ([[_env bindings]] bindings)
       ([[env bindings] [sym coll-expr]]
-       (let [coll-tag (util/normalise-tag (util/infer-tag coll-expr env))
+       (let [coll-tag (tag-class (impl.ana/infer-tag coll-expr env))
              item-meta-tag (:tag (meta sym))
              item-tag (if item-meta-tag
-                        (util/normalise-tag item-meta-tag)
+                        (tag-class item-meta-tag)
                         (if (.isArray coll-tag)
                           (.componentType coll-tag)
                           Object))
@@ -59,7 +56,7 @@
     (fn
       ([[_env bindings]] bindings)
       ([[env bindings] [sym init]]
-       (let [tag (util/infer-tag init env)]
+       (let [tag (impl.ana/infer-tag init env)]
          [(assoc env sym {:tag tag})
           (conj bindings
             {:sym sym :tag tag :init init})])))
@@ -71,7 +68,7 @@
   )
 
 (defn reducify-loop-ast [xacc-syms ast]
-  (util.ana/walk-tails
+  (impl.ana/walk-tails
     (fn [node]
       (if (= :recur (:op node))
         #_(let [recmap (:form (first (:exprs node)))]
@@ -91,10 +88,10 @@
     ast))
 
 (defn reducify-loop-form [accinfos form]
-  (@(first (util.ana/jvm-passes ['emit-form]))
+  (@(first (impl.ana/jvm-passes ['emit-form]))
     (reducify-loop-ast 
       (mapv :sym (enc/vnext accinfos))
-      (util.ana/build-ast form
+      (impl.ana/build-ast form
         (assoc (dissoc (ana/empty-env) :no-recur)
           :context :ctx/return
           :loop-locals (count accinfos)
@@ -126,7 +123,7 @@
        )))
 
 (defn arrayify-loop-ast [idx-sym ast]
-  (util.ana/walk-tails
+  (impl.ana/walk-tails
     (fn [node]
       (if (= :recur (:op node))
         (update node :exprs conj
@@ -136,10 +133,10 @@
     ast))
 
 (defn arrayify-loop-form [accinfos idx-sym form]
-  (@(first (util.ana/jvm-passes ['emit-form]))
+  (@(first (impl.ana/jvm-passes ['emit-form]))
     (arrayify-loop-ast 
       idx-sym
-      (util.ana/build-ast form
+      (impl.ana/build-ast form
         (assoc (dissoc (ana/empty-env) :no-recur)
           :context :ctx/return
           :loop-locals (count accinfos)
