@@ -69,9 +69,11 @@
         children-cmpts [(ui3/new-cmpt ui-inspector-content)]
         _close (reify java.lang.AutoCloseable
                  (close [_] (doit [^AutoCloseable c children-cmpts]
-                              (.close c))))]
+                              (.close c))))
+        bg-paint (cpaint/fill 0xFFf0f0f0)]
     {:draw
      (fn [cnv]
+       (.drawRect cnv rect bg-paint)
        (doit-zip [cmpt children-cmpts
                   i (util/int-range-it first-child-idx Integer/MAX_VALUE)]
          (let [child (nth children i)]

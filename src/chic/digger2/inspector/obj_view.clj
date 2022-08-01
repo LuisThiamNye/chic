@@ -92,9 +92,11 @@
         class-textline (uifont/shape-line-default large-font 
                          (second (re-find #"([^.]+)$" (.getName (class object)))))
         text-paint (cpaint/fill 0xFF000000)
-        flds-cmpt (ui3/new-cmpt ui-fields-view)]
+        flds-cmpt (ui3/new-cmpt ui-fields-view)
+        bg-paint (cpaint/fill 0xFFffffff)]
     {:draw
      (fn [cnv]
+       (.drawRect cnv rect bg-paint)
        (let [ns-y (+ (* scale 12) (:y rect))
              cls-y (+ ns-y (* 17 scale))]
          (.drawTextLine cnv clsns-textline (:x rect) ns-y text-paint)

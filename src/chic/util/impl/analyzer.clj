@@ -1,6 +1,8 @@
 (ns chic.util.impl.analyzer
   (:require
     [chic.util.impl.base :as impl.base :refer [primitive-name->class tag-class]]
+    [riddley.walk :as rwalk]
+    [riddley.compiler :as rcomp]
     [clojure.tools.analyzer
      [jvm :as ana]
      [env :as ana.env]
@@ -131,6 +133,30 @@
                     :locals
                     (update-vals env localbinding->ana-ast)))))))
 
+(defn free-variables 
+  ([form] (free-variables form (rcomp/locals)))
+  ([form env]
+   (let [*frees (volatile! (transient #{}))]
+     (with-bindings {Compiler/LOCAL_ENV env}
+       (rwalk/walk-exprs
+         (fn pred [form]
+           (symbol? form))
+         (fn handler [form]
+           (when-not (contains? (rcomp/locals) form)
+             (vswap! *frees conj! form))
+           form)
+         form)
+       (persistent! @*frees)))))
+
+(comment
+  (= #{'x} (free-variables '(do x)))
+  (= #{'x} (free-variables '(do x (quote (a b)))))
+  (= #{'x} (free-variables '(do x (let [x 1] x))))
+  (= #{} (free-variables '(let [x 1])))
+  (= #{} (free-variables '(let [x 1] x)))
+  (= #{} (free-variables '(let [x 1] x a) {'a {}}))
+  )
+
 (comment
   (walk-tails #(do (prn (:form %)) %) --ast)
 
@@ -138,14 +164,6 @@
 
   (ana/macroexpand-all '(case 4 t 'p))
   (ana/macroexpand-all '(new "nil"))
-  
-  (fn [^java.lang.reflect.Field x]
-    (let [m (.getModifiers x)
-          n nil]
-      (chic.util/compile
-        (fn [env]
-          (prn (infer-tag '(java.lang.reflect.Modifier/isPrivate m) env))
-))))
   
   clojure.tools.analyzer.env/*env*
   
