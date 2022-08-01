@@ -4,6 +4,7 @@
     [chic.util.impl.base :as impl.base]
     [chic.util.impl.analyzer :as impl.ana]
     [chic.util.impl.loopr :as impl.loopr]
+    [clojure.tools.analyzer.jvm.utils :as ana.jvm.utils]
     [clojure.walk :as walk]
     [chic.util.ns :as util.ns]
     [taoensso.encore :as enc]
@@ -15,6 +16,8 @@
 
 (util.ns/inherit-vars
   util.ns/inherit-vars
+  impl.base/not-found
+  impl.base/not-found?
   impl.base/<-
   impl.base/primitive-name->class
   impl.base/local-binding-tag
@@ -23,10 +26,36 @@
   impl.base/simple-symbol
   impl.ana/infer-tag
   impl.ana/analyze-const?
-  impl.loopr/loopr)
+  impl.ana/infer-form-tag
+  impl.loopr/loopr
+  impl.loopr/loop-zip)
 
-(def ^:constant phi-1 (double (/ (- (Math/sqrt 5) 1) 2)))
-(def ^:constant phi (double (/ (+ 1 (Math/sqrt 5)) 2)))
+
+(def ^:const phi-1 (double (/ (- (Math/sqrt 5) 1) 2)))
+(def ^:const phi (double (/ (+ 1 (Math/sqrt 5)) 2)))
+
+(defn get-form-tag
+  "Returns class object. Fall backs to Object."
+  [form]
+  (tag-class (:tag (meta form) Object)))
+
+(defmacro obj-array [& items]
+  (let* [o (gensym "o_")]
+    (list 'let* [o (list `object-array (count items))]
+      (list* 'do
+        (map-indexed 
+          (fn [i item]
+            (let [c (infer-form-tag item &env)]
+              (list `aset o (int i) 
+                (cond
+                  (nil? c)
+                  `(let* [x# ~(vary-meta item assoc :tag "Object")] x#)
+                  (.isPrimitive c)
+                  (list '. (symbol (.getName (ana.jvm.utils/box c)))
+                    (list 'valueOf item))
+                  :else item))))
+          items))
+      o)))
 
 (defn url->bytes [url]
   (with-open [^java.io.InputStream input-stream (.openStream (java.net.URL. url))]
@@ -89,7 +118,8 @@
       `(let [~sym ~init]
          (try (with-keep-open ~(vec rest)
                 ~@body)
-           (catch Throwable _# (. ~sym close)))))))
+           (catch Throwable _# 
+             (. ~(vary-meta sym assoc :tag 'java.lang.AutoCloseable) close)))))))
 
 (def *template-var->generated-var
   (atom {}))
@@ -205,11 +235,6 @@
             `(->> ~child ~st))))
       child)))
 
-(defn get-form-tag
-  "Returns class object. Fall backs to Object."
-  [form]
-  (tag-class (:tag (meta form) Object)))
-
 (defn prim-or-obj-class [^Class c]
   (if (.isPrimitive c) c Object))
 
@@ -232,32 +257,8 @@
 (defmacro doit-zip
   "Like doseq, but based on iterators. Zips through multiple iterables until one is exhausted."
   [it-exprs & body]
-  (let [bindings (partitionv 2 it-exprs)
-        it-bindings
-        (mapv (fn [[_ coll-expr]]
-                (if (= java.util.Iterator (infer-tag coll-expr &env))
-                  {:it-sym (if (symbol? coll-expr) coll-expr (gensym "iterator"))
-                   :it-expr coll-expr
-                   :symbol? (symbol? coll-expr)}
-                  {:it-sym (gensym "iterator")
-                   :it-expr `(.iterator ~(with-meta (if (seq? coll-expr)
-                                                      coll-expr
-                                                      `(do ~coll-expr)) {:tag "Iterable"}))}))
-          bindings)
-        it-syms (mapv :it-sym it-bindings)]
-    `(let [~@(into [] (comp (remove :symbol?)
-                        (mapcat (fn [{:keys [it-sym it-expr]}]
-                                  [it-sym it-expr])))
-               it-bindings)]
-       (loop []
-         (when (and ~@(map (fn [it-sym]
-                             `(.hasNext ~it-sym))
-                        it-syms))
-           (let [~@(mapcat (fn [[item-expr _] it-sym]
-                             [item-expr `(.next ~it-sym)])
-                     bindings it-syms)]
-             ~@body)
-           (recur))))))
+  ;; TODO base on loop-zip
+  (list `loop-zip it-exprs [] `(do ~@body (recur)) nil))
 
 (deftype IntRangeIteratorInf [^:unsynchronized-mutable ^int i]
   java.util.Iterator

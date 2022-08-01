@@ -10,7 +10,10 @@
           chic.util.impl.base/<- hooks.chic/<-
           chic.util/inherit-vars hooks.chic/inherit-vars
           chic.util.ns/inherit-vars hooks.chic/inherit-vars
-          chic.util/loopr hooks.chic/loopr}}
+          chic.util/loopr hooks.chic/loopr
+          chic.util.impl.loopr/loopr hooks.chic/loopr
+          chic.util/loop-zip hooks.chic/loopr
+          chic.util.impl.loopr/loop-zip hooks.chic/loopr}}
 
  :linters {:redundant-do {:level :off}
            :use {:level :off}}}

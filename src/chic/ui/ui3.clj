@@ -1,19 +1,21 @@
 (ns chic.ui.ui3
   (:require
-   [chic.debug :as debug]
-   [chic.util :as util :refer [<- inline<-]]
-   [chic.windows :as windows]
-   [clojure.data]
-   [clojure.string :as str]
-   [clojure.tools.analyzer.ast :as ana.ast]
-   [clojure.tools.analyzer.jvm :as ana]
-   [insn.core :as insn]
-   [potemkin :refer [doit] :as pot]
-   [taoensso.encore :as enc])
+    [chic.debug :as debug]
+    [chic.util :as util :refer [<- inline<- loop-zip loopr]]
+    [chic.util.impl.analyzer :as util.ana]
+    [chic.windows :as windows]
+    [clojure.data]
+    [clojure.string :as str]
+    [clojure.tools.analyzer.ast :as ana.ast]
+    [clojure.tools.analyzer.passes :as ana.passes]
+    [clojure.tools.analyzer.jvm :as ana]
+    [insn.core :as insn]
+    [potemkin :refer [doit doary] :as pot]
+    [taoensso.encore :as enc])
   (:import
-   (io.github.humbleui.skija Canvas)
-   (java.lang AutoCloseable)
-   (java.util ArrayList)))
+    (io.github.humbleui.skija Canvas)
+    (java.lang AutoCloseable)
+    (java.util ArrayList)))
 
 ;; (defn rect->xbounds [^Rect rect])
 ;; (defn rect->ybounds [^Rect rect])
@@ -51,15 +53,30 @@
                 :methods [{:flags #{:public} :name 'close :desc [:void]
                            :emit [[:return]]}]}))
 
+(defn -define-cmpt-draw-interface [sym draw-param-sig]
+  (insn/define
+    {:flags #{:public :interface :abstract}
+     :name sym
+     :interfaces [cmpt3-java-interface]
+     :version 19
+     :methods [{:flags #{:public :abstract} :name "draw"
+                :desc (conj draw-param-sig 'void)}]}))
+
+(defn safe-close-ary [resources]
+  (doary [r resources]
+    (when (some? r)
+      (try (.close ^AutoCloseable r)
+        (catch Throwable e
+          (.printStackTrace e))))))
+
 (defn fnlet-widget-to-code*
   [{:keys [bindings input-chmask-sym c-sym bindings-anas
            unchanged-intf? i-sym body-ana draw-param-vec
-           raw-input-syms input-syms retexpr draw-env]}]
-  {:pre [(some? draw-env)]}
+           raw-input-syms input-syms retexpr draw-env
+           draw-param-sig used-bindings]}]
   (assert (<= (count input-syms) 32))
   (assert (<= (count bindings) 32))
   (let [draw-body (next (drop-while (complement vector?) (:draw retexpr)))
-        used-bindings (filterv (complement :unused?) bindings)
         field-vec (mapv (fn [{:keys [^Class tag sym mutable?]}]
                           (with-meta sym (cond-> {:tag (symbol (.getName tag))}
                                            mutable?
@@ -84,56 +101,50 @@
         fch-conds 
         (keep
           (fn [{:keys [sym vexpr input-depmask field-depmask unused?
-                       diff always? independent? close? i]}]
-            (let [arg-check (when-not (== 0 input-depmask)
-                              `(not (== 0 (bit-and ~input-chmask-sym ~input-depmask))))
-                  field-check (when-not (== 0 field-depmask)
-                                `(not (== 0 (bit-and ~field-chmask-sym ~field-depmask))))
-                  vexpr (binding [*component-ctx* expand-ctx]
-                          (ana/macroexpand-all vexpr draw-env))]
-              (when (or (not independent?) always?)
-                (let [runexpr (if unused?
-                                `(do ~vexpr ~field-chmask-sym)
-                                (let [setexpr (fn [vexpr]
-                                                `(do ~@(when close?
-                                                         `[(when-not (nil? ~sym)
-                                                             (.close ~sym))])
-                                                   (set! ~sym ~vexpr)
-                                                   (bit-set ~field-chmask-sym ~i)))]
-                                  (if diff
-                                    (let [new-sym (gensym "new")]
-                                      `(let [~new-sym ~vexpr]
-                                         (if (~diff ~sym ~new-sym)
-                                           ~field-chmask-sym
-                                           ~(setexpr new-sym))))
-                                    (setexpr vexpr))))]
-                  `(as-> ~field-chmask-sym
-                     ~(if always?
-                        runexpr
-                        `(if ~(if (and arg-check field-check)
-                                `(or ~arg-check ~field-check)
-                                (or arg-check field-check))
-                           ~runexpr
-                           ~field-chmask-sym)))))))
-                    bindings)
+                       diff always? close? mutable? i]}]
+            (when mutable?
+              (let [arg-check (when-not (== 0 input-depmask)
+                                `(not (== 0 (bit-and ~input-chmask-sym ~input-depmask))))
+                    field-check (when-not (== 0 field-depmask)
+                                  `(not (== 0 (bit-and ~field-chmask-sym ~field-depmask))))
+                    vexpr (binding [*component-ctx* expand-ctx]
+                            (ana/macroexpand-all vexpr draw-env))
+                    runexpr (if unused?
+                              `(do ~vexpr ~field-chmask-sym)
+                              (let [setexpr (fn [vexpr]
+                                              `(do ~@(when close?
+                                                       `[(when-not (nil? ~sym)
+                                                           (.close ~sym))])
+                                                 (set! ~sym ~vexpr)
+                                                 (bit-set ~field-chmask-sym ~i)))]
+                                (if diff
+                                  (let [new-sym (gensym "new")]
+                                    `(let [~new-sym ~vexpr]
+                                       (if (~diff ~sym ~new-sym)
+                                         ~field-chmask-sym
+                                         ~(setexpr new-sym))))
+                                  (setexpr vexpr))))]
+                `(as-> ~field-chmask-sym
+                   ~(if always?
+                      runexpr
+                      `(if ~(if (and arg-check field-check)
+                              `(or ~arg-check ~field-check)
+                              (or arg-check field-check))
+                         ~runexpr
+                         ~field-chmask-sym))))))
+          bindings)
         closeable-field-syms
         (into [] (comp (filter :close?) (map :sym)) used-bindings)]
     `(binding [*unchecked-math* true]
-       (let [iface# ~(if unchanged-intf?
-                       `(resolve '~i-sym)
-                       `(insn/define
-                          {:flags #{:public :interface :abstract}
-                           :name '~i-sym
-                           :interfaces [cmpt3-java-interface]
-                           :version 19
-                           :methods [{:flags #{:public :abstract} :name "draw"
-                                      :desc ~(conj (mapv (comp :tag meta) draw-param-vec)
-                                                   :void)}]}))
+       (let* [iface# ~(if unchanged-intf?
+                        (list `resolve (list 'quote i-sym))
+                        (list `-define-cmpt-draw-interface 
+                           (list 'quote i-sym) draw-param-sig))
              cls# (eval
                    (quote
                     (deftype ~c-sym ~field-vec
                       ~i-sym
-                      (draw ~(into ['_] (map #(with-meta % nil)) draw-param-vec)
+                      (draw ~(into [(gensym)] (map #(with-meta % nil)) draw-param-vec)
                         (let [~field-chmask-sym
                               ~(if (empty? fch-conds)
                                  (int 0)
@@ -150,32 +161,42 @@
                       ~@(when closeable-field-syms
                           `[java.lang.AutoCloseable
                             (close [_#]
-                                   ~@(mapv (fn [sym] `(.close ~sym))
-                                           closeable-field-syms))]))))]
-         (let [ret# {:java-draw-interface iface#
-                     :java-class cls#
-                     :constructor
-                     (eval '(fn [] (new ~c-sym ~@(map (fn [{:keys [mutable? vexpr tag]}]
-                                                        (if mutable?
-                                                          (class-default-value tag)
-                                                          vexpr))
-                                                      used-bindings))))
+                              (safe-close-ary (util/obj-array ~@closeable-field-syms)))]))))]
+         (let* [ret# {:java-draw-interface iface#
+                      :java-class cls#
+                      :constructor
+                      (eval '(fn* [] 
+                               ~(list 'let*
+                                  (vec (mapcat (fn [{:keys [mutable? vexpr tag sym]}]
+                                                 [sym (if mutable?
+                                                        (class-default-value tag)
+                                                        vexpr)])
+                                          used-bindings))
+                                 (list* 'new c-sym (map :sym used-bindings)))))
                      :input-syms '~input-syms}]
+           (ns-unmap *ns* '~(symbol (str "->" c-sym)))
            (swap! *class->cmpt assoc
                   (.getName ^Class (resolve '~i-sym)) ret#)
            ret#)))))
 
 (defn existing-draw-iface-sig* [^Class existing-iface]
-  (let [method ^java.lang.reflect.Method
-        (some #(when (= "draw" (.getName ^java.lang.reflect.Method %)) %)
-          (try (.getDeclaredMethods existing-iface)
-            (catch NoClassDefFoundError _
-              ;; When existing interface is invalid
-              nil)))]
-    (vec (.getParameterTypes method))))
+    (try (let [methods (.getDeclaredMethods existing-iface)]
+           (loopr [method methods] []
+             (when (= "draw" (.getName method))
+               (vec (.getParameterTypes method)))
+             nil))
+      (catch NoClassDefFoundError _
+        ;; When existing interface is invalid
+        nil)))
+
+(defn unchanged-cmpt-iface? [^Class existing-iface draw-param-sig]
+  (when (and existing-iface
+          (isa? existing-iface cmpt3-java-interface))
+    (= draw-param-sig
+      (existing-draw-iface-sig* existing-iface))))
 
 (defn param-vec->sig*
-  "A type is a class object or string if primitive."
+  "A type is a class object. Default type is Object."
   [pv]
   (mapv util/get-form-tag pv))
 
@@ -193,62 +214,84 @@
         retexpr (last expr-let)
         input-chmask-sym (gensym "input-chmask")
         ctx {:input-chmask-sym input-chmask-sym}
-        method-ana (-> (binding [*warn-on-reflection* false
-                                 *component-ctx* (enc/merge ctx {:fake? true})]
-                         (ana/analyze fexpr (assoc (ana/empty-env) :locals &env)))
-                       :methods first)
-        bindings-anas (-> method-ana :body :bindings)
-        -visited-syms (java.util.HashSet.)
+        root-env (assoc (ana/empty-env) :locals &env)
+        method-ana 
+        (-> (binding [*component-ctx* (enc/merge ctx {:fake? true})
+                      ana/run-passes 
+                      (ana.passes/schedule
+                        (util.ana/jvm-passes ['uniquify-locals 'infer-tag
+                                              #_'analyze-host-expr]))]
+              (try (ana/analyze fexpr root-env)
+                (catch Exception e
+                  (binding [ana/run-passes 
+                            (ana.passes/schedule
+                              (util.ana/jvm-passes ['validate]))]
+                    (ana/analyze fexpr root-env))
+                  (throw e))))
+          :methods first)
+        bindings-anas (-> method-ana :body #_do :ret #_let :bindings)
+        -visited-binding-names (java.util.HashSet.)
         -visited-local-syms (java.util.HashSet.)
-        -binding-i (volatile! 0)
+        -immutable-binding-names (java.util.HashSet.)
         bindings
-        (mapv (fn [[specified-sym vexpr] {:keys [tag init] :as ana}]
-                (let [sym (if (.contains -visited-local-syms specified-sym)
-                            (gensym specified-sym)
-                            specified-sym)
-                      input-deps (java.util.ArrayList.)
-                      field-deps (java.util.ArrayList.)
-                      input-ana-names (set (map :name (:params method-ana)))
-                      _ (ana.ast/prewalk
-                         init (fn [a]
-                                (cond
-                                  (contains? input-ana-names (:name a))
-                                  (.add input-deps (:form a))
-                                  (.contains -visited-syms (:name a))
-                                  (.add field-deps (:form a)))
-                                a))
-                      field-deps (set field-deps)
-                      input-deps (set input-deps)
-                      close? (isa? tag java.lang.AutoCloseable)
-                      independent? (and (empty? input-deps) (empty? field-deps))
-                      mta (meta specified-sym)
-                      i @-binding-i
-                      unused? (and (not close?) (= '_ specified-sym))]
-                  (when (not unused?) (vswap! -binding-i inc))
-                  (.add -visited-syms (:name ana))
-                  (.add -visited-local-syms sym)
-                  {:tag tag :sym sym
-                   :i i
-                   :vexpr vexpr
-                   :independent? independent?
-                   :mutable? (or (not independent?) (:always mta))
-                   :always? (:always mta)
-                   :diff (cond (:diff= mta) `= (:diff mta) `identical?)
-                   :close? close?
-                   :unused? unused?
-                   :arg-deps input-deps
-                   :field-deps field-deps
-                   :input-depmask
-                   (reduce (fn [acc input-sym]
-                             (bit-set acc (util/index-of input-syms input-sym)))
-                           0 input-deps)
-                   :field-depmask
-                   (enc/reduce-indexed (fn [acc i {:keys [form]}]
-                                         (cond-> acc (contains? field-deps form)
-                                                 (bit-set i)))
-                                       0 bindings-anas)}))
-              (eduction (partition-all 2) (second expr-let))
-              bindings-anas)
+        (loop-zip [[specified-sym vexpr] (eduction (partition-all 2) (second expr-let))
+                   {:keys [tag init] :as ana} bindings-anas]
+          [i 0
+           bindings (transient [])]
+          (let [tag (util/tag-class tag)
+                sym (if (.contains -visited-local-syms specified-sym)
+                      (gensym specified-sym)
+                      specified-sym)
+                input-deps (java.util.ArrayList.)
+                field-deps (java.util.ArrayList.)
+                ind-field-deps (java.util.ArrayList.)
+                input-ana-names (set (map :name (:params method-ana)))
+                _ (ana.ast/prewalk
+                    init (fn [a]
+                           (let [nam (:name a)]
+                             (cond
+                               (contains? input-ana-names nam)
+                               (.add input-deps (:form a))
+                               (.contains -visited-binding-names nam)
+                               (if (.contains -immutable-binding-names nam)
+                                     (.add ind-field-deps (:form a))
+                                     (.add field-deps (:form a)))))
+                           a))
+                field-deps (set field-deps)
+                input-deps (set input-deps)
+                close? (isa? tag java.lang.AutoCloseable)
+                independent? (and (empty? input-deps) 
+                               (empty? field-deps) (empty? ind-field-deps))
+                mta (meta specified-sym)
+                unused? (and (not close?) (= '_ specified-sym))
+                mutable? (boolean (or (seq input-deps) (seq field-deps) (:always mta)))]
+            (when (not mutable?) (.add -immutable-binding-names (:name ana)))
+            (.add -visited-binding-names (:name ana))
+            (.add -visited-local-syms sym)
+            (recur
+              (if unused? i (unchecked-inc i))
+              (conj! bindings
+                {:tag tag :sym sym
+                 :i i
+                 :vexpr vexpr
+                 :independent? independent?
+                 :mutable? mutable?
+                 :always? (:always mta)
+                 :diff (cond (:diff= mta) `= (:diff mta) `identical?)
+                 :close? close?
+                 :unused? unused?
+                 :arg-deps input-deps
+                 :field-deps field-deps
+                 :input-depmask
+                 (reduce (fn [acc input-sym]
+                           (bit-set acc (util/index-of input-syms input-sym)))
+                   0 input-deps)
+                 :field-depmask
+                 (enc/reduce-indexed (fn [acc i {:keys [form]}]
+                                       (cond-> acc (contains? field-deps form)
+                                         (bit-set i)))
+                   0 bindings-anas)})))
+          (persistent! bindings))
         i-sym (util/expand-class-sym (symbol (str "I" nsym)))
         canvas-sym (ffirst (filter vector? (:draw retexpr)))
         draw-param-vec (into (conj [(with-meta canvas-sym {:tag `Canvas})]
@@ -256,16 +299,20 @@
                              (map (fn [{:keys [form tag]}]
                                     (with-meta form {:tag tag})))
                              (sort-by :form (-> method-ana :params)))
+        used-bindings (filterv (complement :unused?) bindings)
+        init-bindings (filterv (every-pred (complement :mutable?)
+                              (complement :independent?)) used-bindings)
         existing-iface (try (resolve i-sym)
                             (catch ClassNotFoundException _))
-        unchanged-intf? (when (and existing-iface
-                                   (isa? existing-iface cmpt3-java-interface))
-                          (= (param-vec->sig* draw-param-vec)
-                             (existing-draw-iface-sig* existing-iface)))
-        ;; ana of enclosed map
-        body-ana (-> method-ana :body :body)]
+        draw-param-sig (param-vec->sig* draw-param-vec)
+        unchanged-intf? (unchanged-cmpt-iface? existing-iface draw-param-sig)
+        ;; ana of enclosed map.
+        body-ana (-> method-ana :body #_do :ret #_let :body #_do :ret)
+        draw-env (:env body-ana)]
+    (enc/have some? draw-env :data (do (debug/report-error-data 
+                                         {:method-ana method-ana})))
     (enc/merge ctx {:body-ana body-ana
-                    :draw-env (-> body-ana :env)
+                    :draw-env draw-env
                     :c-sym nsym
                     :bindings-anas bindings-anas
                     :retexpr retexpr
@@ -275,6 +322,9 @@
                     :unchanged-intf? unchanged-intf?
                     :existing-iface existing-iface
                     :i-sym i-sym
+                    :init-bindings init-bindings
+                    :used-bindings used-bindings
+                    :draw-param-sig draw-param-sig
                     :draw-param-vec draw-param-vec})))
 
 (defmacro fnlet-widget [fexpr]
@@ -616,3 +666,9 @@
 
 (defn get-mouse-pos []
   @(get-mouse-pos-mut))
+
+(defn coll-closer ^AutoCloseable [coll]
+  (reify AutoCloseable
+    (close [_] (doit [^AutoCloseable c coll]
+                 (.close c)))))
+

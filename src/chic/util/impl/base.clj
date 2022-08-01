@@ -1,8 +1,15 @@
 (ns chic.util.impl.base
+  (:require
+    [clojure.tools.analyzer.jvm.utils :as ana.jvm.utils])
   (:import
     (clojure.lang Symbol Var Keyword)))
 
 (defmacro <- [& forms] `(->> ~@(reverse forms)))
+
+(deftype NotFound [])
+(def ^:const not-found NotFound)
+(defmacro not-found? [ret]
+  (list `identical? ret NotFound))
 
 (defn primitive-name->class [nam]
   (case nam
@@ -16,7 +23,8 @@
     "boolean" Boolean/TYPE))
 
 (defn tag-class ^Class [tag]
-  (if (or (symbol? tag) (string? tag))
+  (ana.jvm.utils/maybe-class tag)
+  #_(if (or (symbol? tag) (string? tag))
     (let [r (resolve (symbol tag))]
       (if (class? r) r 
         (case (str tag)
@@ -36,6 +44,25 @@
     (let [binding ^clojure.lang.Compiler$LocalBinding binding]
       (when (.hasJavaClass binding) (.getJavaClass binding)))
     (:tag binding)))
+
+(defmacro cond-class-isa [x & clauses]
+  (let [clauses (vec clauses)
+        fallback (when (odd? (count clauses)) (peek clauses))
+        pairs (vec (partitionv 2 clauses))
+        xrepeated? (< 1 (count pairs))
+        x-sym (if xrepeated? (gensym "x_") x)
+        pair-iter (.iterator ^Iterable pairs)
+        body ((fn claus []
+                (if (.hasNext pair-iter)
+                  (let [[cls expr] (.next pair-iter)]
+                    (list 'if (list '. (if (symbol? cls) 
+                                         (list `identity cls)
+                                         (vary-meta cls assoc :tag "Class"))
+                                'isAssignableFrom x-sym)
+                      expr
+                      (claus)))
+                  fallback)))]
+    (if xrepeated? (list 'let* [x-sym x] body) body)))
 
 (defn case-instance* [env x pairs fallback]
   (let [npairs-cond-thrs 6
@@ -75,4 +102,5 @@
     Var (Symbol/intern nil (.getName (.-sym x)))
     Keyword (Symbol/intern nil (.getName (.-sym x)))
     Class (Symbol/intern nil (.getName x))
+    clojure.lang.Namespace (.getName x)
     (throw (IllegalArgumentException. "No conversion to symbol"))))

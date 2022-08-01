@@ -1,6 +1,6 @@
 (ns chic.util.impl.loopr
   (:require
-    [chic.util.impl.base :refer [<- tag-class]]
+    [chic.util.impl.base :refer [<- tag-class cond-class-isa]]
     [chic.util.impl.analyzer :as impl.ana]
     [taoensso.encore :as enc]
     [tech.droit.fset :as fset]
@@ -15,11 +15,11 @@
     nil
     nil
     clojure.lang.ASeq
-    seq-reduce
+    seq-reduce->internal-reduce
     clojure.lang.LazySeq
-    seq-reduce
+    seq-reduce->chunked-seq
     clojure.lang.PersistentVector
-    seq-reduce
+    seq-reduce->chunked-seq
     Iterable
     iter-reduce
     clojure.lang.APersistentMap$KeySeq
@@ -27,24 +27,38 @@
     clojure.lang.APersistentMap$ValSeq
     iter-reduce)
 
+(defn determine-iter-method [coll-tag]
+  (<- (if (or (nil? coll-tag) (identical? Object coll-tag))
+        :iterable)
+    (if (.isArray coll-tag)
+      :array)
+    (cond-class-isa coll-tag
+      java.util.Iterator :iterator
+      Iterable :iterable)))
+
 (defn analyze-coll-bindvec [env bindvec]
+  #_[{:item-expr 'expr :coll-expr 'expr
+      :item-tag Class :coll-tag Class
+      :iter-method 'kw}]
   (transduce (partitionv-all 2)
     (fn
       ([[_env bindings]] bindings)
-      ([[env bindings] [sym coll-expr]]
-       (let [coll-tag (tag-class (impl.ana/infer-tag coll-expr env))
-             item-meta-tag (:tag (meta sym))
-             item-tag (if item-meta-tag
-                        (tag-class item-meta-tag)
-                        (if (.isArray coll-tag)
-                          (.componentType coll-tag)
-                          Object))
-             loop-method nil]
-         [(assoc env sym {:tag item-tag})
-          (conj bindings
-            {:sym sym :coll-expr coll-expr
-             :item-tag item-tag :coll-tag coll-tag
-             :loop-method loop-method})])))
+      ([[env bindings] [item-expr coll-expr]]
+       (if (= :idx coll-expr)
+         [env (update bindings (dec (count bindings))
+                assoc :idx-sym item-expr)]
+         (let [coll-tag (impl.ana/infer-form-tag coll-expr env)
+               item-meta-tag (:tag (meta item-expr))
+               item-tag (if item-meta-tag
+                          (tag-class item-meta-tag)
+                          (if (and coll-tag (.isArray coll-tag))
+                            (.componentType coll-tag)
+                            Object))]
+           [(assoc env item-expr {:tag item-tag})
+            (conj bindings
+              {:item-expr item-expr :coll-expr coll-expr
+               :item-tag item-tag :coll-tag coll-tag
+               :iter-method (determine-iter-method coll-tag)})]))))
     [env []] bindvec))
 
 (comment
@@ -52,6 +66,7 @@
   )
 
 (defn analyze-acc-bindvec [env bindvec]
+  #_[{:sym 'sym :tag Class :init 'expr}]
   (transduce (partitionv-all 2)
     (fn
       ([[_env bindings]] bindings)
@@ -142,8 +157,32 @@
           :loop-locals (count accinfos)
           :loop-id (gensym "loopr_"))))))
 
+(defn arrayify-loop-form2 [form idx-sym]
+  ((fn* -arrayify [form]
+     (if (seq? form)
+       (let [f (first form)]
+         (or (when (symbol? f)
+               (let [nam (name f)
+                     ns (namespace f)]
+                 (cond (and
+                         (= "recur" nam)
+                         (or (nil? ns) (= 'clojure.core ns)))
+                   (concat form (list (list `unchecked-inc-int idx-sym)))
+                   (and (= "quote" nam)
+                     (or (nil? ns) (= 'clojure.core ns)))
+                   form)))
+           (list* (map -arrayify form))))
+       form))
+   form))
+
 (comment
-  (arrayify-loop-form [1 2] 'idx '(do (recur 1 2))))
+  (arrayify-loop-form [1 2] 'idx 
+    '(do '(recur)
+       (recur 1 2)))
+  (arrayify-loop-form2 'idx 
+    '(do '(recur)
+       (recur 1 2)))
+  )
 
 (defn loopr-array* [accinfos loop-expr ary ^Class item-tag item-sym then-form]
   (let [acc-syms (mapv :sym accinfos)
@@ -190,6 +229,127 @@
       (let []
         (recur {} nil))
       b #_x))
+  )
+
+(defmacro min-of-ints [form1 & forms]
+  (let* [acc (gensym "smallest_")
+         forms (vec forms)
+         nextras (count forms)
+         cexpr (fn [form acc]
+                 (chic.util/let-macro-syms [form form]
+                   (list 'if (list `< form acc)
+                     form acc)))]
+    (<- (if (zero? nextras) form1)
+      (let* [comp1 (cexpr (nth forms 0) form1)])
+      (if (= 1 nextras) comp1)
+      (list 'let*
+        (into [acc comp1]
+          (mapcat (fn [form]
+                    [acc (cexpr form acc)]))
+          (when (< 1 nextras) (subvec (pop forms) 1)))
+        (cexpr (peek forms) acc)))))
+
+(defn loop-zip* [env coll-bindvec acc-bindvec loop-expr completer-expr]
+  (let [;accinfos (analyze-acc-bindvec &env acc-bindvec)
+        collinfos (analyze-coll-bindvec env coll-bindvec)
+        ary-bindings (java.util.ArrayList.)
+        it-bindings (java.util.ArrayList.)
+        *item-letvec (volatile! (transient []))
+        defined-idx-sym (:idx-sym (peek collinfos))
+        add-it-binding (fn [item-expr b]
+                         (vswap! *item-letvec conj! item-expr)
+                         (vswap! *item-letvec conj! (list '. (:sym b) 'next))
+                         (.add it-bindings b))
+        i-sym (or defined-idx-sym (gensym "idx_"))
+        _ (reduce
+            (fn [_ {:keys [coll-expr ^Class coll-tag iter-method item-expr idx-sym] :as info}]
+              (when (and idx-sym (not (identical? i-sym idx-sym)))
+                (throw (ex-info "Cannot bind idx sym here" {})))
+              (case iter-method
+                :iterator                     
+                (add-it-binding item-expr
+                  {:sym (if (symbol? coll-expr) 
+                          coll-expr (gensym "iterator"))
+                   :init coll-expr})
+                :iterable
+                (add-it-binding item-expr
+                  {:sym (gensym "iterator")
+                   :init
+                   (list '.
+                     (vary-meta coll-expr assoc :tag
+                       (if (or (nil? coll-tag) (identical? Object coll-tag))
+                         "Iterable"
+                         (.getName coll-tag)))
+                     'iterator)})
+                :array
+                (let* [ary-sym (if (symbol? coll-expr)
+                             coll-expr (gensym "ary_"))]
+                  (vswap! *item-letvec conj! item-expr)
+                  (vswap! *item-letvec conj! (list `aget ary-sym i-sym))
+                  (.add ary-bindings
+                    (assoc info :coll-sym ary-sym)))
+                (throw (ex-info "Coll not iterable" 
+                         {:coll-expr coll-expr
+                          :coll-tag coll-tag}))))
+            nil
+            collinfos)
+        ary? (pos? (count ary-bindings))
+        ary-n (gensym "ary-n_")
+        continue (list* `and 
+                   (cond->>
+                     (map #(list '. (:sym %) 'hasNext)
+                       it-bindings)
+                     ary?
+                     (cons (list `< i-sym ary-n))))]
+    (list 'let*
+      (-> (if ary?
+            (-> []
+              ;; bind array to symbol
+              (into (comp (keep (fn [{:keys [coll-sym coll-expr]}]
+                                  (when-not (identical? coll-sym coll-expr)
+                                    [coll-sym coll-expr])))
+                      cat)
+                ary-bindings)
+              ;; smallest array size
+              (into [ary-n (list* `min-of-ints
+                             (map (fn [{:keys [coll-sym]}]
+                                    (list `alength coll-sym))
+                               ary-bindings))]))
+            [])
+        ;; Iterator bindings
+        (into (comp
+                (keep (fn [{:keys [sym init]}] 
+                        (when-not (identical? sym init)
+                          [sym init])))
+                cat)
+          it-bindings))
+       (list `loop (cond-> acc-bindvec ary? 
+                     (-> (conj i-sym) (conj (int 0))))
+         (list `if continue
+           (list `let (persistent! @*item-letvec)
+             (cond-> loop-expr ary? (arrayify-loop-form2 i-sym)))
+           completer-expr)))))
+
+(defmacro loop-zip 
+  ([coll-bindvec] (loop-zip* &env coll-bindvec [] `(recur) nil))
+  ([coll-bindvec loop-expr] 
+   (loop-zip* &env coll-bindvec [] loop-expr nil))
+  ([coll-bindvec acc-or-loop loop-or-comp]
+   (if (vector? acc-or-loop)
+     (loop-zip* &env coll-bindvec acc-or-loop loop-or-comp nil)
+     (loop-zip* &env coll-bindvec [] acc-or-loop loop-or-comp)))
+  ([coll-bindvec acc-bindvec loop-expr completer-expr]
+   (loop-zip* &env coll-bindvec acc-bindvec loop-expr completer-expr)))
+
+(comment
+  (rwalk/macroexpand-all
+    '(let [idx (Object.)]
+       (loop-zip [x ^objects idk]
+          )))
+  
+  (chic.debug/puget-prn
+    (analyze-coll-bindvec {} '[x (object-array [1 2 3])]))
+
   )
 
 #_(defn zip-* [ary-syms iter-syms red-syms]

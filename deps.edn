@@ -66,6 +66,9 @@
                        "--enable-native-access=ALL-UNNAMED"
                        "-XX:+UseShenandoahGC"
                        "-ea" ;; enable assertions
+                       
+                       ;; https://docs.cider.mx/cider/troubleshooting.html#empty-java-stacktraces
+                       "-XX:-OmitStackTraceInFastThrow"
                        ]
             :main-opts   ["-m" "chic.main"]}
            :jdebug {:jvm-opts 

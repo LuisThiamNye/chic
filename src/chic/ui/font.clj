@@ -24,3 +24,7 @@
                         (.put -caph-size-cache id v)
                         v)))]
     (unchecked-multiply (unchecked-float cap-height) cs-ratio)))
+
+(defn caph->font ^Font [^Typeface typeface cap-height]
+  (Font. typeface (-> (caph->size typeface cap-height)
+                    Math/round unchecked-float)))

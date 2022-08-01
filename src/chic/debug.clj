@@ -217,7 +217,8 @@
 
 (defn report-data-default [k data]
   (set! *reported-data*
-        (update *reported-data* k (fnil conj []) data)))
+        (update *reported-data* k (fnil conj []) data))
+  nil)
 
 (defmacro with-capture-data [& body]
   `(binding [*reported-data* {}
@@ -230,12 +231,14 @@
 (swap! debug.nrepl/*root-session-bindings assoc #'*last-error* nil)
 
 (defn ^:dynamic report-error-data [data]
-  (set! *last-error* data))
+  (set! *last-error* data)
+  nil)
 
 (truss/set-error-fn!
-  (fn [*data]
+  (fn truss-err-fn [*data]
     (let [data @*data]
-      (binding [*print-length* 1200]
+      (binding [*print-length* 1200
+                *print-level* 7]
         (puget-prn (dissoc data :msg_)))
       (throw (AssertionError. @(:msg_ data))))))
 

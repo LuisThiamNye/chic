@@ -319,28 +319,38 @@
   (^void paint [^io.github.humbleui.skija.Canvas canvas])
   (^void notifyEvent [^io.github.humbleui.jwm.Event _event]))
 
+(defn set-event-listener [^Window jw ^PaintAndEventHandler handler]
+  (.setEventListener jw
+    (reify java.util.function.Consumer
+      (accept [_ evt]
+        (ievt/case-event evt
+          :frame-skija
+          (let [cnv (.getCanvas (.getSurface evt))]
+            (cnv/with-save cnv
+              (try (.paint handler cnv)
+                (catch Throwable e
+                  (.printStackTrace e)))))
+          (.notifyEvent handler evt))))))
+
 (defn make-jwm-window
-  (^Window [^PaintAndEventHandler handler]
+  (^Window []
     (doto (App/makeWindow)
       (.setLayer
         (util/case-enum Platform/CURRENT
           WINDOWS (LayerD3D12Skija.)
           MACOS (LayerMetalSkija.)
-          X11 (LayerGLSkija.)))
-      (.setEventListener
-        (reify java.util.function.Consumer
-          (accept [_ evt]
-            (ievt/case-event evt
-              :frame-skija
-              (let [cnv (.getCanvas (.getSurface evt))]
-                (cnv/with-save cnv
-                  (try (.paint handler cnv)
-                    (catch Throwable e
-                      (.printStackTrace e)))))
-              (.notifyEvent handler evt))))))))
+          X11 (LayerGLSkija.)))))
+  (^Window [^PaintAndEventHandler handler]
+    (doto (make-jwm-window)
+      (set-event-listener handler))))
+
+(definterface RenewableWindow
+  (renew []))
 
 (def *window-registry (atom #{}))
-(comment (count @*window-registry))
+(comment (count @*window-registry)
+  (.close (:jwm-window (first @*window-registry)))
+  )
 
 (defn register-window! [win]
   (swap! *window-registry conj win))
@@ -348,10 +358,24 @@
 (defn unreg-window! [win]
   (swap! *window-registry disj win))
 
+(defn set-window-rect
+  "Dimensions must be int"
+  [^Window jw rect]
+  (when rect
+    (.setWindowSize jw (:width rect) (:height rect))
+    (.setWindowPosition jw (:x rect) (:y rect)))
+  jw)
+
 (defn remount-all-windows []
   (safe-dosendui
-   (doseq [w (vals @*windows)]
-     (remount-window w))))
+    (doseq [w (vals @*windows)]
+      (remount-window w))
+    (doseq [w @*window-registry]
+      (when (instance? RenewableWindow w)
+        (swap! *window-registry conj 
+          (.renew ^RenewableWindow w))
+        (when (instance? AutoCloseable w)
+          (.close ^AutoCloseable w))))))
 
 (comment
   (remount-window (val (first @*windows)))

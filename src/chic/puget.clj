@@ -189,7 +189,7 @@
   (visit-meta
     [this metadata value]
     (if print-meta
-      [:align
+      [:group
        [:span (color/document this :delimiter "^") (format-doc this metadata)]
        :line (format-doc* this value)]
       (format-doc* this value)))

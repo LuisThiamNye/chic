@@ -4,7 +4,9 @@
    [better-cond.core :refer [cond] :rename {cond cond+}]
    [clj-commons.primitive-math :as prim]
    [clojure.math :as math]
-   [io.github.humbleui.paint :as huipaint]))
+   [io.github.humbleui.paint :as huipaint])
+  (:import
+    (io.github.humbleui.skija Paint PaintMode)))
 
 (defn -fix-b [n]
   (if (> n 127)
@@ -15,6 +17,21 @@
              assoc :tag "io.github.humbleui.skija.Paint")
 (alter-meta! #'huipaint/stroke
              assoc :tag "io.github.humbleui.skija.Paint")
+
+(defmacro fill [colour]
+  (let [col (if (number? colour)
+              (unchecked-int colour)
+              `(unchecked-int ~colour))]
+    `(doto (Paint.) (.setColor ~col))))
+
+(defn stroke [colour width]
+  (let [col (if (number? colour)
+              (unchecked-int colour)
+              `(unchecked-int ~colour))]
+    `(doto (Paint.)
+      (.setColor ~col)
+      (.setMode PaintMode/STROKE)
+      (.setStrokeWidth ~width))))
 
 (def transparent (huipaint/fill 0x00000000))
 

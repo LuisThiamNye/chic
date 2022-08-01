@@ -51,9 +51,10 @@
 
 (comment
   (clean-tmp-dir)
-  (doseq [[p c] (decompile-clj-expr :bytecode 
-                  '(type (Boolean/valueOf (.booleanValue false))))]
-    (println p)
+  (doseq [[p c] (decompile-clj-expr :java 
+                  (quote
+                    (fn [a b] (object-array [1 a 2 b]))))]
+    (println "-- FILE: " p)
     (println c))
 
   (let [path (first (compiled-classfile-paths))]

@@ -5,24 +5,24 @@
     [chic.clj-editor2.file-tree :as file-tree]
     [chic.ui :as cui]
     [chic.debug :as debug]
-    [chic.types :as types]
-    [chic.ui2.event :as ievt]
     [chic.ui.ui2 :as ui2]
     [chic.ui.ui3 :as ui3]
-    [chic.ui3.interactor :as uii3]
     [chic.clj-editor.ast :as ast]
     [io.github.humbleui.paint :as huipaint]
     [chic.paint :as cpaint]
     [chic.util :as util :refer [deftype+ <-]]
     [chic.windows :as windows]
+    [chic.ui2.event :as ievt]
+    [chic.ui3.interactor :as uii3]
     [io.github.humbleui.ui :as ui]
+    [chic.types :as types]
     [chic.clj-editor.parser :as parser])
   (:import
     (java.lang AutoCloseable)
     (chic.types IXyIM)
     (io.github.humbleui.jwm Window)
     (io.github.humbleui.skija Paint Font)
-    (io.github.humbleui.types Rect Point)))
+    (io.github.humbleui.types Rect Point IRect)))
 
 ;(def sample-ast (parser/read-fresh (java.io.StringReader. (slurp "src/chic/ui.clj"))))
 
@@ -94,24 +94,28 @@
                        (ui3/new-cmpt ui-root)))
       (windows/register-window!))))
 
-(defn make-bwr-window [{:keys [window]}]
-  {:pre [(map? window)]}
-  (let [screen (.getScreen ^Window (:window-obj window))
-        scale (.getScale screen)
-        area (.getWorkArea screen)
-        width (* 800 scale)
-        height (* 500 scale)]
-    (util/with-keep-open 
+(defn open-new-bwr-window [rect]
+  (util/with-keep-open 
       [w (new-window-box)
        jw (windows/make-jwm-window w)]
       (util/setf! w :jwm-window jw)
       (doto jw
         (.setTitle "Browser")
-        (.setWindowSize width height)
-        (.setWindowPosition (:x area) (:y area))
-        (.setVisible true)
-        #_(.requestFrame))
-      (.focus jw))))
+        (windows/set-window-rect rect)
+        (.setVisible true))
+      (.focus jw)))
+
+(defn derive-new-window-position [^Window window]
+  (let [screen (.getScreen window)
+        scale (.getScale screen)
+        area (.getWorkArea screen)
+        width (* 800 scale)
+        height (* 500 scale)]
+    (IRect/makeXYWH (:x area) (:y area) width height)))
+
+(defn make-bwr-window [{:keys [window]}]
+  {:pre [(map? window)]}
+  (open-new-bwr-window (derive-new-window-position (:window-obj window))))
 
 (defn sample-view []
   (let [font (Font. style/face-code-default (float 24))
@@ -134,9 +138,17 @@
         (ui2/attach-interactor
          {:cursor-style :pointing-hand
           :on-mouse-down
-          (fn [ctx rect evt]
+          (fn [ctx _rect _evt]
             (make-bwr-window {:window (:chic/current-window ctx)}))}
          (ui2/text-string "Open tree" font))
+         (ui2/attach-interactor
+           {:cursor-style :pointing-hand
+            :on-mouse-down
+            (fn [ctx _rect _evt]
+              ((requiring-resolve `chic.digger2.core/open-new-window)
+               (derive-new-window-position 
+                 (:window-obj (:chic/current-window ctx)))))}
+           (ui2/text-string "Open digger" font))
         (ui2/padded
          8
          (ui2/clip-rect

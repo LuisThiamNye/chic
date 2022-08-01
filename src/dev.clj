@@ -1,6 +1,7 @@
 (ns dev 
   (:require
     [riddley.walk :as rwalk]
+    [chic.ui.ui3 :as ui3]
     [chic.debug.nrepl :refer [*last-eval*]]
     [user]
     [chic.debug :as debug :refer [*last-error*]]))
@@ -15,11 +16,19 @@
 (debug/puget-prn
   last-code)
 
-(binding [*ns* (:ns last-eval)]
+(binding [*ns* (:ns last-eval)
+          *print-meta* true]
   (debug/puget-prn
     (rwalk/macroexpand-all last-code)))
 
 
-(-> (:ctx *last-error*)
-  :raw-body-ana
-  :body :op)
+(-> (:method-ana *last-error*)
+  :body :body)
+
+(-> *last-error*
+  :method-ana
+  :body :ret :body :ret)
+
+(set! *print-length* 1000)
+(set! *print-level* 7)
+

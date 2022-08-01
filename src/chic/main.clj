@@ -68,11 +68,8 @@
   (start-nrepl-server!)
   (debug.nrepl/add-middleware (nrepl/client nrepl-transport 1000))
   
-  (debug.nrepl/refresh-middleware (nrepl/client nrepl-transport 1000))
-  
-  (debug.nrepl/get-middleware (nrepl/client nrepl-transport 1000))
-  
   ;(defn nrepl-client (nrepl/client nrepl-transport 1000))
+
   
   
   )

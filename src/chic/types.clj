@@ -7,6 +7,9 @@
    (java.text CharacterIterator)
    (io.github.humbleui.types IPoint)))
 
+(definterface IInit
+  (^void init [])) ;; serves purpose of constructor
+
 (definterface IXyI 
   (^int getX [])
   (^int getY []))
@@ -43,8 +46,6 @@
   (to-ipoint [_] (IPoint. x y))
   clojure.lang.IDeref
   (deref [_] (IPoint. x y)))
-
-(:y (->XyIMunsync 1 1))
 
 (deftype EmptyCharacterIterator []
   CharacterIterator

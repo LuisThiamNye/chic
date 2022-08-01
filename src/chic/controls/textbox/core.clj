@@ -15,16 +15,10 @@
    [chic.controls.textbox.keybindings :as keybindings]
    [chic.style :as style]
    [chic.ui2.event :as ievt]
-   [chic.ui.font :as uifont]
-   [chic.ui :as cui]
    [chic.ui.ui2 :as ui2]
-   [chic.clj-editor.ast :as ast]
    [io.github.humbleui.paint :as huipaint]
    [chic.paint :as cpaint]
-   [chic.util :as util :refer [<<-]]
-   [chic.ui.layout :as cuilay]
-   [io.github.humbleui.ui :as ui]
-   [chic.clj-editor.parser :as parser])
+   [chic.util :as util :refer [<-]])
   (:import
    (io.lacuna.bifurcan Rope)
    (io.github.humbleui.skija Paint Font Canvas TextLine)
@@ -115,7 +109,7 @@
                                                    (min 0 (+ scroll-offset-x dx))))
                       (assoc :scroll-offset-y (max (* -1 line-height (count line-start-idxs))
                                                    (min 0 (+ scroll-offset-y dy)))))))))}
-   (<<-
+   (<-
     ui2/clip-rect
     (ui2/updating-ctx
      (fn [ctx rect] (assoc ctx :visible-rect rect))
