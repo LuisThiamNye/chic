@@ -5,7 +5,8 @@
     [chic.util :as util :refer [<- loop-zip loopr]]
     [clojure.java.io :as io]
     [chic.util.impl.analyzer :as util.impl.ana :refer [mh-invoke]]
-    [clojure.tools.deps.alpha :as deps])
+    [clojure.tools.deps.alpha :as deps]
+    [chic.debug.nrepl :as debug.nrepl])
   (:import
     (java.util Arrays)
     (java.lang ClassLoader)
@@ -77,6 +78,7 @@
       set-ul (. lk findStaticSetter
                -ccl-class "subLoaders" cls-urls)]
   (defn get-main-loader ^URLClassLoader [] (mh-invoke get-ml))
+  (defn get-loose-url-loaders [] (mh-invoke get-ul))
   (defn alter-loose-url-loaders [f]
     (locking -ccl-class
       (mh-invoke set-ul (f (mh-invoke get-ul))))))
@@ -119,69 +121,53 @@
 
 ; (def ^objects leaf-classloader-refs (object-array 0))
 
-(defn install-compelx-classloader! []
-  (.setContextClassLoader (Thread/currentThread)
-    ;; Wrap to prevent defining classes on main loader.
-    ;; Probably should just not use singleton...
-    (DynamicClassLoader. (get-main-loader))))
+(defn install-complex-classloader! 
+  []
+  ;; Wrap to prevent defining classes on main loader.
+  ;; Probably should just not use singleton...
+  (let [cl (DynamicClassLoader. (get-main-loader))]
+    (.setContextClassLoader (Thread/currentThread))
+    (.bindRoot Compiler/LOADER cl)))
+
 
 (comment
-  (def --d '{net.cgrand/xforms {:git/url "https://github.com/cgrand/xforms"
-                               :git/tag "v0.19.3"
-                               :git/sha "f4ebaea"}})
+  (def --d '{rewrite-clj/rewrite-clj {:mvn/version "1.1.45"}})
   
   (run! prn (keys (System/getProperties)))
   
-  (:libs (read-string (slurp (System/getProperty "clojure.basis"))))
+  (-> (read-string (slurp (System/getProperty "clojure.basis")))
+    (:libs) (get 'nrepl/nrepl))
   
   (def --b (deps/create-basis {:aliases [:dev :repl]
-                               :extra --d}))
+                               ;:extra --d
+                               :override-deps --d
+                               }))
   
   (def --extra-paths
     (let [existing (system-classloader-paths)]
       (eduction (remove #(contains? existing %))
         (:classpath-roots --b))))
+ 
+  ;; set nrepl thread class loaders
+  (run! (fn [^Thread th]
+          (future
+            (.setContextClassLoader th
+              (DynamicClassLoader. (get-main-loader)))))
+    (chic.debug.nrepl/nrepl-session-threads))
   
-  ;; virtual th cl?
-  
-  #_(let [scl (ClassLoader/getSystemClassLoader)]
-    (eduction
-      (filter (fn [^Thread th]
-                (seq (eduction (filter #(identical? % scl))
-                       (classloader-chain (.getContextClassLoader th))))))
-      (.keySet (Thread/getAllStackTraces))))
-  (doseq [t *1]
-    (prn (.getName (.getThreadGroup t)) " -- " (.getName t)))
-  
-  ;; probably best to target threads that are known to be good for the 
-  ;; new classloader.
-  
-  (def --g1
-    (let [ths (make-array Thread 80)
-          _ (.enumerate (.getThreadGroup (Thread/currentThread))
-              ths false)
-          s (set (remove nil? ths))]
-      s))
-  
-  (doseq [t (clojure.set/difference (set (.keySet (Thread/getAllStackTraces)))
-              --g1)]
-    (prn (.getName t)))
   
   (ensure-url-loaders (map pathstr->url --extra-paths))
-  
-  (.getURLs (get-main-loader))
 
-  (alter-loose-url-loaders #(doto % (-> seq first .getURLs first prn)))
+  (-> (get-loose-url-loaders) seq first .getURLs first prn)
   
-  (Class/forName "chic.classload.ComplexRootClassLoader")
   
-  (seq (classloader-chain (.getClassLoader Compiler)))
-  
-  (take 3 (reverse (classloader-chain (RT/baseLoader))))
+  (count (seq (classloader-chain)))
   
   
   
   
+  
+  ;; Compile java
   (def -this-java-path
     (-> *ns* str Compiler/munge (. replace \. \/)
       (as-> s (fs/path "src" (fs/parent s) "jvm"))))

@@ -32,7 +32,7 @@ private ComplexRootClassLoader(){
 }
 @Override
 public URL getResource(String name){
-	var r = super.findResource(name);
+	var r = findResource(name);
 	if (r==null){
 		r = this.getParent().getResource(name);
 	}
@@ -40,7 +40,7 @@ public URL getResource(String name){
 }
 @Override
 public Enumeration<URL> getResources(String name) throws IOException{
-	var rs = super.findResources(name);
+	var rs = findResources(name);
 	if (rs==null){
 		rs = this.getParent().getResources(name);
 	}

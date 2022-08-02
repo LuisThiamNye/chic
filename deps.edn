@@ -52,7 +52,7 @@
         com.taoensso/encore {:mvn/version "3.24.0"}
         town.lilac/cascade {:mvn/version "2.0.1"}
         borkdude/dynaload {:mvn/version "0.3.4"}
-        rewrite-clj/rewrite-clj {:mvn/version "1.0.767-alpha"}
+        rewrite-clj/rewrite-clj {:mvn/version "1.1.45"}
         
         org.slf4j/slf4j-jdk14 {:mvn/version "2.0.0-alpha7"}}
 

@@ -3,13 +3,15 @@
     [nrepl.core :as nrepl]
     [nrepl.server]
     [nrepl.middleware.session :as middleware.session]
-    [nrepl.middleware :as middleware]))
+    [nrepl.middleware :as middleware]
+    [rewrite-clj.parser :as rw.parse]))
 
 (def *root-session-bindings "Var->init" (atom {}))
 
 (def ^:dynamic *last-eval* nil)
 
-(defn listen-eval-msg [{:keys [line]}]
+(defn listen-eval-msg [{:keys [line session]}]
+  ;(prn (.getContextClassLoader (Thread/currentThread)))
   #_(prn line))
 
 (do
@@ -62,7 +64,54 @@
   (reset-middleware client
     (get-middleware client)))
 
+(defn nrepl-session-threads []
+  (eduction
+    (filter #(re-find #"^nREPL-session" (.getName ^Thread %)))
+    (.keySet (Thread/getAllStackTraces))))
+
 (defn force-kill-nrepls! []
-  (doseq [^Thread th (.keySet (Thread/getAllStackTraces))]
-    (when (re-find #"^nREPL-session" (.getName th))
-      (.stop th))))
+  (run! #(.stop ^Thread %) (nrepl-session-threads)))
+
+
+
+;; Restore classloader after each eval (so they don't keep stacking up)
+;; because nREPL calls clojure.main/repl each time, which appends a
+;; new classloader
+
+(require '[rewrite-clj.zip :as rw.zip])
+(require '[rewrite-clj.parser :as rw.parse])
+
+(let [ns (find-ns 'nrepl.middleware.interruptible-eval)
+      vr (get (ns-map ns) 'evaluate)
+      {:keys [line column file] :as mta}
+      (meta vr)
+      sw (java.io.StringWriter.)
+      strm (.getResourceAsStream (clojure.lang.RT/baseLoader)
+             "nrepl/middleware/interruptible_eval.clj")]
+  (with-open [rdr (java.io.InputStreamReader. strm)]
+    (if-not (and column (pos? column))
+      (throw (Exception. "No column meta"))
+      (loop [l 1]
+        (if (= l line)
+          (loop [o 1]
+            (when-not (= o column)
+              (.read rdr)
+              (recur (inc o))))
+          (if (= (.read rdr) 10)
+            (recur (inc l))
+            (recur l)))))
+    (.transferTo rdr sw))
+  (-> (rw.parse/parse-string (.toString sw))
+    (rw.zip/of-node)
+    (->> (iterate (comp rw.zip/rightmost rw.zip/down)))
+    (nth 5)
+    rw.zip/down
+    rw.zip/right
+    (as-> zloc
+      (rw.zip/replace* zloc
+        (rw.zip/node (rw.zip/rightmost (rw.zip/down zloc)))))
+    rw.zip/root-string
+    (as-> s (binding [*ns* ns]
+              (load-string s)
+              (alter-meta! vr merge mta)))))
+
