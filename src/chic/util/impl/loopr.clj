@@ -160,18 +160,20 @@
 (defn arrayify-loop-form2 [form idx-sym]
   ((fn* -arrayify [form]
      (if (seq? form)
-       (let [f (first form)]
-         (or (when (symbol? f)
-               (let [nam (name f)
-                     ns (namespace f)]
-                 (cond (and
-                         (= "recur" nam)
+       (let [f (first form)
+             form' 
+             (or (when (symbol? f)
+                   (let [nam (name f)
+                         ns (namespace f)]
+                     (cond (and
+                             (= "recur" nam)
+                             (or (nil? ns) (= 'clojure.core ns)))
+                       (concat form (list (list `unchecked-inc-int idx-sym)))
+                       (and (= "quote" nam)
                          (or (nil? ns) (= 'clojure.core ns)))
-                   (concat form (list (list `unchecked-inc-int idx-sym)))
-                   (and (= "quote" nam)
-                     (or (nil? ns) (= 'clojure.core ns)))
-                   form)))
-           (list* (map -arrayify form))))
+                       form)))
+               (list* (map -arrayify form)))]
+         (with-meta form' (meta form)))
        form))
    form))
 
@@ -179,9 +181,11 @@
   (arrayify-loop-form [1 2] 'idx 
     '(do '(recur)
        (recur 1 2)))
-  (arrayify-loop-form2 'idx 
+  (arrayify-loop-form2
     '(do '(recur)
-       (recur 1 2)))
+       (recur 1 2)) 'idx)
+  (meta (arrayify-loop-form2 '(x) 'idx))
+  
   )
 
 (defn loopr-array* [accinfos loop-expr ary ^Class item-tag item-sym then-form]

@@ -53,7 +53,12 @@
   (clean-tmp-dir)
   (doseq [[p c] (decompile-clj-expr :java 
                   (quote
-                    (fn [a b] (object-array [1 a 2 b]))))]
+                    (deftype ReplClass [x]
+                      java.lang.AutoCloseable
+                      (close [self]
+                        (type x)
+                        (type (.-x self))
+                        (.close self)))))]
     (println "-- FILE: " p)
     (println c))
 

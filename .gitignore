@@ -11,3 +11,4 @@ zig-cache
 .#*
 .rebel_readline_history
 
+*.class

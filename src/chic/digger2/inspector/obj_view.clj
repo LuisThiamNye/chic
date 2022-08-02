@@ -1,6 +1,7 @@
 (ns chic.digger2.inspector.obj-view
   (:require
     [potemkin :refer [doit doary]]
+    [net.cgrand.xforms :as x]
     [chic.util :as util :refer [doit-zip loop-zip loopr <-]]
     [chic.ui2.event :as ievt]
     [chic.style :as style]
@@ -18,16 +19,12 @@
 
 (ui3/deffnletcmpt ui-field-line
   [^float scale intrmgr ybounds width->xbounds object ^Field field ^Font font]
-  (let [title-line (let [mods (.getModifiers field)]
+  (let [mod-lines (loop-zip [mods (.getModifiers field)]
+                    )
+        _ (ui3/coll-closer mod-lines)
+        title-line (let 
                      (uifont/shape-line-default font 
-                       (str (cond (Modifier/isPrivate mods) "-P "
-                              (Modifier/isProtected mods) "-pr ")
-                         (when (Modifier/isStatic mods) "-S ")
-                         (cond (Modifier/isVolatile mods) "-v "
-                           (Modifier/isFinal mods) "-F ")
-                         (when (Modifier/isSynchronized mods) "-sync ")
-                         (when (Modifier/isTransient mods) "-t ")
-                         (.getName field) " = " (or (.get field object) "null"))))
+                       (str (.getName field) " = " (or (.get field object) "null"))))
         xbounds (width->xbounds 0)
         title-paint (cpaint/fill 0xFF000000)]
     {:draw
@@ -48,15 +45,49 @@
       (Modifier/isTransient mods)
       (.getName f))))
 
+(defn instance-fields ^"[Ljava.lang.reflect.Field;" [^Class c]
+  (let [a (.getDeclaredFields c)
+        n1 (alength a)]
+    (<- (loop-zip [^Field f a, i :idx]
+          [n2 n1]
+          (if (Modifier/isStatic (.getModifiers f))
+            (do (aset a i nil)
+              (recur (unchecked-dec-int n2)))
+            (do (.setAccessible f true)
+              (recur n2))))
+      (if (= n1 n2) a)
+      (let [ret (util/make-array Field n2)])
+      (loop-zip [^Field f a]
+        [i (unchecked-int 0)]
+        (if f
+          (do (aset ret i f) (recur (unchecked-inc-int i)))
+          (recur i)))
+      ret)))
+
+(def field-comparator 
+  (fn [^Field a ^Field b]
+    (compare (field->comparable a) (field->comparable b))))
+
+(defn field-mods-data [^Field field paint]
+  (let [mods (.getModifiers field)
+        mut-str (cond (Modifier/isVolatile mods) "v"
+                  (Modifier/isFinal mods) "f"
+                  :else "M")
+        strs (reduce->
+               )]
+    {}
+    (str (cond (Modifier/isPrivate mods) "X"
+           (Modifier/isProtected mods) "P")
+      (when (Modifier/isStatic mods) "S")
+      (when (Modifier/isSynchronized mods) "Y")
+      (when (Modifier/isTransient mods) "t"))))
+
 (ui3/deffnletcmpt ui-fields-view
   [^float scale intrmgr ^Rect rect object]
   (let [line-height (* 16 scale)
         font (uifont/caph->font style/face-default (* line-height 0.6))
-        fields (.getDeclaredFields (.getClass object))
-        _ (java.util.Arrays/sort fields
-            (fn [^Field a ^Field b]
-              (compare (field->comparable a) (field->comparable b))))
-        _ (doary [^Field f fields] (.setAccessible f true))
+        fields (instance-fields (.getClass object))
+        _ (java.util.Arrays/sort fields field-comparator)
         field-cmpts (mapv (fn [_] (ui3/new-cmpt ui-field-line)) fields)
         _ (ui3/coll-closer field-cmpts)
         line-w->xb (fn [_w] rect)]

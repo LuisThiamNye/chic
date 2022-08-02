@@ -42,6 +42,9 @@
         potemkin/potemkin {:mvn/version "0.4.5"}
         metosin/malli {:mvn/version "0.8.4"}
         riddley/riddley {:mvn/version "0.2.0"}
+        net.cgrand/xforms {:git/url "https://github.com/cgrand/xforms"
+                           :git/tag "v0.19.3"
+                           :git/sha "f4ebaea"}
         net.mikera/core.matrix {:mvn/version "0.62.0"}
         org.clojure/core.match {:mvn/version "1.0.0"}
         com.crypticbutter/snoop {:mvn/version "21-353-alpha"}
@@ -53,9 +56,9 @@
         
         org.slf4j/slf4j-jdk14 {:mvn/version "2.0.0-alpha7"}}
 
- :aliases {:repl {:extra-deps {nrepl/nrepl {:mvn/version "0.9.0"}
-                               com.bhauman/rebel-readline {:mvn/version "0.1.4"}}
-                  :main-opts ["-m" "dev"]}
+ :aliases {;:repl {:extra-deps {nrepl/nrepl {:mvn/version "0.9.0"}
+           ;                    com.bhauman/rebel-readline {:mvn/version "0.1.4"}}
+           ;       :main-opts ["-m" "dev"]}
            :dev
            {:extra-paths []
             :extra-deps  {nrepl/nrepl {:mvn/version "0.9.0"}

@@ -320,6 +320,7 @@
   (^void notifyEvent [^io.github.humbleui.jwm.Event _event]))
 
 (defn set-event-listener [^Window jw ^PaintAndEventHandler handler]
+  (assert (some? handler))
   (.setEventListener jw
     (reify java.util.function.Consumer
       (accept [_ evt]

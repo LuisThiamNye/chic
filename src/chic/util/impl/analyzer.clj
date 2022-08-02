@@ -17,8 +17,9 @@
      [constant-lifter :as anap.constant-lifter]] )
   (:import
     (java.lang.reflect Field Method)
+    (java.lang.invoke MethodHandles$Lookup MethodHandle MethodHandles MethodType)
     (clojure.lang Reflector)
-    (clojure.lang Compiler$C Compiler$Expr Compiler$LocalBinding)))
+    (clojure.lang Compiler$C Compiler$Expr Compiler$LocalBinding Compiler$ConstantExpr)))
 
 (defn walk-tails [f ast]
   (case (:op ast)
@@ -80,14 +81,30 @@
   (:tag ((ana.passes/schedule (jvm-passes ['infer-tag]))
          ast)))
 
-(def ^Method expr-hasJavaClass
-  (doto ^Method (first (Reflector/getMethods Compiler$Expr 0 "hasJavaClass" false))
-    (.setAccessible true)))
-(def ^Method expr-getJavaClass
-  (doto ^Method (first (Reflector/getMethods Compiler$Expr 0 "getJavaClass" false))
-    (.setAccessible true)))
+(defmacro mh-invoke
+  "Use in place of MethodHandle::invoke (which does not appear
+to work from Clojure."
+  [mh & args]
+  `(.invokeWithArguments ~mh (doto (object-array ~(count args))
+                               ~@(map-indexed (fn [i arg]
+                                                (list `aset i arg))
+                                   args))))
 
-(defn oinvoke-private* [o mname & args]
+(let* [lk (MethodHandles/privateLookupIn Compiler$Expr (MethodHandles/lookup))]
+  (let* [mh (.findVirtual lk Compiler$Expr "hasJavaClass"
+              (MethodType/methodType Boolean/TYPE))]
+    (defn cexpr-has-tag? ^Boolean [cexpr]
+      (mh-invoke mh cexpr)))
+  (let* [mh (.findVirtual lk Compiler$Expr "getJavaClass"
+              (MethodType/methodType Class))]
+    (defn cexpr-tag-class ^Class [cexpr]
+    (mh-invoke mh cexpr))))
+
+(comment
+  (cexpr-tag-class (Compiler/analyze Compiler$C/EXPRESSION '(int 4)))
+  )
+
+#_(defn oinvoke-private* [o mname & args]
   (let [c (class o)
         ^java.lang.reflect.Method m
         (first (filter (fn [^java.lang.reflect.Method jm]
@@ -96,12 +113,6 @@
                  (.getDeclaredMethods c)))]
     (.setAccessible m true)
     (.invoke m o (into-array Object args))))
-
-(defn cexpr-has-tag? ^Boolean [cexpr]
-  (.invoke expr-hasJavaClass cexpr (object-array 0)))
-
-(defn cexpr-tag-class ^Class [cexpr]
-  (.invoke expr-getJavaClass cexpr (object-array 0)))
 
 (defn infer-tag
   "If a local, looks up the tag in env. Else analyses the form.
@@ -124,7 +135,9 @@
   (or (-> form meta :tag tag-class)
     (infer-tag form env)))
 
-(defn analyze-const? [expr env]
+(defn analyze-const?
+  "Returns true if expr is a compile-time constant literal"
+  [expr env]
   (= :const
     (:op (binding [ana/run-passes
                    (ana.passes/schedule (jvm-passes ['constant-lift]))]
@@ -132,6 +145,24 @@
              expr (assoc (ana/empty-env)
                     :locals
                     (update-vals env localbinding->ana-ast)))))))
+
+#_(defn analyze-const?
+    "Returns true if expr would be lifted out to a static field."
+    [expr]
+    (= Compiler$ConstantExpr
+      (class (Compiler/analyze Compiler$C/EXPRESSION expr))))
+
+(comment
+  ;; toola.ana
+  (= true (analyze-const? '[1 2 {}] {}))
+  ;; Compiler/analyze
+  #_#_#_#_
+  (= true (analyze-const? '[1 2 {1 2}]))
+  (= false (analyze-const? {}))
+  (= false (analyze-const? [1 2 {}])) ;; strange
+  (= false (analyze-const? []))
+  
+  )
 
 (defn free-variables 
   ([form] (free-variables form (rcomp/locals)))
@@ -164,8 +195,5 @@
 
   (ana/macroexpand-all '(case 4 t 'p))
   (ana/macroexpand-all '(new "nil"))
-  
-  clojure.tools.analyzer.env/*env*
-  
   
   )

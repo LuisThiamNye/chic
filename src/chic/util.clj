@@ -1,5 +1,5 @@
 (ns chic.util
-  (:refer-clojure :exclude [compile])
+  (:refer-clojure :exclude [compile make-array])
   (:require
     [chic.util.impl.base :as impl.base]
     [chic.util.impl.analyzer :as impl.ana]
@@ -33,6 +33,13 @@
 
 (def ^:const phi-1 (double (/ (- (Math/sqrt 5) 1) 2)))
 (def ^:const phi (double (/ (+ 1 (Math/sqrt 5)) 2)))
+
+(defmacro make-array [type _dim-or-len & _more-dims]
+  (let [form (with-meta (cons 'clojure.core/make-array (next &form))
+               (meta &form))]
+    (if-some [cls (tag-class type)]
+      (vary-meta form assoc :tag (.getName (.arrayType cls)))
+      form)))
 
 (defn get-form-tag
   "Returns class object. Fall backs to Object."

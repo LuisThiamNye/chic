@@ -11,7 +11,7 @@
 (defmacro not-found? [ret]
   (list `identical? ret NotFound))
 
-(defn primitive-name->class [nam]
+(defn primitive-name->class ^Class [nam]
   (case nam
     "byte" Byte/TYPE
     "short" Short/TYPE
@@ -21,6 +21,8 @@
     "double" Double/TYPE
     "float" Float/TYPE
     "boolean" Boolean/TYPE))
+
+(Compiler/primClass 'x)
 
 (defn tag-class ^Class [tag]
   (ana.jvm.utils/maybe-class tag)

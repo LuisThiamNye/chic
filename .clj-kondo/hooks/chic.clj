@@ -19,9 +19,11 @@
    (let [children (vec (next (:children node)))
          collvec (nth children 0 nil)
          body-or-acc (nth children 1 nil)
-         accvec (when (api/vector-node? body-or-acc)
-                  body-or-acc)
-         body-idx (if accvec 2 1)
+         acc? (api/vector-node? body-or-acc)
+         accvec (if acc?
+                  body-or-acc
+                  (api/vector-node []))
+         body-idx (if acc? 2 1)
          body (nth children body-idx nil)
          completer (nth children (inc body-idx) nil)]
      (api/list-node
