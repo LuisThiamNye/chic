@@ -20,8 +20,7 @@
   (fs/create-dir tmp-dir))
 
 (defn compile-classfiles [expr]
-  (let [;tmp-file (File/createTempFile "tmp-src" "" tmp-dir)
-        rdr (java.io.StringReader. (binding [*print-meta* true]
+  (let [rdr (java.io.StringReader. (binding [*print-meta* true]
                                      (pr-str expr)))]
     (binding [*compile-files* true
               *compile-path* (str tmp-dir)]

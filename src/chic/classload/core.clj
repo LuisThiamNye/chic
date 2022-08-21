@@ -126,7 +126,7 @@
   ;; Wrap to prevent defining classes on main loader.
   ;; Probably should just not use singleton...
   (let [cl (DynamicClassLoader. (get-main-loader))]
-    (.setContextClassLoader (Thread/currentThread))
+    (.setContextClassLoader (Thread/currentThread) cl)
     (.bindRoot Compiler/LOADER cl)))
 
 

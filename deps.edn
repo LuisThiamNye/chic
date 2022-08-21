@@ -1,13 +1,13 @@
 ;;
 {:paths ["src"]
 
- :deps {org.clojure/clojure                  {:mvn/version "1.12.0-alpha1"}
+ :deps {org.clojure/clojure {:mvn/version "1.12.0-alpha1"}
         io.github.humbleui/humbleui {:git/url "https://github.com/HumbleUI/HumbleUI"
                                      :git/sha "4deed5195a61511c348c0799db118c5c25d73c04"}
-        io.github.humbleui/types$clojure     {:mvn/version "0.1.2"}
-        io.github.humbleui/jwm               {:mvn/version "0.4.4"
-                                              ;:local/root "/Volumes/House/pclone/JWM"
-                                              :exclusions [io.github.humbleui/types]}
+        io.github.humbleui/types$clojure {:mvn/version "0.1.2"}
+        io.github.humbleui/jwm {:mvn/version "0.4.4"
+                                ;:local/root "/Volumes/House/pclone/JWM"
+                                :exclusions [io.github.humbleui/types]}
         ;; io.github.humbleui/skija-windows     {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
         ;; io.github.humbleui/skija-linux       {:mvn/version "0.100.0" :exclusions [io.github.humbleui/types]}
         io.github.humbleui/skija-macos-x64   {:mvn/version "0.102.0" :exclusions [io.github.humbleui/types]}
@@ -73,7 +73,7 @@
                        ;; https://docs.cider.mx/cider/troubleshooting.html#empty-java-stacktraces
                        "-XX:-OmitStackTraceInFastThrow"
                        ]
-            :main-opts   ["-m" "chic.main"]}
+            :main-opts ["-m" "chic.main"]}
            :jdebug {:jvm-opts 
                     ["-Djdk.attach.allowAttachSelf"
                      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=1044"]}

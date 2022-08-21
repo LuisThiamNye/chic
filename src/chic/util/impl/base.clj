@@ -22,8 +22,6 @@
     "float" Float/TYPE
     "boolean" Boolean/TYPE))
 
-(Compiler/primClass 'x)
-
 (defn tag-class ^Class [tag]
   (ana.jvm.utils/maybe-class tag)
   #_(if (or (symbol? tag) (string? tag))

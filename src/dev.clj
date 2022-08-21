@@ -95,6 +95,11 @@ java.lang.invoke
   SwitchPoint - could eg be used for var dereffing. Call is specialised
    and you only pay the cost of dynamic dispatch when a new type is given
    to the call site, which re-specialises the site.
+
+
+Also see:
+https://docs.oracle.com/javase/8/docs/technotes/guides/net/ClassLoader.html
+https://lambdaisland.com/blog/2021-08-25-classpath-is-a-lie
 "
 
 (deftype ReplClass [])

@@ -22,8 +22,7 @@ subLoaders = new URLClassLoader[0];
 static {
 	// Must be called before creating instances.
 	// Note: all super classes must also be parallel
-	var parallel = ClassLoader.registerAsParallelCapable();
-	assert parallel;
+	ClassLoader.registerAsParallelCapable();
 	mainLoader = new ComplexRootClassLoader();
 }
 

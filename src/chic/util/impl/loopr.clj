@@ -240,9 +240,9 @@
          forms (vec forms)
          nextras (count forms)
          cexpr (fn [form acc]
-                 (chic.util/let-macro-syms [form form]
-                   (list 'if (list `< form acc)
-                     form acc)))]
+                   (let [form' (if (symbol? form) form (gensym form))]
+                     (list 'if (list `< form' acc)
+                       form' acc)))]
     (<- (if (zero? nextras) form1)
       (let* [comp1 (cexpr (nth forms 0) form1)])
       (if (= 1 nextras) comp1)

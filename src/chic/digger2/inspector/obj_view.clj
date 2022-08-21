@@ -2,6 +2,7 @@
   (:require
     [potemkin :refer [doit doary]]
     [net.cgrand.xforms :as x]
+    [net.cgrand.xforms.rfs :as xrf]
     [chic.util :as util :refer [doit-zip loop-zip loopr <-]]
     [chic.ui2.event :as ievt]
     [chic.style :as style]
@@ -13,23 +14,26 @@
     [chic.ui.ui3 :as ui3])
   (:import
     (java.lang.reflect Field Modifier)
-    (io.github.humbleui.skija Font)
+    (io.github.humbleui.skija Font TextLine)
     (io.github.humbleui.types Rect)
     (java.lang AutoCloseable)))
 
 (ui3/deffnletcmpt ui-field-line
-  [^float scale intrmgr ybounds width->xbounds object ^Field field ^Font font]
-  (let [mod-lines (loop-zip [mods (.getModifiers field)]
-                    )
-        _ (ui3/coll-closer mod-lines)
-        title-line (let 
+  [^float scale intrmgr ybounds width->xbounds object ^Field field ^Font font
+   flags-width flags-line]
+  (let [;mod-lines (loop-zip [mods (.getModifiers field)] )
+        ;_ (ui3/coll-closer mod-lines)
+        title-line (let []
                      (uifont/shape-line-default font 
                        (str (.getName field) " = " (or (.get field object) "null"))))
         xbounds (width->xbounds 0)
-        title-paint (cpaint/fill 0xFF000000)]
+        title-paint (cpaint/fill 0xFF000000)
+        meta-paint (cpaint/fill 0xAF000000)]
     {:draw
      (fn [cnv]
-       (.drawTextLine cnv title-line (:x xbounds) (:bottom ybounds) title-paint))}))
+       (.drawTextLine cnv flags-line (:x xbounds) (:bottom ybounds) meta-paint)
+       (.drawTextLine cnv title-line (+ flags-width (:x xbounds))
+         (:bottom ybounds) title-paint))}))
 
 (defn field->comparable [^Field f]
   (let [mods (.getModifiers f)
@@ -68,19 +72,24 @@
   (fn [^Field a ^Field b]
     (compare (field->comparable a) (field->comparable b))))
 
-(defn field-mods-data [^Field field paint]
+(defn field-mods-data [^Field field ^Font font]
   (let [mods (.getModifiers field)
-        mut-str (cond (Modifier/isVolatile mods) "v"
+        mut-str (cond (Modifier/isVolatile mods) "V"
                   (Modifier/isFinal mods) "f"
                   :else "M")
-        strs (reduce->
-               )]
-    {}
-    (str (cond (Modifier/isPrivate mods) "X"
-           (Modifier/isProtected mods) "P")
-      (when (Modifier/isStatic mods) "S")
-      (when (Modifier/isSynchronized mods) "Y")
-      (when (Modifier/isTransient mods) "t"))))
+        strs (x/str (comp (remove nil?)
+                      (interpose " "))
+               [(cond 
+                  (Modifier/isPrivate mods) "X"
+                  (Modifier/isProtected mods) "P"
+                  (Modifier/isPublic mods) nil
+                  :else "K") ;; package visibility
+                (when (Modifier/isStatic mods) "S")
+                (when (Modifier/isSynchronized mods) "Y")
+                (when (Modifier/isTransient mods) "t")])]
+    {:flags-line (uifont/shape-line-default font
+                   (str mut-str " " strs " "))}
+    ))
 
 (ui3/deffnletcmpt ui-fields-view
   [^float scale intrmgr ^Rect rect object]
@@ -90,14 +99,23 @@
         _ (java.util.Arrays/sort fields field-comparator)
         field-cmpts (mapv (fn [_] (ui3/new-cmpt ui-field-line)) fields)
         _ (ui3/coll-closer field-cmpts)
+        field-infos (mapv #(field-mods-data % font) fields)
+        flags-width (transduce (map (fn [{:keys [^TextLine flags-line]}]
+                                      (.getWidth flags-line)))
+                      xrf/max field-infos)
         line-w->xb (fn [_w] rect)]
     {:draw
      (fn [cnv]
+       ; (prn flags-width)
+       ; (prn (ui3/get-changed-field-syms))
        (loop-zip [cmpt field-cmpts
+                  info field-infos
                   field ^objects fields]
          [ybounds (.withHeight rect line-height)]
          (do (ui3/draw-cmpt ^{:cmpt ui-field-line} cmpt cnv
-               {:scale scale :intrmgr intrmgr 
+               {:scale scale :intrmgr intrmgr
+                :flags-line (do field-infos (:flags-line info))
+                :flags-width flags-width
                 :object object 
                 :ybounds (do rect line-height ybounds)
                 :width->xbounds line-w->xb :font font
@@ -105,6 +123,9 @@
            (recur (.offset ybounds 0 line-height)))))}))
 
 (comment
+  (transduce (map (fn [{:keys [x]}]
+                    x))
+    xrf/max [{:x 1} {:x 3}])
   (-> (ui3/fnlet-widget-parse*
         (last (last (macroexpand-1 dev/last-code))))
     ; :bindings-anas (nth 1) :tag

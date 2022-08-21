@@ -11,7 +11,8 @@
     [clojure.tools.analyzer.jvm :as ana]
     [insn.core :as insn]
     [potemkin :refer [doit doary] :as pot]
-    [taoensso.encore :as enc])
+    [taoensso.encore :as enc]
+    [chic.bifurcan :as b])
   (:import
     (io.github.humbleui.skija Canvas)
     (java.lang AutoCloseable)
@@ -237,7 +238,7 @@
         (loop-zip [[specified-sym vexpr] (eduction (partition-all 2) (second expr-let))
                    {:keys [tag init] :as ana} bindings-anas]
           [i 0
-           bindings (transient [])]
+           bindings []]
           (let [tag (util/tag-class tag)
                 sym (if (.contains -visited-local-syms specified-sym)
                       (gensym specified-sym)
@@ -270,7 +271,7 @@
             (.add -visited-local-syms sym)
             (recur
               (if unused? i (unchecked-inc i))
-              (conj! bindings
+              (conj bindings
                 {:tag tag :sym sym
                  :i i
                  :vexpr vexpr
@@ -287,11 +288,13 @@
                            (bit-set acc (util/index-of input-syms input-sym)))
                    0 input-deps)
                  :field-depmask
-                 (enc/reduce-indexed (fn [acc i {:keys [form]}]
-                                       (cond-> acc (contains? field-deps form)
-                                         (bit-set i)))
-                   0 bindings-anas)})))
-          (persistent! bindings))
+                 (loop-zip [b ^Iterable bindings
+                            {:keys [form]} bindings-anas]
+                   [acc 0]
+                   (recur (cond-> acc (contains? field-deps form)
+                            (bit-set (:i b))))
+                   acc)})))
+          bindings)
         i-sym (util/expand-class-sym (symbol (str "I" nsym)))
         canvas-sym (ffirst (filter vector? (:draw retexpr)))
         draw-param-vec (into (conj [(with-meta canvas-sym {:tag `Canvas})]
