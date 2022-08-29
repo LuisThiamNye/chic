@@ -199,13 +199,26 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
     (assoc r :args [x1 x2])))
 (defn anasf-arith-2 [op {:keys [children] :as node}]
   (assert (= 3 (count children)))
-  (let [[x1 x2] (ana/analyse-args node (subvec children 1))]
-    {:node/kind :arithmetic-2
-     :op op :type :int
-     :node/spec (:node/spec x2)
-     :arg1 x1 :arg2 x2
-     ; :args [x1 x2]
-     :node/locals (:node/locals x2)}))
+  (let [[x1 x2] (ana/analyse-args node (subvec children 1))
+        s1 (:node/spec x1)
+        s2 (:node/spec x2)
+        p1 (spec/prim? s1)
+        p2 (spec/prim? s2)]
+    (when-not (and p1 p2)
+      (throw (RuntimeException.
+               (str "arith-2 operands not prim: " s1 ", " s2 "\n "
+                 children))))
+    (when-not (= p1 p2)
+      (throw (RuntimeException.
+               (str "arith-2 operands not equal type: " p1 ", " p2 "\n "
+                 children))))
+    (ana/transfer-branch-env x2
+      {:node/kind :arithmetic-2
+       :op op :type (keyword p1)
+       :node/spec (:node/spec x2)
+       :arg1 x1 :arg2 x2
+       ; :args [x1 x2]
+       })))
 (defn anasf-add [node]
   (anasf-arith-2 :add node))
 (defn anasf-subtract [node]
@@ -224,13 +237,19 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
   (anasf-arith-2 :xor node))
 (defn anasf-inc [{:keys [children]:as node}]
   (assert (= 2 (count children)))
-  (let [[x] (ana/analyse-args node (subvec children 1))]
-    {:node/kind :arithmetic-2
-     :op :add :type :int
-     :node/spec (:node/spec x)
-     :arg1 x :arg2 (ana/new-const-prim-node nil 1)
-     ; :args [x1 x2]
-     :node/locals (:node/locals x)}))
+  (let [[x] (ana/analyse-args node (subvec children 1))
+        s (:node/spec x)
+        p (spec/prim? s)]
+    (when-not p
+      (throw (RuntimeException.
+               (str "operand not prim: " p))))
+    (ana/transfer-branch-env x
+      {:node/kind :arithmetic-2
+       :op :add :type (keyword p)
+       :node/spec (:node/spec x)
+       :arg1 x :arg2 (ana/new-const-prim-node nil (int 1))
+       ; :args [x1 x2]
+       })))
 (swap! ana/*sf-analysers assoc "+" #'anasf-add)
 (swap! ana/*sf-analysers assoc "-" #'anasf-subtract)
 (swap! ana/*sf-analysers assoc "*" #'anasf-multiply)

@@ -119,6 +119,9 @@ JLS:
   (-emitLoadLocal [_ id])
   (-emitStoreLocal [_ sort id])
   (-emitTryCatch [_ start end hander ex-type])
+  (-regJumpTarget [_ id label])
+  (-unregJumpTarget [_ id])
+  (-getJumpTarget [_ id])
   #_(-emitDeclareLocal [_ name]))
 
 (defn emit-const-prim [ctx {:keys [value]}]
@@ -152,7 +155,13 @@ JLS:
 (declare emit-ast-node)
 
 (defn emit-do [ctx {:keys [children]}]
-  (run! #(emit-ast-node ctx %) children))
+  (when-some [lc (peek children)]
+    (run! (fn [c]
+            (emit-ast-node ctx c)
+            (when-not (= "void" (spec/prim? (:node/spec c)))
+              (-emitInsn ctx :pop)))
+      (pop children))
+    (emit-ast-node ctx lc)))
 
 (defn emit-assign-local [ctx node]
   (let [val (:val node)
@@ -271,15 +280,16 @@ JLS:
     (-emitInsn ctx :athrow)
     (-emitLabel ctx dl)))
 
-(defn emit-jcall [ctx {:keys [classname target method-name args] :as node}]
+(defn emit-jcall [ctx {:keys [classname target method-name args method-type] :as node}]
   (let [classname (or classname (spec/get-exact-class (:node/spec target)))
-        sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
-              (type/classname->type (spec/get-exact-class (:node/spec node))))]
+        ; sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
+        ;       (type/classname->type (spec/get-exact-class (:node/spec node))))
+        ]
     (when target (emit-ast-node ctx target))
     (doseq [a args]
       (emit-ast-node ctx a))
     (-emitInvokeMethod ctx (if target :virtual :static)
-      (type/obj-classname->type classname) method-name sig)))
+      (type/obj-classname->type classname) method-name method-type)))
 
 (defn emit-string [ctx {:keys [value]}]
   (-emitLdcInsn ctx value))
@@ -289,13 +299,24 @@ JLS:
 
 (defn emit-restart-target [ctx {:keys [id body]}]
   (let [label (Label.)]
-    (-emitLabel ctx label)))
+    (-regJumpTarget ctx id label)
+    (-emitLabel ctx label)
+    (emit-ast-node ctx body)
+    (-unregJumpTarget ctx id)))
+
+(defn emit-jump [ctx {:keys [id]}]
+  (-emitJump ctx :goto (-getJumpTarget ctx id)))
+
+(defn emit-cast [ctx {:keys [classname body]}]
+  (emit-ast-node ctx body)
+  (-emitTypeInsn ctx :checkcast (.replace ^String classname \. \/)))
 
 (deftype+ MethodCompilerCtx
   [^MethodVisitor mv ^java.util.HashMap locals
    #_^java.util.ArrayList slots
    ^java.util.TreeSet free-slots
-   ^:mut nslots]
+   ^:mut nslots
+   ^java.util.HashMap jump-targets]
   PCompilerCtx
   (-emitInsn [_ insn]
     (.visitInsn mv (op/kw->opcode-0 insn)))
@@ -331,16 +352,13 @@ JLS:
           insn (condp = tsort
                  :ref :astore :long :lstore :int :istore :float :fstore
                  :double :dstore :boolean :istore :byte :istore :char :istore :short :istore)
-          idx (let [n nslots]
-                (set! nslots (+ nslots width))
-                n)]
-      (when-not (.containsKey locals id)
+          local (.get locals id)
+          idx (or (:idx local)
+                (let [n nslots]
+                  (set! nslots (+ nslots width))
+                  n))]
+      (when (nil? local)
         (.put locals id {:idx idx :type-sort tsort}))
-      #_(if-some [l (.get locals id)]
-        (:idx l)
-        (or (.first free-slots)
-          (do (set! nslots (+ nslots width))
-            nslots)))
       (.visitVarInsn mv (op/kw->opcode insn) idx)))
   (-emitTryCatch [_ start end handler ex-type]
     ;; first save stack to locals TODO
@@ -353,7 +371,21 @@ JLS:
                            :static Opcodes/INVOKESTATIC
                            :special Opcodes/INVOKESPECIAL)
       (.getInternalName ^Type owner) method
-      (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))))
+      (if (instance? Type sig)
+        (.getDescriptor ^Type sig)
+        (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))))
+  (-regJumpTarget [_ id label]
+    (.put jump-targets id label))
+  (-unregJumpTarget [_ id]
+    (.remove jump-targets id))
+  (-getJumpTarget [_ id]
+    (or (.get jump-targets id)
+      (throw (RuntimeException. (str "Could not find jump target " id))))))
+
+(defn new-mcctx [mv]
+  (->MethodCompilerCtx mv
+    (java.util.HashMap.) (java.util.TreeSet.) 0
+    (java.util.HashMap.)))
 
 (defn emit-ast-node [ctx node]
   ((condp = (:node/kind node)
@@ -372,7 +404,11 @@ JLS:
      :locking emit-locking
      :jcall emit-jcall
      :string emit-string
-     :char emit-char)
+     :char emit-char
+     :restart-target emit-restart-target
+     :jump emit-jump
+     :cast emit-cast
+     (throw (RuntimeException. (str "No handler for bytecode node " (pr-str node)))))
    ctx node))
 
 (defn eval-ast [node]
@@ -393,47 +429,69 @@ JLS:
       (.visitCode)
       ; #_
       (do 
-        (let [ctx (->MethodCompilerCtx mv
-                    (java.util.HashMap.) (java.util.TreeSet.) 0)]
+        (let [ctx (new-mcctx mv)]
           (emit-ast-node ctx node)
           (when prim
             (if (= "void" prim)
               (-emitInsn ctx :aconst-null)
               (emit-box ctx (type/box (type/prim-classname->type prim)))))))
       ; (.visitFrame Opcodes/F_SAME1 0 (object-array 0) 1 (object-array [Opcodes/NULL]))
-      (.visitInsn Opcodes/ARETURN)
-      (.visitMaxs -1 -1)
-      (.visitEnd))
-    ; #_
-    (java.nio.file.Files/write
-      (java.nio.file.Path/of "tmp/eval.class" (make-array String 0))
-      (.toByteArray cv)
-      (make-array java.nio.file.OpenOption 0))
-    (.defineClass cl (str "jl.run." clsname)
-      (.toByteArray cv) nil)
-    (let [p (promise)]
-      (.start (Thread/ofPlatform)
-        (fn [] (try (deliver p [:ok (eval '(jl.run.Eval/run))])
-                 (catch Throwable ex (deliver p [:error ex])))))
-      (match (deref p 2000 ::timeout)
-        [:ok r] r
-        [:error e] (throw e)))))
+      (.visitInsn Opcodes/ARETURN))
+    
+    (let [e (try
+                  (.visitMaxs mv -1 -1)
+                  (.visitEnd mv) nil
+                  (catch Exception e e))]
+      (java.nio.file.Files/write
+        (java.nio.file.Path/of "tmp/eval.class" (make-array String 0))
+        (.toByteArray cv)
+        (make-array java.nio.file.OpenOption 0))
+      (if e (throw e)
+        (do (.defineClass cl (str "jl.run." clsname)
+              (.toByteArray cv) nil)
+          (let [p (promise)
+                th (Thread/ofPlatform)]
+            (.start th
+              (fn [] (try (deliver p [:ok (eval '(jl.run.Eval/run))])
+                       (catch Throwable ex (deliver p [:error ex])))))
+            (let [rs (deref p 2000 [:timeout nil])]
+              (match rs
+                [:ok r] r
+                [:error e'] (throw e')
+                [:timeout _] (do (.stop th) ::timeout)))))))))
 
 (comment
+  (defn --cleanast [ast]
+    (clojure.walk/prewalk
+      (fn [m]
+        (if (:node/kind m)
+          [(symbol (:node/kind m))
+           (dissoc m :node/kind :node/spec :node/locals :node/env)]
+          m))
+      ast))
 
   (-> (jl.compiler.analyser/str->ast
-       --s #_"
+       --s #_
+        "
 ;(if (= 1 2) 0 -1)
 ;(ji \"a.b\" replace \\. \\-)
-(jc java.lang.String valueOf 4)
+; (jc java.lang.String valueOf 4)
+#_(loop [i 0]
+  (if (< i 4)
+    (recur (inc i)) i))
+(loop []
+(when false
+4
+  (recur)))
+
 ")
     first
     (jl.compiler.analyser/-analyse-node)
-    ; chic.debug/puget-prn #_
+    ; --cleanast chic.debug/puget-prn #_
     eval-ast
     ; type
     )
-  #_:clj-kondo/ignore
+  
   (def --s
     (pr-str
       '(do
@@ -447,16 +505,17 @@ JLS:
              (ji nums add (jc java.lang.Integer valueOf
                             (jc java.lang.Integer parseInt
                               (ji s substring i (inc i)))))
-             #_(recur (inc i))))
-         #_(loop [m (jc java.lang.Long valueOf 0)
+             (recur (inc i))))
+         (loop [m (jc java.lang.Long parseLong "0")
                 i span]
            (if (< i n)
              (do
                (l= b (- i span))
-               (l= x (loop [acc (jc java.lang.Long valueOf 1)
+               (l= x (loop [acc (jc java.lang.Long parseLong "1")
                             si b]
                        (if (< si i)
-                         (recur (* acc (ji nums get si)) (inc si))
+                         (recur (* acc (ji (cast java.lang.Integer
+                                             (ji nums get si)) longValue)) (inc si))
                          acc)))
                (recur (jc java.lang.Math max m x) (inc i)))
              m)))))

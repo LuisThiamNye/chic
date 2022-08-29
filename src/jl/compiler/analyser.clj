@@ -7,16 +7,61 @@
     [jl.reader :as reader :refer [PFormVisitor]]
     [chic.debug :as debug]))
 
-(defn new-const-prim-node [input value]
-  {:node/kind :const-prim
-   :node/locals (:node/locals input)
+(defn new-void-node []
+  {:node/kind :void
    :node/spec {:spec/kind :exact-class
-               :classname (.getClassName
-                            (type/unbox(type/obj-classname->type
-                                         (.getName (class value)))))}
-   :value value})
+               :classname "void"}})
+
+(defn transfer-branch-env [prev node]
+  (conj {:node/locals (:node/locals prev)
+         :node/env (:node/env prev)}
+    node))
 
 (declare -analyse-node)
+
+(defn analyse-after [prev node]
+  (let [locals (:node/locals prev)]
+    (-analyse-node
+      (cond-> (assoc node :node/env (:node/env prev))
+        locals (assoc :node/locals locals)))))
+
+(defn analyse-args [prev args]
+  (if (= 0 (count args))
+    []
+    (let [n1 (analyse-after prev (nth args 0))]
+      (if (= 1 (count args))
+        [n1]
+        (reduce
+          (fn [acc node]
+            (conj acc (analyse-after (peek acc) node)))
+          [n1] (subvec args 1))))))
+
+(defn analyse-body [prev body]
+  (if (= 0 (count body))
+    (new-void-node)
+    (let [n1 (analyse-after prev (nth body 0))]
+      (if (= 1 (count body))
+        n1
+        (let [children
+              (reduce
+                (fn [acc node]
+                  (conj acc (analyse-after (peek acc) node)))
+                [n1] (subvec body 1))
+              tail (peek children)
+              locals (:node/locals tail)]
+          (cond-> {:node/kind :do
+                   :children children
+                   :node/spec (:node/spec tail)}
+            locals (assoc :node/locals locals)))))))
+
+(defn new-const-prim-node [prev value]
+  (transfer-branch-env prev
+    {:node/kind :const-prim
+     :node/spec {:spec/kind :exact-class
+                 :classname (.getClassName
+                              (type/unbox(type/obj-classname->type
+                                           (.getName (class value)))))}
+     :value value}))
 
 (defn analyse-number [node]
   (let [v (rv-data/parsed-number-value node)]
@@ -44,48 +89,6 @@
   (assoc node :node/spec {:spec/kind :exact-class
                           :classname "clojure.lang.Keyword"}))
 
-(defn new-void-node []
-  {:node/kind :void
-   :node/spec {:spec/kind :exact-class
-               :classname "void"}})
-
-(defn analyse-args [opts args]
-  (if (= 0 (count args))
-    []
-    (let [n1 (-analyse-node (merge (nth args 0)
-                              (select-keys opts [:node/locals])))]
-      (if (= 1 (count args))
-        [n1]
-        (reduce
-          (fn [acc node]
-            (let [locals (:node/locals (peek acc))]
-              (conj acc (-analyse-node
-                          (cond-> node locals
-                            (assoc :node/locals locals))))))
-          [n1] (subvec args 1))))))
-
-(defn analyse-body [opts body]
-  (if (= 0 (count body))
-    (new-void-node)
-    (let [n1 (-analyse-node (merge (nth body 0)
-                              (select-keys opts [:node/locals])))]
-      (if (= 1 (count body))
-        n1
-        (let [children
-              (reduce
-                (fn [acc node]
-                  (let [locals (:node/locals (peek acc))]
-                    (conj acc (-analyse-node
-                                (cond-> node locals
-                                  (assoc :node/locals locals))))))
-                [n1] (subvec body 1))
-              tail (peek children)
-              locals (:node/locals tail)]
-          (cond-> {:node/kind :do
-                   :children children
-                   :node/spec (:node/spec tail)}
-            locals (assoc :node/locals locals)))))))
-
 (defn anasf-quote [{:keys [children] :as node}]
   (when (< 2 (count children))
     (throw (RuntimeException. "quote only supports one child"))
@@ -98,21 +101,20 @@
     (or (when (= :symbol (:node/kind target))
           (let [sym (:string target)]
             (when-some [local (get (:node/locals node) sym)]
-              (let [v (-analyse-node (nth children 2))
+              (let [v (analyse-after node (nth children 2))
                     s (:node/spec v)]
-                (cond->
                   {:node/kind :assign-local
-                   ; :node/spec s
                    :node/spec {:spec/kind :exact-class :classname "void"}
                    :local-name sym
-                   :val v}
-                  (nil? (:spec local))
-                  ; (assoc :set-local-specs {sym s})
-                  (assoc :node/locals
-                    (assoc-in (:node/locals node) [sym :spec] s))
-                  )))))
+                   :val v
+                   :node/env (:node/env v)
+                   :node/locals
+                   (cond-> (:node/locals v)
+                     (nil? (:spec local))
+                     (assoc :node/locals
+                       (assoc-in (:node/locals node) [sym :spec] s)))}))))
       (throw (RuntimeException. "Could not resolve set! target")))))
-
+#_
 (defn anasf-with-locals [{:keys [children]:as node}]
   (case (count children)
     1 (throw (RuntimeException. "Invalid with-locals form"))
@@ -132,11 +134,12 @@
   (assert (<= 3 (count children)))
   (let [nam (:string (nth children 1))
         _ (assert (string? nam))
-        [init] (analyse-args node (subvec children 2 3))]
+        init (analyse-after node (nth children 2))]
     {:node/kind :assign-local
      :node/spec {:spec/kind :exact-class :classname "void"}
      :local-name nam
      :val init
+     :node/env (:node/env init)
      :node/locals (assoc-in (:node/locals init) [nam :spec]
                     (:node/spec init))}))
 
@@ -145,7 +148,7 @@
 
 (def *sf-analysers
   (atom {"quote" #'anasf-quote
-         "with-locals" #'anasf-with-locals
+         ; "with-locals" #'anasf-with-locals
          "set!" #'anasf-assign
          "do" #'anasf-do
          "l=" #'anasf-introduce-local}))
@@ -159,12 +162,12 @@
         (when-some [sf (resolve-sf string)]
           (assoc node :special-form sf)))
     (when-some [local (get (:node/locals node) string)]
-      {:node/kind :local-use
-       :node/spec (:spec local)
-       :node/locals (:node/locals node)
-       :local-name string})
+      (transfer-branch-env node
+        {:node/kind :local-use
+         :node/spec (:spec local)
+         :local-name string}))
     (condp = string
-      "nil" {:node/kind :nil}
+      "nil" (transfer-branch-env node {:node/kind :nil})
       "true" (new-const-prim-node node true)
       "false" (new-const-prim-node node false)
       nil)
@@ -196,7 +199,8 @@
      :number analyse-number
      :string analyse-string
      :set analyse-set
-     :char analyse-char)
+     :char analyse-char
+     (throw (RuntimeException. (str "AST node analyser not found: " node))))
    node))
 
 (deftype BaseAnaRdrVisitor [parent node cb]
