@@ -50,14 +50,11 @@
 
 (comment
   (clean-tmp-dir)
-  (doseq [[p c] (decompile-clj-expr :java 
-                  (quote
-                    (deftype ReplClass [x]
-                      java.lang.AutoCloseable
-                      (close [self]
-                        (type x)
-                        (type (.-x self))
-                        (.close self)))))]
+  (doseq [[p c] (decompile-clj-expr :java
+                  '(let [x 2]
+                     (+ 1
+                       (try x
+                         (catch Exception _)))))]
     (println "-- FILE: " p)
     (println c))
 

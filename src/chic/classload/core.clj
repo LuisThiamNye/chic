@@ -131,7 +131,7 @@
 
 
 (comment
-  (def --d '{rewrite-clj/rewrite-clj {:mvn/version "1.1.45"}})
+  (def --d '{lambdaisland/regal {:mvn/version "0.0.143"}})
   
   (run! prn (keys (System/getProperties)))
   

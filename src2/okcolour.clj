@@ -1,0 +1,147 @@
+(declare PI tuple <<)
+
+(def ^:const PI java.lang.Math/PI)
+
+#_(defn -fix-b [n]
+  (if (< 127 n)
+    (- n 256)
+    n))
+
+
+;; see https://bottosson.github.io/posts/colorpicker/
+;; https://github.com/bottosson/bottosson.github.io/blob/master/misc/colorpicker/colorconversion.js
+
+(defn compute-max-saturation*
+  [^Class F ^F a ^F b
+   ^F k0 ^F k1 ^F k2 ^F k3
+   ^F k4 ^F wl ^F wm ^F ws]
+  (let [S (+ k0
+            (* a k1)
+            (* b k2)
+            (* a a k3)
+            (* a b k4))
+        k-l (+ (* a 0.3963377774) (* b 0.2158037573))
+        l' (+ 1 (* S k-l))
+        l (* l' l' l')
+        l-ds (* 3 k-l l' l')
+        l-ds2 (* 6 k-l k-l l')
+        
+        k-m (+ (* a -0.1055613458) (* b -0.0638541728))
+        m' (+ 1 (* S k-m))
+        m (* m' m' m')
+        m-ds (* 3 k-m m' m')
+        m-ds2 (* 6 k-m k-m m')
+        
+        k-s (+ (* a -0.0894841775) (* b -1.2914855480))
+        s' (+ 1 (* S k-s))
+        s (* s' s' s')
+        s-ds (* 3 k-s s' s')
+        s-ds2 (* 6 k-s k-s s')
+        
+        f (+ (* wl l) (* wm m) (* ws s))
+        f1 (+ (* wl l-ds) (* wm m-ds) (* ws s-ds))
+        f2 (+ (* wl l-ds2) (* wm m-ds2) (* ws s-ds2))]
+    (- S (* f (/ f1
+                (- (* f1 f1)
+                  (* 0.5 f f2)))))))
+
+(def ^:const cms-params
+  {:red
+   [1.19086277 1.76576728 0.59662641 0.75515197
+    0.56771245 4.0767416621 -3.3077115913 0.2309699292]
+   :green
+   [0.73956515 -0.45954404 0.08285427 0.12541070
+    0.14503204 -1.2684380046 2.6097574011 -0.3413193965]
+   :blue
+   [1.35733652 -0.00915799 -1.15130210 -0.50559606
+    0.00692167 -0.0041960863 -0.7034186147 1.7076147010]})
+
+(defn compute-max-saturation [^Class F ^F a ^F b]
+  (cond ;; TODO optimise apply
+    (< 1 (- (* a -1.88170328)
+           (* b 0.80936493)))
+    (apply compute-max-saturation* F a b (:red cms-params))
+    (< 1 (- (* a 1.81444104)
+           (* b 1.19445276)))
+    (apply compute-max-saturation* F a b (:green cms-params))
+    :else
+    (apply compute-max-saturation* F a b (:blue cms-params))))
+
+(defn oklab->linear-srgb [^Class F ^F L ^F a ^F b]
+  (let [l' (+ L (* a 0.3963377774) (* b 0.2158037573))
+        m' (+ L (* a -0.1055613458) (* b -0.0638541728))
+        s' (+ L (* a -0.0894841775) (* b -1.2914855480))
+        l (* l' l' l')
+        m (* m' m' m')
+        s (* s' s' s')]
+    (tuple
+     (+ (* l 4.0767416621) (* m -3.3077115913) (* s 0.2309699292))
+     (+ (* l -1.2684380046) (* m 2.6097574011) (* s -0.3413193965))
+     (+ (* l -0.0041960863) (* m -0.7034186147) (* s 1.7076147010)))))
+
+(defn find-cusp [^Class F ^F a ^F b]
+  (let [s-cusp (compute-max-saturation F a b)
+        [lr lg lb] (oklab->linear-srgb F 1 (* s-cusp a) (* s-cusp b))
+        l-cusp (Math/cbrt (/ 1. (max lr lg lb)))
+        c-cusp (* l-cusp s-cusp)]
+    (tuple l-cusp c-cusp)))
+
+(defn get-st-max [^Class F ^F a ^F b]
+  (let [[l c] (find-cusp F a b)]
+    (tuple (/ c l) (/ c (- 1 l)))))
+
+(defn srgb-transfer-function [^Class F ^F x]
+  (if (<= x 0.0031308)
+    (* x 12.92)
+    (- (* 1.055 (Math/pow x 0.4166666666666667))
+      0.055)))
+
+(defn toe-inv [^Class F ^F x]
+  (let [k1 0.206
+        k2 0.03
+        k3 (/ (+ 1 k1) (+ 1 k2))]
+    (/ (+ (* x x) (* x k1))
+            (* k3 (+ x k2)))))
+
+(defn okhsv->srgb [^Class F ^F h ^F s ^F v]
+  (let [a (Math/cos (* 2 PI h))
+        b (Math/sin (* 2 PI h))
+        [s-max t] (get-st-max F a b)
+        s0 0.5
+        k (- 1 (/ s0 s-max))
+        l-v (- 1 (* s (/ s0 (- (+ s0 t)
+                              (* t k s)))))
+        c-v (/ (* s t s0)
+                    (- (+ s0 t)
+                            (* t k s)))
+        l (* v l-v)
+        c (* v c-v)
+        l-vt (toe-inv F l-v)
+        c-vt (* c-v (/ l-vt l-v))
+        l-new (toe-inv F l)
+        c (* c (/ l-new l))
+        l l-new
+        [lrs lgs lbs] (oklab->linear-srgb F l-vt (* a c-vt) (* b c-vt))
+        scale-l (Math/cbrt (/ 1. (max 0 lrs lgs lbs)))
+        l (* l scale-l)
+        c (* c scale-l)
+        [lr lg lb] (oklab->linear-srgb F l (* c a) (* c b))]
+    (tuple
+     (* 255. (srgb-transfer-function F lr))
+     (* 255. (srgb-transfer-function F (max 0 lg)))
+     (* 255. (srgb-transfer-function F lb)))))
+;; (okhsv->srgb 0. 0.5 0.5)
+;; (okhsv->srgb 0.08 1. 1.)
+
+(defn okhsva->argb8 ^int [^Class F ^F h ^F s ^F v ^F a]
+  (let [[r g b] (okhsv->srgb F h s v)]
+    (+
+     (<< (Math/round (* 255 a)) 030)
+     (<< (Math/round r) 020)
+     (<< (Math/round g) 010)
+     (Math/round b))))
+
+(defn okhsv->rgb8 ^int [^Class F ^F h ^F s ^F v]
+  (okhsva->argb8 F h s v 1))
+
+;; TODO use unsigned maths

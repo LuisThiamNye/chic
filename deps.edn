@@ -39,6 +39,7 @@
         ;; {:git/url "https://github.com/LuisThiamNye/primitive-maths"
         ;;  :git/sha "cb24856629a3643483eebd71b4637ab7af9ce5d1"}
         org.clj-commons/primitive-math {:mvn/version "1.0.0"}
+        lambdaisland/regal {:mvn/version "0.0.143"}
         potemkin/potemkin {:mvn/version "0.4.5"}
         metosin/malli {:mvn/version "0.8.4"}
         riddley/riddley {:mvn/version "0.2.0"}
