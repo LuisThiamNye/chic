@@ -1,0 +1,110 @@
+;; Squawk!
+
+euler-8
+(do
+  (l= s "73167176531330624919225119674426574742355349194934")
+  (l= s (ji (ji s stripIndent) replaceAll "\\s+" ""))
+  (l= n (ji s length))
+  (l= span 13)
+  (l= nums (nw java.util.ArrayList n))
+  (loop [i 0]
+    (when (< i n)
+      (ji nums add (jc java.lang.Integer valueOf
+                     (jc java.lang.Integer parseInt
+                       (ji s substring i (inc i)))))
+      (recur (inc i))))
+  (loop [m (ct long 0)
+         i span]
+    (if (< i n)
+      (do
+        (l= b (- i span))
+        (l= x (loop [acc (ct long 1)
+                     si b]
+                (if (< si i)
+                  (recur (* acc (ji (ct java.lang.Integer
+                                      (ji nums get si)) longValue)) (inc si))
+                  acc)))
+        (recur (jc java.lang.Math max m x) (inc i)))
+      m)))
+
+adjacent-loop-recur
+(do (loop [x true]
+      (when x
+        (loop [])
+        (recur false))
+      true))
+
+closest-loop-recur
+(loop [x true]
+  (loop [y true]
+    (when y
+      (recur false)))
+  x)
+
+exception-catch
+(try (throw (nw java.lang.Exception))
+  (catch java.lang.Exception _
+    true))
+
+exception-catch-union
+(try (throw (nw java.lang.IllegalArgumentException))
+  (catch [java.lang.UnsupportedOperationException
+          java.lang.IllegalArgumentException] _
+    true))
+
+exception-finally
+(try true
+  (finally false))
+
+exception-catch-finally
+(try (throw (nw java.lang.Exception))
+  (catch java.lang.Exception _ true)
+  (finally false))
+
+exception-catch-nested-rethrow
+(try (try (throw (nw java.lang.Exception))
+       (catch java.lang.Exception e
+         (throw e)))
+  (catch java.lang.Exception _
+    true))
+
+exception-catch-order
+(try (throw (nw java.lang.RuntimeException))
+  (catch java.lang.UnsupportedOperationException _ false)
+  (catch java.lang.Exception _ true)
+  (catch java.lang.RuntimeException _ false)
+  (catch java.lang.Throwable _ false))
+
+loop-recur-across-try
+(loop [x true]
+  (when x
+    (try (recur false)
+      (catch java.lang.Exception _ false)))
+  true)
+
+loop-recur-across-catch
+(loop [x true]
+  (when x
+    (try false
+      (catch java.lang.Exception _
+        (recur false))))
+  true)
+
+loop-recur-across-finally
+(loop [x true]
+  (when x
+    (try false
+      (finally
+        (recur false))))
+  true)
+
+loop-recur-within-finally
+(try true
+  (finally
+    (loop [x true]
+      (when x (recur false))
+      false)))
+
+hello-world
+(ji (jf java.lang.System out) println
+  (jc java.lang.String format "Hello world!" (na java.lang.String 0)))

@@ -92,7 +92,13 @@
             spec) ;; todo
       aspecs)))
 
-
+(defn get-array-element [spec]
+  (if (= :exact-array (:spec/kind spec))
+    (if (= 1 (:ndims spec))
+      {:spec/kind :exact-class
+       :classname (:classname spec)}
+      (update spec :ndims dec))
+    (throw (RuntimeException. "spec not an array"))))
 
 
 

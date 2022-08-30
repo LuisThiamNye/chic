@@ -24,12 +24,27 @@
               (map #(.isAssignableFrom %1 %2)
                 pts arg-cs)))
           (when (.isVarArgs method)
-            (let [vararg-type (last (.getParameterTypes method))]
+            (let [vararg-type (.getComponentType (last (.getParameterTypes method)))]
               (and (every? identity
                      (map #(.isAssignableFrom %1 %2)
                        (butlast pts) arg-cs))
                 (every? #(.isAssignableFrom vararg-type %)
                   (subvec arg-cs (dec (count (.getParameterTypes method))))))))))))
+
+(defn sig-specificity>= [sig1 sig2]
+  (every? (fn [[^Class t1 ^Class t2]]
+            (.isAssignableFrom t2 t1))
+    (map vector sig1 sig2)))
+
+(defn most-specific-method [methods]
+  (reduce (fn [^Method ms ^Method method]
+            (let [sig1 (.getParameterTypes ms)
+                  sig2 (.getParameterTypes method)]
+              (cond
+                (sig-specificity>= sig1 sig2) ms
+                (sig-specificity>= sig2 sig1) method
+                :else (reduced nil))))
+    (first methods) (next methods)))
 
 (defn match-method-type ^Type [classname static? method-name arg-types ret-type]
   (assert (every? some? arg-types))
@@ -51,12 +66,22 @@
       0 (throw (RuntimeException.
                  (str "No method matches: " classname (if static? "/" ".") method-name
                    " " (pr-str arg-types) " => " (pr-str ret-type))))
-      1 (Type/getType ^Method (first matches))
-      (throw (RuntimeException.
-               (str "Method ambiguous: " classname (if static? "/" ".") method-name
-                 " " (pr-str arg-types) " => " (pr-str ret-type)
-                 "\nMatches: " (mapv #(.toString %) matches)))))))
+      (or (when-some [m (most-specific-method matches)]
+            (Type/getType ^Method m))
+        (throw (RuntimeException.
+                 (str "Method ambiguous: " classname (if static? "/" ".") method-name
+                   " " (pr-str arg-types) " => " (pr-str ret-type)
+                   "\nMatches: " (mapv #(.toString %) matches))))))))
 
+(defn get-field-type ^Type [classname static? field-name]
+  (let [cls (Class/forName classname)
+        field (first (eduction
+                       (filter #((if static? identity not)
+                                 (Modifier/isStatic (.getModifiers ^Field %))))
+                       (filter #(member-accessible? Object cls (.getModifiers ^Field %)))
+                       (filter #(= field-name (.getName ^Field %)))
+                       (.getDeclaredFields cls)))]
+    (if field
+      (Type/getType (.getType field))
+      (throw (RuntimeException. "Could not find accessible field")))))
 
-(match-method-type "java.lang.String" "valueOf"
-  ["int"] nil)

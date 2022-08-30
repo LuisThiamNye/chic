@@ -119,9 +119,12 @@ JLS:
   (-emitLoadLocal [_ id])
   (-emitStoreLocal [_ sort id])
   (-emitTryCatch [_ start end hander ex-type])
+  (-emitFieldInsn [_ op owner field type])
+  
   (-regJumpTarget [_ id label])
   (-unregJumpTarget [_ id])
   (-getJumpTarget [_ id])
+  
   #_(-emitDeclareLocal [_ name]))
 
 (defn emit-const-prim [ctx {:keys [value]}]
@@ -280,6 +283,55 @@ JLS:
     (-emitInsn ctx :athrow)
     (-emitLabel ctx dl)))
 
+(defn emit-try [ctx {:keys [try-body catches finally-body]}]
+  (let [start-label (Label.)
+        try-end (Label.)
+        done-label (Label.)
+        [catchall? catches]
+        (reduce (fn [[catchall? catches] {:keys [classnames local-name] :as catch}]
+                  (let [label (Label.)]
+                    (doseq [in (mapv type/classname->type classnames)]
+                      (-emitTryCatch ctx start-label try-end label in))
+                    [(or catchall? (boolean (some #{"java.lang.Throwable"} classnames)))
+                     (conj catches
+                       (assoc catch :label label
+                         :local-id local-name))]))
+          [false []] catches)
+        catch-finally-label (Label.)
+        uncaught-finally (and (not catchall?) finally-body (Label.))
+        emit-finally (fn []
+                       (emit-ast-node ctx finally-body)
+                       (when-not (= "void" (spec/prim? (:node/spec finally-body)))
+                         (-emitInsn ctx :pop)))]
+    (when uncaught-finally
+      (-emitTryCatch ctx start-label try-end uncaught-finally nil))
+    (-emitLabel ctx start-label)
+    (emit-ast-node ctx try-body)
+    (-emitLabel ctx try-end)
+    ;; Normal finally
+    (when finally-body
+      (emit-finally))
+    (-emitJump ctx :goto done-label)
+    ;; Uncaught finally
+    (when uncaught-finally
+      (let [lid (str (gensym "exception_"))]
+        (-emitLabel ctx uncaught-finally)
+        (-emitStoreLocal ctx :ref lid)
+        (emit-finally)
+        (-emitLoadLocal ctx lid)
+        (-emitInsn ctx :athrow)))
+    ;; Catches
+    (doseq [{:keys [body label local-id]} catches]
+      (-emitLabel ctx label)
+      (-emitStoreLocal ctx :ref local-id)
+      (emit-ast-node ctx body)
+      (-emitJump ctx :goto catch-finally-label))
+    ;; Catch -> finally
+    (-emitLabel ctx catch-finally-label)
+    (when finally-body
+      (emit-finally))
+    (-emitLabel ctx done-label)))
+
 (defn emit-jcall [ctx {:keys [classname target method-name args method-type] :as node}]
   (let [classname (or classname (spec/get-exact-class (:node/spec target)))
         ; sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
@@ -290,6 +342,11 @@ JLS:
       (emit-ast-node ctx a))
     (-emitInvokeMethod ctx (if target :virtual :static)
       (type/obj-classname->type classname) method-name method-type)))
+
+(defn emit-get-field [ctx {:keys [field-name target classname type]}]
+  (when target (emit-ast-node ctx target))
+  (-emitFieldInsn ctx (if target :getfield :getstatic)
+    (type/obj-classname->type classname) field-name type))
 
 (defn emit-string [ctx {:keys [value]}]
   (-emitLdcInsn ctx value))
@@ -307,9 +364,79 @@ JLS:
 (defn emit-jump [ctx {:keys [id]}]
   (-emitJump ctx :goto (-getJumpTarget ctx id)))
 
-(defn emit-cast [ctx {:keys [classname body]}]
+(defn emit-cast [ctx {:keys [^Type type body] :as node}]
   (emit-ast-node ctx body)
-  (-emitTypeInsn ctx :checkcast (.replace ^String classname \. \/)))
+  (if (type/prim? type)
+    (let [from-prim' (:from-prim node)
+          from-prim (case from-prim' (:byte :char :short :boolean) :int from-prim')
+          to-prim (keyword (.getClassName type))]
+      (when-not (= from-prim' to-prim)
+        (let [insn (match [from-prim to-prim]
+                  [:int :long] :i2l
+                  [:int :float] :i2f
+                  [:int :double] :i2d
+                  [:int :byte] :i2b
+                  [:int :char] :i2c
+                  [:int :short] :i2s
+                  [:long :int] :l2i
+                  [:long :float] :l2f
+                  [:long :double] :l2d
+                  [:long :byte] [:l2i :i2b]
+                  [:long :char] [:l2i :i2c]
+                  [:long :short] [:l2i :i2s]
+                  [:float :int] :f2i
+                  [:float :long] :f2l
+                  [:float :double] :f2d
+                  [:float :byte] [:f2i :i2b]
+                  [:float :char] [:f2i :i2c]
+                  [:float :short] [:f2i :i2s]
+                  [:double :int] :d2i
+                  [:double :long] :d2l
+                  [:double :float] :d2f
+                  [:double :byte] [:d2i :i2b]
+                  [:double :char] [:d2i :i2c]
+                  [:double :short] [:d2i :i2s])]
+          (if (vector? insn)
+            (do (-emitInsn ctx (nth insn 0))
+              (-emitInsn ctx (nth insn 1)))
+            (-emitInsn ctx insn)))))
+    (-emitTypeInsn ctx :checkcast (.getInternalName type))))
+
+(defn emit-array-set [ctx {:keys [target index val]}]
+  (let [aryt (type/classname->type
+               (spec/get-exact-class
+                 (spec/get-array-element (:node/spec target))))
+        insn (condp = (.getClassName aryt)
+               "int" :iastore
+               "long" :lastore
+               "double" :dastore
+               "float" :fastore
+               "byte" :bastore
+               "boolean" :bastore
+               "char" :castore
+               "short" :sastore
+               :aastore)]
+    (emit-ast-node ctx target)
+    (emit-ast-node ctx index)
+    (emit-ast-node ctx val)
+    (-emitInsn ctx insn)))
+
+(defn emit-array-get [ctx {:keys [target index] :as node}]
+  (let [aryt (type/classname->type
+               (spec/get-exact-class (:node/spec node)))
+        insn (condp = (.getClassName aryt)
+               "int" :iaload
+               "long" :laload
+               "double" :daload
+               "float" :faload
+               "byte" :baload
+               "boolean" :baload
+               "char" :caload
+               "short" :saload
+               :aaload)]
+    (emit-ast-node ctx target)
+    (emit-ast-node ctx index)
+    (-emitInsn ctx insn)))
 
 (deftype+ MethodCompilerCtx
   [^MethodVisitor mv ^java.util.HashMap locals
@@ -374,6 +501,9 @@ JLS:
       (if (instance? Type sig)
         (.getDescriptor ^Type sig)
         (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))))
+  (-emitFieldInsn [_ op owner field type]
+    (.visitFieldInsn mv (op/kw->opcode op) (.getInternalName ^Type owner)
+      field (.getDescriptor ^Type type)))
   (-regJumpTarget [_ id label]
     (.put jump-targets id label))
   (-unregJumpTarget [_ id]
@@ -408,6 +538,10 @@ JLS:
      :restart-target emit-restart-target
      :jump emit-jump
      :cast emit-cast
+     :try emit-try
+     :get-field emit-get-field
+     :array-get emit-array-get
+     :array-set emit-array-set
      (throw (RuntimeException. (str "No handler for bytecode node " (pr-str node)))))
    ctx node))
 
@@ -442,7 +576,7 @@ JLS:
                   (.visitMaxs mv -1 -1)
                   (.visitEnd mv) nil
                   (catch Exception e e))]
-      (java.nio.file.Files/write
+      #_(java.nio.file.Files/write
         (java.nio.file.Path/of "tmp/eval.class" (make-array String 0))
         (.toByteArray cv)
         (make-array java.nio.file.OpenOption 0))
@@ -461,112 +595,11 @@ JLS:
                 [:timeout _] (do (.stop th) ::timeout)))))))))
 
 (comment
-  (defn --cleanast [ast]
-    (clojure.walk/prewalk
-      (fn [m]
-        (if (:node/kind m)
-          [(symbol (:node/kind m))
-           (dissoc m :node/kind :node/spec :node/locals :node/env)]
-          m))
-      ast))
 
-  (-> (jl.compiler.analyser/str->ast
-       --s #_
-        "
-;(if (= 1 2) 0 -1)
-;(ji \"a.b\" replace \\. \\-)
-; (jc java.lang.String valueOf 4)
-#_(loop [i 0]
-  (if (< i 4)
-    (recur (inc i)) i))
-(loop []
-(when false
-4
-  (recur)))
-
-")
-    first
-    (jl.compiler.analyser/-analyse-node)
-    ; --cleanast chic.debug/puget-prn #_
-    eval-ast
-    ; type
-    )
-  
-  (def --s
-    (pr-str
-      '(do
-         (l= s "73167176531330624919225119674426574742355349194934")
-         (l= s (ji (ji s stripIndent) replaceAll "\\s+" ""))
-         (l= n (ji s length))
-         (l= span 13)
-         (l= nums (nw java.util.ArrayList n))
-         (loop [i 0]
-           (when (< i n)
-             (ji nums add (jc java.lang.Integer valueOf
-                            (jc java.lang.Integer parseInt
-                              (ji s substring i (inc i)))))
-             (recur (inc i))))
-         (loop [m (jc java.lang.Long parseLong "0")
-                i span]
-           (if (< i n)
-             (do
-               (l= b (- i span))
-               (l= x (loop [acc (jc java.lang.Long parseLong "1")
-                            si b]
-                       (if (< si i)
-                         (recur (* acc (ji (cast java.lang.Integer
-                                             (ji nums get si)) longValue)) (inc si))
-                         acc)))
-               (recur (jc java.lang.Math max m x) (inc i)))
-             m)))))
-  568995840
+   
   ;; set! should do same as l= if in same branch as local is declared
   ;; prevent infinite loops: ensure each branch has a path to termination
 
-  
-  (let [s "73167176531330624919225119674426574742355349194934
-           96983520312774506326239578318016984801869478851843
-           85861560789112949495459501737958331952853208805511
-           12540698747158523863050715693290963295227443043557
-           66896648950445244523161731856403098711121722383113
-           62229893423380308135336276614282806444486645238749
-           30358907296290491560440772390713810515859307960866
-           70172427121883998797908792274921901699720888093776
-           65727333001053367881220235421809751254540594752243
-           52584907711670556013604839586446706324415722155397
-           53697817977846174064955149290862569321978468622482
-           83972241375657056057490261407972968652414535100474
-           82166370484403199890008895243450658541227588666881
-           16427171479924442928230863465674813919123162824586
-           17866458359124566529476545682848912883142607690042
-           24219022671055626321111109370544217506941658960408
-           07198403850962455444362981230987879927244284909188
-           84580156166097919133875499200524063689912560717606
-           05886116467109405077541002256983155200055935729725
-           71636269561882670428252483600823257530420752963450"
-        s (.replaceAll (.stripIndent s) "\\s+" "")
-        n (.length s)
-        span 13
-        nums (java.util.ArrayList.)]
-    (loop [i 0]
-      (when (< i n)
-        (.add nums (Integer/parseInt (.substring s i (inc i))))
-        (recur (inc i))))
-    (loop [m 0
-           i span]
-      (if (< i n)
-        (let [b (- i span)
-              x (loop [acc 1
-                       si b]
-                  (if (< si i)
-                    (recur (* acc (.get nums si)) (inc si))
-                    acc))]
-          (recur (Math/max ^long m ^long x) (inc i)))
-        m)))
-  
-  23514624000
-
-  
   )
 
 "

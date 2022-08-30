@@ -4,7 +4,8 @@
     [jl.compiler.spec :as spec]
     [jl.compiler.core :as comp]
     [clojure.core.match :refer [match]]
-    [jl.compiler.analyser :as ana :refer [-analyse-node]])
+    [jl.compiler.analyser :as ana :refer [-analyse-node]]
+    [jl.compiler.type :as type])
   (:import
     (org.objectweb.asm Type)))
 
@@ -39,6 +40,19 @@
 (defn anasf-lte [node] (anasf-numcmp :<= node))
 (defn anasf-lt [node] (anasf-numcmp :< node))
 
+(defn join-branch-specs [nodes]
+  (let [specs (into [](comp (remove nil?)
+                        (map :node/spec)
+                        (remove #(= :jump (:spec/kind %)))
+                        (distinct))
+                nodes)]
+    (if (empty? specs)
+      {:spec/kind :jump}
+      (if (= 1 (count specs))
+        (first specs)
+        {:spec/kind :union
+         :specs specs}))))
+
 ;; TODO detect mergeable ifs (if (if t t (do 3 f)) 1 2) -> (if t 1 (do 3 2))
 (defn anasf-if [{:keys [children] :as node}]
   (assert (= 4 (count children)))
@@ -56,7 +70,7 @@
             sthen
             :else
             (throw (RuntimeException.
-                     (str"Unmatching if specs: " sthen "\n" selse))))]
+                     (str "Unmatching if specs: " sthen "\n" selse))))]
     {:node/kind :if-true
      :node/spec s
      :test test
@@ -103,18 +117,46 @@
 (defn anasf-new-array [{:keys [children] :as node}]
   (assert (<= 3 (count children)))
   (let [classname (:string (nth children 1))
-        dims (ana/analyse-args node (subvec children 2))]
+        dims (ana/analyse-args node (subvec children 2))
+        ndims (count dims)]
     (ana/transfer-branch-env (peek dims)
       {:node/kind :new-array
-       :node/spec {:spec/kind :exact-class
-                   :classname classname}
+       :node/spec {:spec/kind :exact-array
+                   :classname classname
+                   :ndims ndims}
        :classname classname
-       :ndims (count dims) ;; TODO override with keyword option :dims n
+       :ndims ndims ;; TODO allow override with keyword option :dims n
        :dims dims})))
+
+(defn anasf-array-set[{:keys [children] :as node}]
+  (assert (<= 4 (count children)))
+  (let [target (ana/analyse-after node (nth children 1))
+        index (ana/analyse-after target (nth children 2))
+        val (ana/analyse-after index (nth children 3))]
+    (ana/transfer-branch-env val
+      {:node/kind :array-set
+       :target target
+       :index index
+       :val val
+       :node/spec {:spec/kind :exact-class :classname "void"}})))
+
+(defn anasf-array-get [{:keys [children] :as node}]
+  (assert (<= 3 (count children)))
+  (let [target (ana/analyse-after node (nth children 1))
+        index (ana/analyse-after target (nth children 2))]
+    (ana/transfer-branch-env index
+      {:node/kind :array-get
+       :target target
+       :index index
+       :node/spec (spec/get-array-element (:node/spec target))})))
+
+(class (object-array 0))
+(class (Object.))
 
 (defn anasf-throw [{:keys [children] :as node}]
   (assert (= 2 (count children)))
   {:node/kind :throw
+   :node/spec {:spec/kind :jump}
    :arg (first (ana/analyse-args node (subvec children 1)))})
 
 (defn anasf-locking [{:keys [children] :as node}]
@@ -125,6 +167,69 @@
      :node/spec (:node/spec body)
      :lock lock
      :body body}))
+
+(defn anasf-try [{:keys [children] :as node}]
+  (if (= 1 (count children))
+    (ana/new-void-node)
+    (let [list-of? (fn [s child]
+                     (and (= :list (:node/kind child))
+                       (when-some [f (first (:children child))]
+                         (and (= :symbol (:node/kind f))
+                           (= s (:string f))))))
+          ntry (reduce (fn [acc child]
+                         (if (or (list-of? "catch" child)
+                               (list-of? "finally" child))
+                           (reduced acc)
+                           (inc acc)))
+                 0 (subvec children 1))
+          exceptable? (not= 0 ntry)
+          try-body (ana/analyse-body node (subvec children 1 (inc ntry)))
+          catch-prev try-body
+          catches (reduce
+                    (fn [acc {:keys [children] :as child}]
+                      (if (list-of? "catch" child)
+                        (do (assert (<= 3 (count children)))
+                          (let [cs (nth children 1)
+                                sym (nth children 2)
+                                _ (assert (= :symbol (:node/kind sym)))
+                                symname (:string sym)
+                                classnames
+                                (condp = (:node/kind cs)
+                                 :symbol [(:string cs)]
+                                 :vector (mapv (fn [x]
+                                                 (assert (= :symbol (:node/kind x))
+                                                   "Invalid catch union")
+                                                 (:string x)) (:children cs)))]
+                            (conj acc
+                              {:classnames classnames
+                               :local-name symname
+                               :body (ana/analyse-body
+                                       (assoc-in catch-prev [:node/locals symname :spec]
+                                         {:spec/kind :exact-class
+                                          :classname (if (= 1 (count classnames))
+                                                       (first classnames)
+                                                       ;; TODO ideally common ancestor
+                                                       "java.lang.Throwable")})
+                                       (subvec children 3))})))
+                        (reduced acc)))
+                    [] (when exceptable? (subvec children (inc ntry))))
+          nrest (- (count children) (count catches) ntry 1)
+          _ (assert (<= nrest 1))
+          finally-body (when (= 1 nrest)
+                         (let [c (peek children)]
+                           (if (list-of? "finally" c)
+                             (ana/analyse-body
+                               (assoc-in catch-prev [:node/env :restart-targets] nil)
+                               (subvec (:children c) 1))
+                             (throw (RuntimeException. "Bad final try-catch clause")))))]
+      {:node/kind :try
+       :node/spec (join-branch-specs
+                    (conj (mapv :body catches) try-body finally-body))
+       :try-body try-body
+       :catches catches
+       :finally-body finally-body
+       :node/env (:node/env node)
+       :node/locals (:node/locals node)})))
 
 #_(defn anasf-while [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
@@ -223,7 +328,7 @@
         args (ana/analyse-args target (subvec children 3))
         mt (interop/match-method-type c false m
              (mapv (comp spec/get-exact-class :node/spec) args) nil)
-        final (or (last args) node)]
+        final (or (last args) target)]
     (ana/transfer-branch-env final
       {:node/kind :jcall
        :target target
@@ -256,14 +361,40 @@
        ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
        :args args})))
 
+(defn anasf-jfield-get [{:keys [children] :as node}]
+  (assert (<= 3 (count children)))
+  (let [obj (nth children 1)
+        _ (assert (= :symbol (:node/kind obj)))
+        f (nth children 2)
+        _ (assert (= :symbol (:node/kind f)))
+        field (:string f)
+        ; target (ana/analyse-after node obj)
+        ; c (spec/get-exact-class (:node/spec target))
+        c (:string obj)
+        ft (interop/get-field-type c true field)]
+    (ana/transfer-branch-env node ;target
+      {:node/kind :get-field
+       ; :target target
+       :classname c
+       :field-name field
+       :type ft
+       :node/spec {:spec/kind :exact-class
+                   :classname (.getClassName ft)}})))
+
 (defn anasf-cast [{:keys [children] :as node}]
   (assert (= 3 (count children)))
   (let [classname (:string (nth children 1))
         _ (assert (string? classname))
+        t (type/classname->type classname)
         x (ana/analyse-after node (nth children 2))]
     (ana/transfer-branch-env x
       {:node/kind :cast
-       :classname classname
+       :type t
+       :from-prim
+       (when (type/prim? t)
+         (if-some [p (spec/prim? (:node/spec x))]
+           (keyword p)
+           (throw (RuntimeException. "Cannot cast non-prim to prim"))))
        :body x
        :node/spec {:spec/kind :exact-class
                    :classname classname}})))
@@ -277,14 +408,18 @@
 (swap! ana/*sf-analysers assoc "if" #'anasf-if)
 (swap! ana/*sf-analysers assoc "nw" #'anasf-new-obj)
 (swap! ana/*sf-analysers assoc "na" #'anasf-new-array)
-(swap! ana/*sf-analysers assoc "tw" #'anasf-throw)
+(swap! ana/*sf-analysers assoc "aa" #'anasf-array-get)
+(swap! ana/*sf-analysers assoc "sa" #'anasf-array-set)
+(swap! ana/*sf-analysers assoc "throw" #'anasf-throw)
 (swap! ana/*sf-analysers assoc "locking" #'anasf-locking)
 (swap! ana/*sf-analysers assoc "ji" #'anasf-jcall)
 (swap! ana/*sf-analysers assoc "jc" #'anasf-jscall)
+(swap! ana/*sf-analysers assoc "jf" #'anasf-jfield-get)
 (swap! ana/*sf-analysers assoc "loop" #'anasf-loop)
 (swap! ana/*sf-analysers assoc "recur" #'anasf-recur)
 (swap! ana/*sf-analysers assoc "when" #'anasf-when)
-(swap! ana/*sf-analysers assoc "cast" #'anasf-cast)
+(swap! ana/*sf-analysers assoc "ct" #'anasf-cast)
+(swap! ana/*sf-analysers assoc "try" #'anasf-try)
 
 
 
