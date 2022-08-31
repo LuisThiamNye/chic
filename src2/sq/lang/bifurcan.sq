@@ -1,0 +1,68 @@
+
+
+lookup
+(contains? [k])
+(get [k] [k nf])
+(get-in [ks] [ks nf])
+
+(keys [])
+
+associative
+(dissoc)
+(assoc [k v & kvs])
+(assoc-in [ks v])
+(update [k f & args])
+(update-in [ks f & args])
+
+(map-type io.lacuna.bifurcan.IList
+  (cjr addLast)
+  (cjl addFirst)
+  (concat concat)
+  (first first)
+  (persistent! forked)
+  (transient linear)
+  (last last)
+  (assoc set)
+  (slice slice)
+  (nth nth)
+  (count size)
+  (update update))
+
+(map-type io.lacuna.bifurcan.ISet
+  (conj add)
+  (persistent! forked)
+  (transient linear)
+  (index-of indexOf)
+  (union union)
+  (difference difference)
+  (intersection intersection)
+  (nth nth)
+  (count size))
+
+(map-type io.lacuna.bifurcan.Map
+  (keys keys)
+  (vals values)
+  ,associative
+  (dissoc remove)
+  (update [k f] (update k f))
+  (assoc put)
+  ,counted
+  (count size)
+  ,lookup
+  (get [k] (get k nil))
+  (get [k nf] (get k nf))
+  (contains? [k] (contains k))
+  ,?
+  (index-of indexOf)
+  ,sequential
+  (nth nth)
+  ,map
+  (union union)
+  (difference difference)
+  (intersection intersection)
+  (merge merge)
+  ,editable
+  (transient linear)
+  ,transient
+  (persistent! forked)
+  (transient? isLinear))

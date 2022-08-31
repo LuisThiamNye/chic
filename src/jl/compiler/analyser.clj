@@ -1,7 +1,7 @@
 (ns jl.compiler.analyser
   (:require
     [jl.compiler.type :as type]
-    [chic.util :refer [<-]]
+    [chic.util :refer [<- deftype+]]
     [jl.rv-data :as rv-data]
     [jl.compiler.spec :as spec]
     [jl.reader :as reader :refer [PFormVisitor]]
@@ -49,10 +49,10 @@
                 [n1] (subvec body 1))
               tail (peek children)
               locals (:node/locals tail)]
-          (cond-> {:node/kind :do
-                   :children children
-                   :node/spec (:node/spec tail)}
-            locals (assoc :node/locals locals)))))))
+          (transfer-branch-env tail
+            {:node/kind :do
+             :children children
+             :node/spec (:node/spec tail)}))))))
 
 (defn new-const-prim-node [prev value]
   (transfer-branch-env prev
@@ -161,18 +161,25 @@
   (or (when (:invoke-target? node)
         (when-some [sf (resolve-sf string)]
           (assoc node :special-form sf)))
-    (when-some [local (get (:node/locals node) string)]
-      (transfer-branch-env node
-        {:node/kind :local-use
-         :node/spec (:spec local)
-         :local-name string}))
     (condp = string
       "nil" (transfer-branch-env node {:node/kind :nil})
       "true" (new-const-prim-node node true)
       "false" (new-const-prim-node node false)
       nil)
-    (throw (RuntimeException. (str "Could not resolve symbol: " string
-                                "\nLocals: " (pr-str (:node/locals node)))))))
+    (when-some [local (get (:node/locals node) string)]
+      (transfer-branch-env node
+        {:node/kind :local-use
+         :node/spec (:spec local)
+         :local-name string}))
+    (when-some [field (get-in node [:node/env :fields string])]
+      (transfer-branch-env node
+        {:node/kind :self-field-get
+         :node/spec (:spec field)
+         :field-name string}))
+    (throw (RuntimeException.
+             (str "Could not resolve symbol: " string
+               "\nLocals: " (pr-str (:node/locals node))
+               "\nFields: " (pr-str (:fields (:node/env node))))))))
 
 (defn analyse-list [{:keys [children] :as node}]
   (if (= 0 (count children))
@@ -202,6 +209,68 @@
      :char analyse-char
      (throw (RuntimeException. (str "AST node analyser not found: " node))))
    node))
+
+#_(deftype+ BaseAnaMetaRdrVisitor [parent ^:mut meta]
+  PFormVisitor
+  (-visitNumber [_ numstr]
+    (throw (UnsupportedOperationException.)))
+  (-visitKeyword [_ kwstr]
+    (set! meta
+      {:node/kind :keyword
+       :string (subs kwstr 1)}))
+  (-visitSymbol [_ symstr]
+    (set! meta
+      {:node/kind :symbol
+       :string symstr}))
+  (-visitChar [_ token]
+    (throw (UnsupportedOperationException.)))
+  (-visitCharLiteral [_ c]
+    (throw (UnsupportedOperationException.)))
+  (-visitString [_ s]
+    (set! meta
+      {:node/kind :string
+       :value s}))
+  (-visitList [self] 
+    (throw (UnsupportedOperationException.)))
+  (-visitVector [self]
+    (throw (UnsupportedOperationException.)))
+  (-visitMap [self]
+    (BaseAnaRdrVisitor. self {:node/kind :map} (rv-data/clj-map-builder)))
+  (-visitSet [self]
+    (throw (UnsupportedOperationException.)))
+  (-visitDiscard [_] (reader/noop-visitor))
+  (-visitEnd [_]
+    (when parent
+      (rv-data/-addEnd (.-cb ^BaseAnaRdrVisitor parent)
+        (assoc node :children (rv-data/-toColl cb)))))
+  rv-data/PCollBuilder
+  (-toColl [_] (rv-data/-toColl cb)))
+
+(deftype+ BaseAnaMetaBuilder [^:mut meta ^:mut target]
+  rv-data/PCollBuilder
+  (-addEnd [_ x]
+    (if (nil? meta)
+      (set! meta x)
+      (set! target x)))
+  (-toColl [_]
+    (letfn [(merge-tag []
+              (let [m (:node/meta target)
+                    t (:tag m)
+                    tk (:node/kind t)]
+                (assoc-in target [:node/meta :tag]
+                  (cond
+                    (nil? t) {:node/kind :vector
+                              :children [meta]}
+                    (= :vector tk) (conj t meta)
+                    (#{:keyword :string :symbol} tk)
+                    {:node/kind :vector
+                     :children [t meta]}))))]
+      (condp = (:node/kind meta)
+        :map (assoc target :node/meta meta)
+        :keyword (merge-tag)
+        :symbol (merge-tag)
+        :string (merge-tag)
+        (throw (UnsupportedOperationException.))))))
 
 (deftype BaseAnaRdrVisitor [parent node cb]
   PFormVisitor
@@ -239,11 +308,17 @@
     (BaseAnaRdrVisitor. self {:node/kind :map} (rv-data/clj-map-builder)))
   (-visitSet [self]
     (BaseAnaRdrVisitor. self {:node/kind :set} (rv-data/clj-set-builder)))
+  (-visitMeta [self]
+    (let [v (BaseAnaRdrVisitor. self nil (->BaseAnaMetaBuilder nil nil))]
+      [v v]))
   (-visitDiscard [_] (reader/noop-visitor))
   (-visitEnd [_]
     (when parent
-      (rv-data/-addEnd (.-cb ^BaseAnaRdrVisitor parent)
-        (assoc node :children (rv-data/-toColl cb)))))
+      (let [coll (rv-data/-toColl cb)]
+        (rv-data/-addEnd (.-cb ^BaseAnaRdrVisitor parent)
+          (if node
+            (assoc node :children coll)
+            coll)))))
   rv-data/PCollBuilder
   (-toColl [_] (rv-data/-toColl cb)))
 

@@ -1,0 +1,60 @@
+(defclass sq.lang.util.TrimRefValueMapLoopRunner
+  :interfaces java.lang.Runnable
+  [^java.lang.ref.ReferenceQueue rq
+   ^java.util.Map cache]
+  
+  #_(<init> [self rq cache]
+    (set! (jf self rq) rq)
+    (set! (jf self cache) cache))
+  
+  (run [_]
+    (loop []
+      (l= ref1 (ji rq remove))
+      (l= refs (nw java.util.ArrayList))
+      (ji refs add ref1)
+      (loop [] ;; batch any available
+        (l= ref (ji rq poll))
+        (when (not (nil? ref))
+          (ji refs add ref)
+          (recur)))
+      ;; refs are values, so must iterate
+      (l= viter (ji (ji cache values) iterator))
+      (loop []
+        (when (ji viter hasNext)
+          (l= v (ji viter next))
+          (l= i (ji refs indexOf v))
+          (when (<= 0 i)
+            (ji refs remove i)
+            (ji viter remove))
+          (recur)))
+      (recur))))
+
+
+(defclass sq.lang.util.IntRangeIterator
+  :interfaces java.util.Iterator
+  [^:mut ^int i ^int maximum]
+  (hasNext [_] (< i maximum))
+  (next [_] (set! i (inc i))))
+
+#_
+(defrewrite ->
+  [x] x
+  [x [y1 & ys]] (y1 x & ys)
+  [x y & fs] (-> x (-> y & fs)))
+
+(defrewrite ->>
+  [x] x
+  [x [& ys]] (& ys x)
+  [x y & fs] (->> (->> x y) & fs))
+
+(defrewrite when-some
+  [[x v] a] (do (l= x v) (when (not (nil? x)) a))
+  [[x v & r] a]
+  (when-some [x v] (when-some [& r] a)))
+
+(defrewrite if-some
+  [[x v] a b] (do (l= x v) (if (not (nil? x)) a b))
+  #_#_[[x v x2 v2] a ?b]
+  )
+
+

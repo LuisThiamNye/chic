@@ -51,6 +51,43 @@
   (eval-str "(do (l= a (na short 1)) (sa a 0 5) a)"))
 (= 5 (eval-str "(do (l= a (na short 1)) (sa a 0 5) (aa a 0))"))
 
+(let [cl (clojure.lang.RT/makeClassLoader)]
+  (-> (ana/str->ast "(defclass repl.Tmp)")
+    first (ana/-analyse-node)
+    (->> (compiler/eval-ast cl)))
+  (identical? cl (.getClassLoader (Class/forName "repl.Tmp"))))
+
+(let [cl (clojure.lang.RT/makeClassLoader)]
+  (-> (ana/str->ast "
+(defclass repl.Tmp
+:interfaces java.lang.Runnable java.lang.AutoCloseable
+[^int x ^java.lang.String s]
+(run [self] self x))")
+    first (ana/-analyse-node)
+    (->> (compiler/eval-ast cl)))
+  (let [c (Class/forName "repl.Tmp")
+        r (clojure.reflect/reflect c)
+        fs (group-by :name (:members r))
+        obj (.newInstance (first (.getDeclaredConstructors c))
+              (object-array [(int 1) "x"]))
+        default-field-flags #{:private :final}]
+    (assert (identical? cl (.getClassLoader c)))
+    (and
+      (= '#{java.lang.Object java.lang.Runnable java.lang.AutoCloseable}
+        (:bases r))
+      (= '#{:public} (:flags r))
+      (let [{:keys [type flags]} (first (get fs 's))]
+        (and (= 'java.lang.String type)
+          (= default-field-flags flags)))
+      (let [{:keys [type flags]} (first (get fs 'x))]
+        (and (= 'int type)
+          (= default-field-flags flags)))
+      (= '[int java.lang.String] ;; auto positional ctor
+        (:parameter-types (first (get fs 'repl.Tmp))))
+      (= 1 (.run obj)))))
+
+
+
 (comment
   (defn --cleanast [ast]
     (clojure.walk/prewalk
@@ -64,10 +101,7 @@
   (-> (ana/str->ast
         ; --s #_
         "
-;(if (= 1 2) 0 -1)
-;(ji \"a.b\" replace \\. \\-)
-; (jc java.lang.String valueOf 4)
-(na java.lang.String 0)
+
 
 ")
     first
@@ -76,6 +110,44 @@
     compiler/eval-ast
     ; type
     )
+  
+  (ana/str->ast "[^m x]")
+  
+  
+  (count (.get (doto (second (.getDeclaredFields clojure.lang.Keyword))
+                 (.setAccessible true))
+           clojure.lang.Keyword))
+  
+  (let [c (java.lang.ref.Cleaner/create)
+        o (Object.)]
+    (.register c o (fn [] (prn "clean1")))
+    (.register c o (fn [] (prn "clean2")))
+    nil)
+  (def --cleaner (java.lang.ref.Cleaner/create))
+  (def --rq (java.lang.ref.ReferenceQueue.))
+  (def --ct (-> (Thread/ofVirtual)
+              (.start (fn []
+                        (loop []
+                          (let [o(.remove --rq)]
+                            (prn "removing " o)
+                            (prn "also found"
+                              (take-while some?
+                                (iterate (fn [_] (.poll --rq)) 0)))))))))
+  (def --refs
+    (take 10 (iterate (fn [_] (java.lang.ref.WeakReference. (Object.) --rq)) nil)))
+  ;; possible to batch process with thread loop
+  
+  (System/gc)
+  
+  ;; TODO shadowing
+  
+  (let [o (Object.)]
+    [(.hashCode o) (.hashCode o)])
+  
+;; TODO something like zig's anytype
+  
+  (do (deftype Tmp []) nil)
+  (class? (Class/forName "jl.test.compiler.Tmp"))
   )
 
 

@@ -1,0 +1,65 @@
+
+
+
+;; what if rq thread blocks but class is collected?
+;; - thread holds ref to refqueue
+;; - instances of class may be collected to refqueue
+;; -- but may be no instances in first place
+;; - could register special token with rq to force termination when collected
+;; - but the token's weakreference must be strongly referenced
+;; - could register the classloader with a cleaner (preferably shared)
+
+(definterface sq.lang.IKeyword
+  (getName ^String []))
+
+
+(BEGIN defclass sq.lang.Keyword
+  :interfaces java.lang.Comparable IKeyword
+  :fields [^String string])
+
+;; str -> weakreference
+(def ^:private cache (nw java.util.concurrent.ConcurrentHashMap))
+(def ^:private refqueue (nw java.lang.ref.ReferenceQueue))
+(def ^:private rqthread
+  (ji (jc java.lang.Thread ofVirtual) start
+      (nw TrimRefValueMapLoopRunner refqueue cache)))
+
+;; up to loader as to if/how this is used
+(defn UNLOAD []
+  (ji pqthread interrupt))
+
+
+(defn from ^Self [^String string]
+  (l= ref0 (ji cache get string))
+  (loop [ref ref0]
+    (if (nil? ref)
+      (do (l= kw (nw Self string))
+        (l= existing (ji cache putIfAbsent string
+                       (nw java.lang.ref.WeakReference kw refqueue)))
+        (if (nil? existing)
+          kw
+          ;; another kw obj was added in interim
+          (recur (ji existing get))))
+      (do (l= kw (ji ref get))
+        (if (nil? kw)
+          ;; expired ref
+          (do (ji cache remove string ref)
+            (recur nil))
+          kw)))))
+
+(defn find ^Self [^String string]
+  (l= ref (ji cache get string))
+  (when (not (nil? ref))
+    (ji ref get)))
+
+
+(defm getName [_] string)
+
+(defm compareTo [self other]
+  (if (== self other)
+    0
+    (ji string compareTo other)))
+
+(defm toString [_]
+  (ji ":" concat string))
+

@@ -1,0 +1,23 @@
+;; For when Clojure not a dependency
+
+(definterface clojure.lang.IDeref
+  (deref ^Object []))
+
+(definterface clojure.lang.Counted
+  ;; constant-time count
+  (count ^int []))
+
+(definterface clojure.lang.Indexed
+  (nth ^Object [^int i])
+  (nth ^Object [^int i ^Object not-found]))
+
+(definterface clojure.lang.IPending
+  (isRealized ^boolean []))
+
+(defclass ^:nosub clojure.lang.Reduced
+  :interfaces clojure.lang.IDeref
+  [val]
+  (deref [_] val))
+
+#_(definterface clojure.lang.IReduceInit
+  (reduce ^Object []))

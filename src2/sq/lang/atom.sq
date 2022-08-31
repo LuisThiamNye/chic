@@ -1,0 +1,8 @@
+
+(BEGIN defclass sq.lang.Atom
+  :interfaces clojure.lang.IDeref
+  :fields [^AtomicReference state])
+
+(defm deref [_] (.get state))
+
+

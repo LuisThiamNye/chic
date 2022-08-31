@@ -1,5 +1,6 @@
 (ns jl.compiler.core
   (:require
+    [taoensso.encore :as enc]
     [clojure.core.match :refer [match]]
     [chic.util :refer [deftype+]]
     [jl.compiler.type :as type]
@@ -120,10 +121,12 @@ JLS:
   (-emitStoreLocal [_ sort id])
   (-emitTryCatch [_ start end hander ex-type])
   (-emitFieldInsn [_ op owner field type])
+  (-emitLoadSelf [_])
   
   (-regJumpTarget [_ id label])
   (-unregJumpTarget [_ id])
   (-getJumpTarget [_ id])
+  (-selfType [_])
   
   #_(-emitDeclareLocal [_ name]))
 
@@ -245,6 +248,18 @@ JLS:
     (emit-ast-node ctx else)
     (-emitLabel ctx done-label)))
 
+(defn emit-if-nil [ctx {:keys [test then else]}]
+  (let [fail-label (Label.)
+        done-label (Label.)
+        iffi :ifnonnull]
+    (emit-ast-node ctx test)
+    (-emitJump ctx iffi fail-label)
+    (emit-ast-node ctx then)
+    (-emitJump ctx :goto done-label)
+    (-emitLabel ctx fail-label)
+    (emit-ast-node ctx else)
+    (-emitLabel ctx done-label)))
+
 (defn emit-new-obj [ctx {:keys [classname args]}]
   (doseq [arg args]
     (emit-ast-node ctx arg))
@@ -348,6 +363,12 @@ JLS:
   (-emitFieldInsn ctx (if target :getfield :getstatic)
     (type/obj-classname->type classname) field-name type))
 
+(defn emit-self-get-field [ctx {:keys [field-name node/spec]}]
+  (-emitLoadSelf ctx)
+  (-emitFieldInsn ctx :getfield
+    (-selfType ctx) field-name (type/classname->type
+                                 (spec/get-exact-class spec))))
+
 (defn emit-string [ctx {:keys [value]}]
   (-emitLdcInsn ctx value))
 
@@ -438,8 +459,32 @@ JLS:
     (emit-ast-node ctx index)
     (-emitInsn ctx insn)))
 
+(defn type-sort->load-op [sort]
+  (op/kw->opcode
+    (enc/case-eval sort
+      Type/OBJECT :aload Type/LONG :lload Type/INT :iload Type/FLOAT :fload
+      Type/DOUBLE :dload Type/BOOLEAN :iload Type/BYTE :iload
+      Type/CHAR :iload Type/SHORT :iload)))
+
+(defn type-sort->store-op [sort]
+  (op/kw->opcode
+    (enc/case-eval sort
+      Type/OBJECT :astore Type/LONG :lstore Type/INT :istore Type/FLOAT :fstore
+      Type/DOUBLE :dstore Type/BOOLEAN :istore Type/BYTE :istore
+      Type/CHAR :istore Type/SHORT :istore)))
+
+(defn type-sort->return-op [sort]
+  (op/kw->opcode
+    (enc/case-eval sort
+      Type/OBJECT :areturn Type/LONG :lreturn Type/INT :ireturn Type/FLOAT :freturn
+      Type/DOUBLE :dreturn Type/BOOLEAN :ireturn Type/BYTE :ireturn
+      Type/CHAR :ireturn Type/SHORT :ireturn Type/VOID :return
+      (throw (RuntimeException. (str sort " not valid sort"))))))
+
 (deftype+ MethodCompilerCtx
-  [^MethodVisitor mv ^java.util.HashMap locals
+  [^MethodVisitor mv
+   ^Type self-type
+   ^java.util.HashMap locals
    #_^java.util.ArrayList slots
    ^java.util.TreeSet free-slots
    ^:mut nslots
@@ -469,24 +514,26 @@ JLS:
     (.visitLdcInsn mv value))
   (-emitLoadLocal [_ id]
     (let [l (.get locals id)
-          insn (condp = (:type-sort l)
-                 :ref :aload :long :lload :int :iload :float :fload
-                 :double :dload :boolean :iload :byte :iload :char :iload :short :iload)]
-      (.visitVarInsn mv (op/kw->opcode insn) (:idx l))))
+          insn (type-sort->load-op (:type-sort l))]
+      (.visitVarInsn mv insn (:idx l))))
   (-emitStoreLocal [_ tsort id]
     (let [wide? (contains? #{:long :double} tsort)
           width (if wide? 2 1)
-          insn (condp = tsort
-                 :ref :astore :long :lstore :int :istore :float :fstore
-                 :double :dstore :boolean :istore :byte :istore :char :istore :short :istore)
+          sort (or (some-> tsort (name )
+                       (type/prim-classname->type)
+                       (.getSort))
+                   Type/OBJECT)
+          insn (type-sort->load-op sort)
           local (.get locals id)
           idx (or (:idx local)
                 (let [n nslots]
                   (set! nslots (+ nslots width))
                   n))]
       (when (nil? local)
-        (.put locals id {:idx idx :type-sort tsort}))
-      (.visitVarInsn mv (op/kw->opcode insn) idx)))
+        (.put locals id {:idx idx :type-sort sort}))
+      (.visitVarInsn mv insn idx)))
+  (-emitLoadSelf [_]
+    (.visitVarInsn mv Opcodes/ALOAD 0))
   (-emitTryCatch [_ start end handler ex-type]
     ;; first save stack to locals TODO
     (.visitTryCatchBlock mv start end handler
@@ -504,6 +551,7 @@ JLS:
   (-emitFieldInsn [_ op owner field type]
     (.visitFieldInsn mv (op/kw->opcode op) (.getInternalName ^Type owner)
       field (.getDescriptor ^Type type)))
+  (-selfType [_] self-type)
   (-regJumpTarget [_ id label]
     (.put jump-targets id label))
   (-unregJumpTarget [_ id]
@@ -512,10 +560,24 @@ JLS:
     (or (.get jump-targets id)
       (throw (RuntimeException. (str "Could not find jump target " id))))))
 
-(defn new-mcctx [mv]
-  (->MethodCompilerCtx mv
-    (java.util.HashMap.) (java.util.TreeSet.) 0
-    (java.util.HashMap.)))
+(defn new-mcctx [mv {:keys [param-types param-names instance? class-type]}]
+  (let [local-map (java.util.HashMap.)
+        _ (when instance?
+            (.put local-map (first param-names) {:type-sort Type/OBJECT :idx 0}))
+        [nslots _]
+        (reduce (fn [[nslots idx] [name p]]
+                  (let [sort (.getSort p)
+                        nslots' (+ nslots
+                                  (if (or (= Type/LONG sort)
+                                        (= Type/DOUBLE sort))
+                                    2 1))]
+                    (.put local-map name {:type-sort sort :idx nslots})
+                    [nslots' nil]))
+          (if instance? [1 1] [0 0]) (map vector (drop 1 param-names) param-types))]
+    (->MethodCompilerCtx mv class-type
+      local-map
+      (java.util.TreeSet.) nslots
+      (java.util.HashMap.))))
 
 (defn emit-ast-node [ctx node]
   ((condp = (:node/kind node)
@@ -528,6 +590,7 @@ JLS:
      :arithmetic-2 emit-arithmetic-2
      :num-cmp-2 emit-num-cmp-2
      :if-true emit-if-true
+     :if-nil emit-if-nil
      :new-obj emit-new-obj
      :new-array emit-new-array
      :throw emit-throw
@@ -542,57 +605,118 @@ JLS:
      :get-field emit-get-field
      :array-get emit-array-get
      :array-set emit-array-set
+     :self-field-get emit-self-get-field
      (throw (RuntimeException. (str "No handler for bytecode node " (pr-str node)))))
    ctx node))
 
-(defn eval-ast [node]
-  (let [prim (spec/prim? (:node/spec node))
-        clsname "Eval" ;(gensym "Eval")
+
+;; Note: theretically possible to init object without ctor by inlining the bytecode
+(defn visit-positional-ctor [^ClassVisitor cv ciname fields]
+  (let [mv (.visitMethod cv Opcodes/ACC_PUBLIC "<init>"
+             (Type/getMethodDescriptor Type/VOID_TYPE
+               (into-array Type (mapv :type fields)))
+             nil nil)]
+    ;; Emits same bytecode as Java would
+    (.visitVarInsn mv Opcodes/ALOAD 0)
+    (.visitMethodInsn mv Opcodes/INVOKESPECIAL "java/lang/Object" "<init>" "()V")
+    (doseq [[i {:keys [name type]}]
+            (map-indexed vector fields)]
+      (.visitVarInsn mv Opcodes/ALOAD 0)
+      (.visitVarInsn mv (type-sort->load-op (.getSort type)) (inc i))
+      (.visitFieldInsn mv Opcodes/PUTFIELD ciname name (.getDescriptor type)))
+    (.visitInsn mv Opcodes/RETURN)
+    (.visitMaxs mv 1 (inc (count fields)))
+    (.visitEnd mv)))
+
+(defn classinfo->bytes
+  [{:keys [^String classname ^String super fields instance-methods interfaces]}]
+  (let [ciname (.replace classname \. \/)
+        class-type (Type/getObjectType ciname)
         cv (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
-             (.visit Opcodes/V19 Opcodes/ACC_PUBLIC (str "jl/run/" clsname)
-               nil "java/lang/Object" nil))
-        mv (.visitMethod cv (bit-or Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
-             "run" "()Ljava/lang/Object;" nil
-             (into-array String ["java/lang/Exception"]))
-        cl (clojure.lang.RT/makeClassLoader)
-        sl (Label.)
-        el (Label.)
-        sl2 (Label.)
-        el2 (Label.)]
-    (doto mv
-      (.visitCode)
-      ; #_
-      (do 
-        (let [ctx (new-mcctx mv)]
-          (emit-ast-node ctx node)
-          (when prim
-            (if (= "void" prim)
-              (-emitInsn ctx :aconst-null)
-              (emit-box ctx (type/box (type/prim-classname->type prim)))))))
-      ; (.visitFrame Opcodes/F_SAME1 0 (object-array 0) 1 (object-array [Opcodes/NULL]))
-      (.visitInsn Opcodes/ARETURN))
+             (.visit Opcodes/V19 Opcodes/ACC_PUBLIC ciname
+               nil (if super (.replace super \. \/) "java/lang/Object")
+               (when (seq interfaces)
+                 (into-array String (map #(.replace % \. \/) interfaces)))))
+        fields (mapv #(assoc % :type (type/classname->type (:classname %))) fields)]
+    (doseq [{:keys [name type]} fields]
+      (let [_fv (.visitField cv (bit-or Opcodes/ACC_PRIVATE Opcodes/ACC_FINAL) name
+                 (.getDescriptor type)
+                 nil nil)]))
+    (doseq [{:keys [name body ret-classname param-names param-classnames]} instance-methods]
+      (let [param-types (into-array Type (mapv type/classname->type param-classnames))
+            ret-type (type/classname->type ret-classname)
+            mv (.visitMethod cv Opcodes/ACC_PUBLIC name
+                 (Type/getMethodDescriptor ret-type param-types)
+                 nil (into-array String ["java/lang/Exception"]))
+            ctx (new-mcctx mv
+                  {:class-type class-type
+                   :instance? true
+                   :param-names param-names
+                   :param-types param-types})]
+        (emit-ast-node ctx body)
+        (.visitInsn mv (type-sort->return-op (.getSort ret-type)))
+        (.visitMaxs mv -1 -1)
+        (.visitEnd mv)))
+    (visit-positional-ctor cv ciname fields)  
+    [classname (.toByteArray cv)]))
+
+(defn eval-ast
+  ([node] (eval-ast (clojure.lang.RT/makeClassLoader) node))
+  ([cl node]
+   (let [prim (spec/prim? (:node/spec node))
+         clsname "Eval" ;(gensym "Eval")
+         cv (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
+              (.visit Opcodes/V19 Opcodes/ACC_PUBLIC (str "jl/run/" clsname)
+                nil "java/lang/Object" nil))
+         mv (.visitMethod cv (bit-or Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
+              "run" "()Ljava/lang/Object;" nil
+              (into-array String ["java/lang/Exception"]))
+         sl (Label.)
+         el (Label.)
+         sl2 (Label.)
+         el2 (Label.)
+         new-classes (:new-classes (:node/env node))
+         new-compiled-classes (mapv classinfo->bytes (vals new-classes))]
+     (doto mv
+       (.visitCode)
+       ; #_
+       (do 
+         (let [ctx (new-mcctx mv {})]
+           (emit-ast-node ctx node)
+           (when prim
+             (if (= "void" prim)
+               (-emitInsn ctx :aconst-null)
+               (emit-box ctx (type/box (type/prim-classname->type prim)))))))
+       ; (.visitFrame Opcodes/F_SAME1 0 (object-array 0) 1 (object-array [Opcodes/NULL]))
+       (.visitInsn Opcodes/ARETURN))
     
-    (let [e (try
-                  (.visitMaxs mv -1 -1)
-                  (.visitEnd mv) nil
-                  (catch Exception e e))]
-      #_(java.nio.file.Files/write
-        (java.nio.file.Path/of "tmp/eval.class" (make-array String 0))
-        (.toByteArray cv)
-        (make-array java.nio.file.OpenOption 0))
-      (if e (throw e)
-        (do (.defineClass cl (str "jl.run." clsname)
-              (.toByteArray cv) nil)
-          (let [p (promise)
-                th (Thread/ofPlatform)]
-            (.start th
-              (fn [] (try (deliver p [:ok (eval '(jl.run.Eval/run))])
-                       (catch Throwable ex (deliver p [:error ex])))))
-            (let [rs (deref p 2000 [:timeout nil])]
-              (match rs
-                [:ok r] r
-                [:error e'] (throw e')
-                [:timeout _] (do (.stop th) ::timeout)))))))))
+     (let [e (try
+               (.visitMaxs mv -1 -1)
+               (.visitEnd mv) nil
+               (catch Exception e e))
+           writeout
+           (fn [ba]
+             (java.nio.file.Files/write
+               (java.nio.file.Path/of "tmp/eval.class" (make-array String 0))
+               ba
+               (make-array java.nio.file.OpenOption 0)))]
+       (if e (throw e)
+         (do
+           (doseq [[name bytes] new-compiled-classes]
+             (writeout bytes)
+             (.defineClass cl name bytes nil))
+           (.defineClass cl (str "jl.run." clsname)
+             (.toByteArray cv) nil)
+           (let [p (promise)
+                 th (Thread/ofPlatform)]
+             (.start th
+               (fn [] (try (deliver p [:ok (eval '(jl.run.Eval/run))])
+                        (catch Throwable ex (deliver p [:error ex])))))
+             (let [rs (deref p 2000 [:timeout nil])]
+               (match rs
+                 [:ok r] r
+                 [:error e'] (do (throw e'))
+                 [:timeout _] (do (.stop th) ::timeout))))))))))
 
 (comment
 

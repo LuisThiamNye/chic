@@ -15,19 +15,9 @@ return
 aload ; handle
 monitorexit
 athrow
-
+'
 (def compute-max-saturation*
-  (in a :F
-    (in b :F
-      (in k0 :F
-        (in k1 :F
-          (in k2 :F
-            (in k3 :F
-              (in k4 :F
-                (in wl :F
-                  (in wm :F
-                    (in ws :F
-                      (l+ :a :b :k0 :k1 :k2 :k3 :k4 :wl :wm :ws)))))))))))
+  [:a :b :k0 :k1 :k2 :k3 :k4 :wl :wm :ws]
   (l :a
     (l :b (*))
     (l :k4 (*))

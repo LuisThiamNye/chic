@@ -26,6 +26,7 @@
      :type :int
      :arg1 x1 :arg2 x2}))
 
+;; TODO integer optimisations eg (< -1 i) => (<= 0 i) - compare to zero
 (defn anasf-numcmp [op {:keys [children] :as node}]
   (assert (= 3 (count children)))
   (let [[x1 x2] (ana/analyse-args node (subvec children 1))]
@@ -101,6 +102,26 @@
      :node/env (:node/env test)
      :node/locals (:node/locals test)}))
 
+(defn anasf-not [{:keys [children] :as node}]
+  (assert (= 2 (count children)))
+  (let [child (ana/analyse-after node (nth children 1))]
+    (ana/transfer-branch-env child
+      {:node/kind :if-true
+       :node/spec {:spec/kind :exact-class :classname "boolean"}
+       :test child
+       :then (ana/new-const-prim-node child false)
+       :else (ana/new-const-prim-node child true)})))
+
+(defn anasf-nil? [{:keys [children] :as node}]
+  (assert (= 2 (count children)))
+  (let [child (ana/analyse-after node (nth children 1))]
+    (ana/transfer-branch-env child
+      {:node/kind :if-nil
+       :node/spec {:spec/kind :exact-class :classname "boolean"}
+       :test child
+       :then (ana/new-const-prim-node child true)
+       :else (ana/new-const-prim-node child false)})))
+
 (defn anasf-new-obj [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
   (let [classname (:string (nth children 1))
@@ -149,9 +170,6 @@
        :target target
        :index index
        :node/spec (spec/get-array-element (:node/spec target))})))
-
-(class (object-array 0))
-(class (Object.))
 
 (defn anasf-throw [{:keys [children] :as node}]
   (assert (= 2 (count children)))
@@ -252,6 +270,14 @@
    body (dosomething)
    test (when condition
           (jump body)))
+
+;; also: like subroutine, but does not resume
+;; tail pos / return / break / recur etc
+'(let-rets [(proc [] ...)]
+   (if x
+     (do ...
+       (proc))
+     (proc)))
 
 (defn anasf-loop [{:keys [children] :as node}]
   ;; could have optional name, like function, and call like function
@@ -399,6 +425,88 @@
        :node/spec {:spec/kind :exact-class
                    :classname classname}})))
 
+(defn anasf-defclass [{:keys [children] :as node}]
+  (assert (<= 2 (count children)))
+  (let [clsexpr (nth children 1)
+        _ (assert (= :symbol (:node/kind clsexpr)))
+        clsname (:string clsexpr)
+        iface-parser (fn [opts {:keys [node/kind] :as x}]
+                       (when (= :symbol kind)
+                         (update opts :interfaces (fnil conj [])
+                           (:string x))))
+        super-parser (fn [opts {:keys [node/kind string]}]
+                       (if (= :symbol kind)
+                         (assoc (dissoc opts :parser)
+                           :super string)
+                         (throw (UnsupportedOperationException.))))
+        class-tag (fn [n]
+                    (let [tag (:tag (:node/meta n))]
+                      (when (= :vector (:node/kind tag))
+                        (some #(when (= :symbol (:node/kind %))
+                                 (:string %))
+                          (:children tag)))))
+        parse-fieldvec (fn [opts x]
+                         (assoc opts :fields
+                           (reduce (fn [fields f]
+                                     (if (= :symbol (:node/kind f))
+                                       (conj fields
+                                         {:name (:string f)
+                                          :classname
+                                          (or (class-tag f)
+                                            "java.lang.Object")})
+                                       (throw (UnsupportedOperationException.))))
+                             [] (:children x))))
+        parse-method (fn [opts {:keys [children]}]
+                       (assert (<= 2 (count children)))
+                       (let [mex (nth children 0)
+                             _ (assert (= :symbol (:node/kind mex)))
+                             mn (:string mex)
+                             params (:children (nth children 1))
+                             fieldmap (into {}
+                                        (map (fn [{:keys [name classname]}]
+                                               [name {:spec {:spec/kind :exact-class
+                                                             :classname classname}}]))
+                                        (:fields opts))
+                             body (ana/analyse-body
+                                    {:node/env (assoc (:node/env node)
+                                                 :fields fieldmap)
+                                     :node/locals
+                                     (into {}
+                                       (map-indexed
+                                         (fn [i {:keys [string]}]
+                                           [string {:arg-idx i}]))
+                                       params)}
+                                    (subvec children 2))
+                             ret-classname (spec/get-exact-class (:node/spec body))]
+                         (update opts :instance-methods conj
+                           {:name mn
+                            :body body
+                            :ret-classname ret-classname
+                            :param-names (mapv :string params)
+                            :param-classnames
+                            (mapv (fn [p]
+                                    (class-tag p))
+                              (drop 1 params))})))
+        opts
+        (reduce
+          (fn [opts {:keys [node/kind] :as x}]
+            (or (when-some [p (:parser opts)]
+                  (p opts x))
+              (let [opts (dissoc opts :parser)]
+                (condp = kind
+                  :keyword (let [p (condp = (:string x)
+                                     "interfaces" iface-parser
+                                     "super" super-parser)]
+                             (if (nil? p)
+                               (throw (UnsupportedOperationException.))
+                               (assoc opts :parser p)))
+                  :vector (parse-fieldvec opts x)
+                  :list (parse-method opts x)))))
+          {:classname clsname} (subvec children 2))]
+    (assoc (ana/new-void-node)
+      :node/locals (:node/locals node)
+      :node/env (assoc-in (:node/env node) [:new-classes clsname] opts))))
+
 ; (swap! ana/*sf-analysers assoc "not" #'anasf-not)
 (swap! ana/*sf-analysers assoc "=" #'anasf-eq)
 (swap! ana/*sf-analysers assoc ">=" #'anasf-gte)
@@ -406,6 +514,8 @@
 (swap! ana/*sf-analysers assoc "<=" #'anasf-lte)
 (swap! ana/*sf-analysers assoc "<" #'anasf-lt)
 (swap! ana/*sf-analysers assoc "if" #'anasf-if)
+(swap! ana/*sf-analysers assoc "not" #'anasf-not)
+(swap! ana/*sf-analysers assoc "nil?" #'anasf-nil?)
 (swap! ana/*sf-analysers assoc "nw" #'anasf-new-obj)
 (swap! ana/*sf-analysers assoc "na" #'anasf-new-array)
 (swap! ana/*sf-analysers assoc "aa" #'anasf-array-get)
@@ -420,7 +530,15 @@
 (swap! ana/*sf-analysers assoc "when" #'anasf-when)
 (swap! ana/*sf-analysers assoc "ct" #'anasf-cast)
 (swap! ana/*sf-analysers assoc "try" #'anasf-try)
+(swap! ana/*sf-analysers assoc "defclass" #'anasf-defclass)
 
+;; TODO use comptime info to skip conditional jumps
+'(loop [x y]
+  (if (nil? x)
+    A
+    (do ...
+      ;; goto A
+      (recur nil))))
 
 
 

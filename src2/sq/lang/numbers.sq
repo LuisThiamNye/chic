@@ -1,0 +1,27 @@
+(defclass sq.lang.numbers.Ratio
+  :super java.lang.Number
+  :interfaces java.lang.Comparable
+  [^:public ^BigInteger numerator
+   ^:public ^BigInteger denominator]
+  (intValue [_]
+    (.intValue (.divide numerator denominator)))
+  (longValue [_]
+    (.longValue (.divide numerator denominator)))
+  (floatValue [_]
+    (.floatValue (.divide (nw BigDecimal numerator)
+                   (nw BigDecimal denominator))))
+  (doubleValue [_]
+    (.doubleValue (.divide (nw BigDecimal numerator)
+                    (nw BigDecimal denominator))))
+  #_(compareTo [_ other]
+    )
+  (toString [_]
+    (ji (ji numerator toString) concat
+      (ji "/" concat (ji denominator toString))))
+  (hashCode [_]
+    (bit-xor (.hashCode numerator) (.hashCode denominator)))
+  (equals [_ other]
+    (and (not (nil? other))
+      (instance? Self other)
+      (.equals (jf other numerator) numerator)
+      (.equals (jf other denominator) denominator))))

@@ -1,0 +1,86 @@
+
+(defxf cat [rf]
+  ([result input]
+   (reduce rf result input))) ;; need to preserve reduced
+
+(defxf map [rf m]
+  ([] (rf)) ;; init (default)
+  ([result] (rf result)) ;; complete (default)
+  ([result input] (rf result (m input))))
+
+(defxf keep [rf m]
+  ([result input]
+   (let [r (m input)]
+     (if (nil? r) result (rf result r)))))
+
+(defxf map-indexed [rf m]
+  :state [idx -1]
+  ([result input]
+   (rf result (m (set! idx (inc idx)) input))))
+
+(defxf keep-indexed [rf m]
+  :state [idx -1]
+  ([result input]
+   (let [r (m (set! idx (inc idx)) input)]
+     (if (nil? r) result (rf result r)))))
+
+(defxf filter [rf f]
+  ([result input]
+   (if (f input) (rf result input) result)))
+
+(defxf remove [rf f]
+  ([result input]
+   (if (f input) result (rf result input))))
+
+(defxf take [rf n]
+  :state [n n]
+  ([result input]
+   (set! n (dec n))
+   (when (= 0 n)
+     (set-reduced!))
+   (if (<= 0 n)
+     (rf result input))
+     result))
+
+(defxf take-while [rf f]
+  ([result input]
+   (if (f input)
+     (rf result input)
+     (do (set-reduced!) result))))
+
+(defxf drop [rf n]
+  :state [n n]
+  ([result input]
+   (if (= 0 n)
+     (rf result input)
+     (do (set! n (dec n))
+       result))))
+
+(defxf drop-while [rf f]
+  :state [drop? true]
+  ([result input]
+   (if (and drop? (set! drop? (f input)))
+     result
+     (rf result input))))
+
+(defxf take-nth [rf ^int n]
+  :state [i -1]
+  ([result input]
+   (set! i (inc i))
+   (if (= 0 (rem i n))
+     (rf result input)
+     result)))
+
+(defxf distinct [rf]
+  :state [s (nw java.util.HashSet)]
+  ([result input]
+   (if (.contains s input)
+     result
+     (do (.add s input) (rf result input)))))
+
+(defxf interpose [rf sep]
+  :state [init? true]
+  ([result input]
+   (if init?
+     (do (set! init? false) (rf result input))
+     (rf result sep input)))) ;; 2 inputs, sugar for detecting for reduced in between

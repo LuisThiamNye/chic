@@ -1,0 +1,9 @@
+
+(defn comp [outer inner]
+  (jc MethodHandles foldArguments outer inner))
+
+(defn partial [f & args]
+  (jc MethodHandles insertArguments f 0 args))
+
+(defn fnil [f substitute]
+  (jc MethodHandles insertArguments f 0 ...))

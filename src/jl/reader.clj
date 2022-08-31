@@ -32,6 +32,7 @@
   (-visitSet [_])
   ; (-visitUnmatchedDelim [_ delim])
   (-visitDiscard [_])
+  (-visitMeta [_]) ;; -> [meta-vtor value-vtor]
   (-visitEnd [_]))
 
 (defn noop-visitor []
@@ -47,6 +48,7 @@
     (-visitMap [self] self)
     (-visitSet [self] self)
     (-visitDiscard [self] nil)
+    (-visitMeta [self] [self self])
     (-visitEnd [_])))
 
 "Model:
@@ -170,7 +172,11 @@ Number repr:
       (-visitChar vtor token))))
 
 (defn mread-meta [vtor ^CharReader rdr _caret]
-  (let [lv (-visitList vtor)]
+  (let [[mv vv] (-visitMeta vtor)]
+    (read-next-form mv rdr)
+    (read-next-form vv rdr)
+    (-visitEnd vv))
+  #_(let [lv (-visitList vtor)]
     (-visitSymbol lv "_§!S_apply-meta")
     (read-next-form lv rdr)
     (read-next-form lv rdr)
