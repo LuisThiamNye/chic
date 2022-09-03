@@ -14,14 +14,23 @@
 (defn eval-str [s]
   (compiler/eval-ast
     (ana/-analyse-node
-      (first (ana/str->ast s)))))
+      (ana/inject-default-env
+        (first (ana/str->ast s))))))
 
 (defn eval-sample [n]
   (compiler/eval-ast
     (ana/-analyse-node
-      (or ;(get samples n)
-        (do (load-samples) (get samples n))
-        (throw (ex-info "Sample not found" {:name n}))))))
+      (ana/inject-default-env
+        (or ;(get samples n)
+         (do (load-samples) (get samples n))
+         (throw (ex-info "Sample not found" {:name n})))))))
+
+
+(= [] (ana/str->ast "#_#_(+) (-)"))
+(= [] (ana/str->ast "#_(+ 1 #_2)"))
+
+(= 3 (eval-str "(+ 1 2)"))
+(= 7 (eval-str "(do (l= x 4) (+ x 3))"))
 
 (= 568995840 (eval-sample "euler-8"))
 
@@ -43,6 +52,8 @@
 
 (nil? (eval-sample "hello-world"))
 
+(instance? Exception (eval-str "(nw java.lang.Exception \"hello\")"))
+
 (= "[Ljava.lang.String;"
   (.getName (class (eval-str "(na java.lang.String 0)"))))
 (= "[S"(.getName (class (eval-str "(na short 0)"))))
@@ -62,7 +73,7 @@
 (defclass repl.Tmp
 :interfaces java.lang.Runnable java.lang.AutoCloseable
 [^int x ^java.lang.String s]
-(run [self] self x))")
+(defi run [self] self x))")
     first (ana/-analyse-node)
     (->> (compiler/eval-ast cl)))
   (let [c (Class/forName "repl.Tmp")
@@ -111,9 +122,6 @@
     ; type
     )
   
-  (ana/str->ast "[^m x]")
-  
-  
   (count (.get (doto (second (.getDeclaredFields clojure.lang.Keyword))
                  (.setAccessible true))
            clojure.lang.Keyword))
@@ -148,6 +156,22 @@
   
   (do (deftype Tmp []) nil)
   (class? (Class/forName "jl.test.compiler.Tmp"))
+  
+  (let [m Long/MIN_VALUE
+        m' Long/MAX_VALUE
+        a 3
+        b 2
+        x (bit-xor a b)   
+        r1 (let [xn (- x)
+                 y (bit-or x xn)
+                 z (bit-xor m y)]
+             (bit-and m z))]
+   r1
+    )
+  (= Long/MIN_VALUE (unchecked-subtract 0 Long/MIN_VALUE))
+  
+  ;; TODO use Constable interface for constant folding & propagation using ConstantDynamic
+  ;; TODO use ClassValue for dynamic method dispatch
   )
 
 

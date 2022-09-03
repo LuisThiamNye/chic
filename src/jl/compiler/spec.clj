@@ -23,6 +23,8 @@
   (isa? (Class/forName subject) (Class/forName iface)))
 
 (defn get-exact-class [spec]
+  (assert (or (nil? spec) (contains? spec :spec/kind))
+    (pr-str spec))
   (when (= :exact-class (:spec/kind spec))
     (:classname spec)))
 

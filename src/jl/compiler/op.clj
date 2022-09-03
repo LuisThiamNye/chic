@@ -40,3 +40,30 @@
     Type/LONG Opcodes/T_LONG
     Type/FLOAT Opcodes/T_FLOAT
     Type/DOUBLE Opcodes/T_DOUBLE))
+
+(defn kw->acc-opcode [kw]
+  (case kw
+    :public Opcodes/ACC_PUBLIC
+    :final Opcodes/ACC_FINAL
+    :super Opcodes/ACC_SUPER
+    :interface Opcodes/ACC_INTERFACE
+    :abstract Opcodes/ACC_ABSTRACT 
+    :synthetic Opcodes/ACC_SYNTHETIC 
+    :annotation Opcodes/ACC_ANNOTATION
+    :enum Opcodes/ACC_ENUM
+    :module Opcodes/ACC_MODULE
+    
+    ;; members only
+    :static Opcodes/ACC_STATIC
+    :private Opcodes/ACC_PRIVATE))
+
+(defn acc-flags->kws [flags]
+  (reduce (fn [acc kw]
+            (let [op (kw->acc-opcode kw)]
+              (if (< 0 (bit-and op flags))
+                (conj acc kw) acc)))
+    #{} #{:public :final :super :interface :abstract
+          :synthetic :annotation :enum :module :static
+          :private}))
+
+(comment (acc-flags->kws 0x400))

@@ -3,9 +3,11 @@
     [jl.compiler.type :as type]
     [chic.util :refer [<- deftype+]]
     [jl.rv-data :as rv-data]
+    [jl.interop :as interop]
     [jl.compiler.spec :as spec]
     [jl.reader :as reader :refer [PFormVisitor]]
-    [chic.debug :as debug]))
+    [chic.debug :as debug]
+    [jl.interop :as interop]))
 
 (defn new-void-node []
   {:node/kind :void
@@ -13,6 +15,8 @@
                :classname "void"}})
 
 (defn transfer-branch-env [prev node]
+  (assert (some? (:node/env prev))
+    (assoc (select-keys prev [:node/kind]) :keys (keys prev)))
   (conj {:node/locals (:node/locals prev)
          :node/env (:node/env prev)}
     node))
@@ -20,10 +24,13 @@
 (declare -analyse-node)
 
 (defn analyse-after [prev node]
-  (let [locals (:node/locals prev)]
-    (-analyse-node
-      (cond-> (assoc node :node/env (:node/env prev))
-        locals (assoc :node/locals locals)))))
+  (assert (some? (:node/env prev)))
+  (let [locals (:node/locals prev)
+        ana (-analyse-node
+              (cond-> (assoc node :node/env (:node/env prev))
+                locals (assoc :node/locals locals)))]
+    (assert (some? (:node/env ana)) (select-keys ana [:node/kind]))
+    ana))
 
 (defn analyse-args [prev args]
   (if (= 0 (count args))
@@ -152,12 +159,14 @@
          "set!" #'anasf-assign
          "do" #'anasf-do
          "l=" #'anasf-introduce-local}))
-(comment (swap! *sf-analysers assoc "l=" #'anasf-introduce-local))
+(comment (swap! *sf-analysers assoc "l=" #'anasf-introduce-local)
+  (swap! *sf-analysers dissoc "jfi'"))
 
 (defn resolve-sf [nam]
   (@*sf-analysers nam))
 
 (defn analyse-symbol [{:keys [string] :as node}]
+  (assert (some? (:node/env node)))
   (or (when (:invoke-target? node)
         (when-some [sf (resolve-sf string)]
           (assoc node :special-form sf)))
@@ -176,15 +185,19 @@
         {:node/kind :self-field-get
          :node/spec (:spec field)
          :field-name string}))
+    (when-some [local (get-in node [:node/env :special-locals string])]
+      ((:fn local) node))
     (throw (RuntimeException.
              (str "Could not resolve symbol: " string
                "\nLocals: " (pr-str (:node/locals node))
-               "\nFields: " (pr-str (:fields (:node/env node))))))))
+               "\nFields: " (pr-str (:fields (:node/env node)))
+               "\nSpecials: " (pr-str (:special-locals (:node/env node)))
+               "\nSource: " (pr-str (:node/source node)))))))
 
 (defn analyse-list [{:keys [children] :as node}]
   (if (= 0 (count children))
     (throw (RuntimeException. "Unquoted empty list not allowed"))
-    (let [c1 (-analyse-node (assoc (nth children 0) :invoke-target? true))
+    (let [c1 (analyse-after node (assoc (nth children 0) :invoke-target? true))
           sf (:special-form c1)]
       (if sf
         (sf node)
@@ -197,18 +210,27 @@
 (defn analyse-map [node])
 
 (defn -analyse-node [node]
-  ((condp = (:node/kind node)
-     :symbol analyse-symbol
-     :list analyse-list
-     :keyword analyse-keyword
-     :vector analyse-vector
-     :map analyse-map
-     :number analyse-number
-     :string analyse-string
-     :set analyse-set
-     :char analyse-char
-     (throw (RuntimeException. (str "AST node analyser not found: " node))))
-   node))
+  (let [f (condp = (:node/kind node)
+            :symbol analyse-symbol
+            :list analyse-list
+            :keyword analyse-keyword
+            :vector analyse-vector
+            :map analyse-map
+            :number analyse-number
+            :string analyse-string
+            :set analyse-set
+            :char analyse-char
+            (throw (RuntimeException. (str "AST node analyser not found: " node))))]
+    (try (f node)
+      (catch Throwable e
+        (throw (ex-info "Exception analysing node"
+                 {:node (select-keys node [:node/kind :node/source])} e))))))
+
+(defn inject-default-env [node]
+  (assoc node :node/env {:class-aliases interop/base-class-aliases}))
+
+(defn expand-classname [env s]
+  (or (get (:class-aliases env) s) s))
 
 #_(deftype+ BaseAnaMetaRdrVisitor [parent ^:mut meta]
   PFormVisitor
@@ -272,44 +294,55 @@
         :string (merge-tag)
         (throw (UnsupportedOperationException.))))))
 
-(deftype BaseAnaRdrVisitor [parent node cb]
+(defn rdr-srcinfo [rdr]
+  {:line (reader/-getLine rdr)
+   :col (reader/-getCol rdr)})
+
+(deftype BaseAnaRdrVisitor [rdr parent node cb]
   PFormVisitor
   (-visitNumber [_ numstr]
     (let [num (rv-data/parse-number numstr)]
       (if (nil? num)
         (throw (RuntimeException. (str "Invalid number: " numstr)))
         (rv-data/-addEnd cb
-          (assoc num :node/kind :number)))))
+          (assoc num
+            :node/kind :number
+            :node/source (rdr-srcinfo rdr))))))
   (-visitKeyword [_ kwstr]
     (rv-data/-addEnd cb
       {:node/kind :keyword
+       :node/source (rdr-srcinfo rdr)
        :string (subs kwstr 1)}))
   (-visitSymbol [_ symstr]
     (rv-data/-addEnd cb
       {:node/kind :symbol
+       :node/source (rdr-srcinfo rdr)
        :string symstr}))
   (-visitChar [_ token]
     (rv-data/-addEnd cb 
       {:node/kind :char
+       :node/source (rdr-srcinfo rdr)
        :value (rv-data/interpret-char-token token)}))
   (-visitCharLiteral [_ c]
     (rv-data/-addEnd cb
       {:node/kind :char
+       :node/source (rdr-srcinfo rdr)
        :value (char c)}))
   (-visitString [_ s]
     (rv-data/-addEnd cb
       {:node/kind :string
+       :node/source (rdr-srcinfo rdr)
        :value s}))
   (-visitList [self] 
-    (BaseAnaRdrVisitor. self {:node/kind :list} (rv-data/clj-vector-builder)))
+    (BaseAnaRdrVisitor. rdr self {:node/kind :list} (rv-data/clj-vector-builder)))
   (-visitVector [self]
-    (BaseAnaRdrVisitor. self {:node/kind :vector} (rv-data/clj-vector-builder)))
+    (BaseAnaRdrVisitor. rdr self {:node/kind :vector} (rv-data/clj-vector-builder)))
   (-visitMap [self]
-    (BaseAnaRdrVisitor. self {:node/kind :map} (rv-data/clj-map-builder)))
+    (BaseAnaRdrVisitor. rdr self {:node/kind :map} (rv-data/clj-map-builder)))
   (-visitSet [self]
-    (BaseAnaRdrVisitor. self {:node/kind :set} (rv-data/clj-set-builder)))
+    (BaseAnaRdrVisitor. rdr self {:node/kind :set} (rv-data/clj-set-builder)))
   (-visitMeta [self]
-    (let [v (BaseAnaRdrVisitor. self nil (->BaseAnaMetaBuilder nil nil))]
+    (let [v (BaseAnaRdrVisitor. rdr self nil (->BaseAnaMetaBuilder nil nil))]
       [v v]))
   (-visitDiscard [_] (reader/noop-visitor))
   (-visitEnd [_]
@@ -317,38 +350,23 @@
       (let [coll (rv-data/-toColl cb)]
         (rv-data/-addEnd (.-cb ^BaseAnaRdrVisitor parent)
           (if node
-            (assoc node :children coll)
+            (assoc node :children coll
+              :node/source (rdr-srcinfo rdr))
             coll)))))
   rv-data/PCollBuilder
   (-toColl [_] (rv-data/-toColl cb)))
 
-(defn base-rdrvisitor []
-  (->BaseAnaRdrVisitor nil nil (rv-data/clj-vector-builder)))
+(defn base-rdrvisitor [rdr]
+  (->BaseAnaRdrVisitor rdr nil nil (rv-data/clj-vector-builder)))
   
 (defn str->ast [s]
-  (let [v (base-rdrvisitor)]
-    (reader/read-all-forms v
-      (reader/str-reader-default s)
-      #_(reader/file-reader-default "src2/okcolour.clj"))
+  (let [rdr (reader/str-reader-default s)
+        v (base-rdrvisitor rdr)]
+    (reader/read-all-forms v rdr)
     (rv-data/-toColl v)))
 
 (comment
   
-  (-> (str->ast "(+ 1 2)")
-    (-analyse-node))
+  (str->ast "#_(+ 1 #_2)")
   
-  (-> (str->ast "
-(with-locals [x] (set! x 1i))")
-    #_(clojure.pprint/pprint)
-    first
-    (-analyse-node)
-    clojure.pprint/pprint
-    )
-  
-  (-> (str->ast "
-nil")
-    first
-    (-analyse-node)
-    clojure.pprint/pprint
-
   )

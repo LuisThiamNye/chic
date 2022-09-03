@@ -1,13 +1,14 @@
 (defclass sq.lang.util.TrimRefValueMapLoopRunner
   :interfaces java.lang.Runnable
+  #_"A procedure that can be run on a virtual thread
+for processing objects of a ReferenceQueue, removing entries
+from a java.util.Map where the object is the value.
+
+Uses a blocking infinte loop."
   [^java.lang.ref.ReferenceQueue rq
    ^java.util.Map cache]
   
-  #_(<init> [self rq cache]
-    (set! (jf self rq) rq)
-    (set! (jf self cache) cache))
-  
-  (run [_]
+  (defi run [_]
     (loop []
       (l= ref1 (ji rq remove))
       (l= refs (nw java.util.ArrayList))
@@ -30,6 +31,13 @@
       (recur))))
 
 
+(defclass sq.lang.util.SilentThreadUncaughtExceptionHandler
+  :interfaces java.lang.Thread$UncaughtExceptionHandler
+  []
+  (def ^:pub instance (nw Self))
+  (defi uncaughtException [_ ^Thread thread ^Throwable throwable]))
+
+
 (defclass sq.lang.util.IntRangeIterator
   :interfaces java.util.Iterator
   [^:mut ^int i ^int maximum]
@@ -41,20 +49,20 @@
   [x] x
   [x [y1 & ys]] (y1 x & ys)
   [x y & fs] (-> x (-> y & fs)))
-
+#_
 (defrewrite ->>
   [x] x
   [x [& ys]] (& ys x)
   [x y & fs] (->> (->> x y) & fs))
-
+#_
 (defrewrite when-some
   [[x v] a] (do (l= x v) (when (not (nil? x)) a))
   [[x v & r] a]
   (when-some [x v] (when-some [& r] a)))
-
+#_
 (defrewrite if-some
   [[x v] a b] (do (l= x v) (if (not (nil? x)) a b))
-  #_#_[[x v x2 v2] a ?b]
+  #_[[x v x2 v2] a ?b]
   )
 
 

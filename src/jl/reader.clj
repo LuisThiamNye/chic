@@ -1,10 +1,23 @@
 (ns jl.reader
   (:require
     [tech.v3.datatype.char-input :as dtype.char-input] ;; TODO use charred
-    [chic.util :refer [<-]])
+    [chic.util :refer [<- deftype+]])
   (:import
-    (tech.v3.datatype CharReader)
-    (java.io Reader)))
+    (tech.v3.datatype CharReader)))
+
+(defprotocol PReader
+  (-read [_])
+  (-unread [_])
+  (-eof? [_]))
+
+(defprotocol PTextPosition
+  (-getLine [_])
+  (-getCol [_]))
+
+(defn anom! [rdr category msg]
+  (throw (ex-info msg {:line (-getLine rdr)
+                       :col (-getCol rdr)
+                       :category category})))
 
 (definline str-starts-with-char? [s c]
   `(let [~'s ~(vary-meta s assoc :tag `String)
@@ -35,21 +48,23 @@
   (-visitMeta [_]) ;; -> [meta-vtor value-vtor]
   (-visitEnd [_]))
 
-(defn noop-visitor []
-  (reify PFormVisitor
-    (-visitNumber [_ _])
-    (-visitKeyword [_ _])
-    (-visitSymbol [_ _])
-    (-visitChar [_ _])
-    (-visitCharLiteral [_ _])
-    (-visitString [_ _])
-    (-visitList [self] self)
-    (-visitVector [self] self)
-    (-visitMap [self] self)
-    (-visitSet [self] self)
-    (-visitDiscard [self] nil)
-    (-visitMeta [self] [self self])
-    (-visitEnd [_])))
+(defn noop-visitor
+  ([] (noop-visitor nil))
+  ([dv]
+   (reify PFormVisitor
+     (-visitNumber [_ _])
+     (-visitKeyword [_ _])
+     (-visitSymbol [_ _])
+     (-visitChar [_ _])
+     (-visitCharLiteral [_ _])
+     (-visitString [_ _])
+     (-visitList [self] (noop-visitor self))
+     (-visitVector [self] (noop-visitor self))
+     (-visitMap [self] (noop-visitor self))
+     (-visitSet [self] (noop-visitor self))
+     (-visitDiscard [self] dv)
+     (-visitMeta [self] [(noop-visitor self) (noop-visitor self)])
+     (-visitEnd [_]))))
 
 "Model:
 Literals:
@@ -96,8 +111,8 @@ Number repr:
 (defn terminating-macro? [c]
   (case (char c) (\# \' \%) false (macro? c)))
 
-(defn read-str-escape [^CharReader rdr]
-  (let [c (.read rdr)]
+(defn read-str-escape [rdr]
+  (let [c (-read rdr)]
     (when (= -1 c)
       (throw (RuntimeException. "EOF reading string")))
     (case (char c)
@@ -108,38 +123,38 @@ Number repr:
       \" \"
       \b \backspace
       \f \formfeed
-      \u (let [c (.read rdr)]
+      \u (let [c (-read rdr)]
            (if (= -1 (Character/digit c 16))
              (throw (RuntimeException. (str "Invalid unicode escape: " (char c))))
              (throw (UnsupportedOperationException. "Unicode not implemented"))))
       (throw (RuntimeException. (str "Unsupported escape sequence: " (char c)))))))
 
-(defn read-nws [^CharReader rdr]
+(defn read-nws [rdr]
   (loop []
-    (let [c (.read rdr)]
+    (let [c (-read rdr)]
       (if (whitespace? c)
         (recur)
         c))))
 
 (defn read-token
   "Always returns valid token string"
-  [^CharReader rdr c1]
+  [rdr c1]
   (let [sb (doto (StringBuilder.) (.append (char c1)))]
     (loop []
-      (let [c (.read rdr)]
+      (let [c (-read rdr)]
         (when-not (== -1 c)
           (if (or (whitespace? c) (terminating-macro? c))
-            (.unread rdr)
+            (-unread rdr)
             (do (.append sb (char c))
                 (recur))))))
     (.toString sb)))
 
 (declare read-next-form read-next-form*)
 
-(defn mread-string [vtor ^CharReader rdr _doublequote]
+(defn mread-string [vtor rdr _doublequote]
   (let [sb (StringBuilder.)]
     (loop []
-      (let [c (.read rdr)]
+      (let [c (-read rdr)]
         (when-not (= c (int \"))
           (when (= -1 c)
             (throw (RuntimeException. "EOF reading string")))
@@ -150,28 +165,28 @@ Number repr:
           (recur))))
     (-visitString vtor (.toString sb))))
 
-(defn mread-comment [_vtor ^CharReader rdr _semicolon]
+(defn mread-comment [_vtor rdr _semicolon]
   (loop []
-    (let [c (.read rdr)]
+    (let [c (-read rdr)]
       (when-not (or (= -1 c) (= (int \newline) c))
         (recur)))))
 
-(defn mread-quote [vtor ^CharReader rdr _quote]
+(defn mread-quote [vtor rdr _quote]
   (let [symname "_§!S_quote"
         lv (-visitList vtor)]
     (-visitSymbol lv symname)
     (read-next-form lv rdr)
     (-visitEnd lv)))
 
-(defn mread-char [vtor ^CharReader rdr _backslash]
-  (let [c (.read rdr)
+(defn mread-char [vtor rdr _backslash]
+  (let [c (-read rdr)
         _ (when (= -1 c) (throw (RuntimeException. "EOF reading char")))
         token (read-token rdr c)]
     (if (= 1 (count token))
       (-visitCharLiteral vtor (.charAt token 0))
       (-visitChar vtor token))))
 
-(defn mread-meta [vtor ^CharReader rdr _caret]
+(defn mread-meta [vtor rdr _caret]
   (let [[mv vv] (-visitMeta vtor)]
     (read-next-form mv rdr)
     (read-next-form vv rdr)
@@ -182,7 +197,7 @@ Number repr:
     (read-next-form lv rdr)
     (-visitEnd lv)))
 
-(defn read-delimited-list [vtor ^CharReader rdr endc]
+(defn read-delimited-list [vtor rdr endc]
   (loop []
     (let [c (read-nws rdr)]
       (cond
@@ -193,24 +208,24 @@ Number repr:
           (recur)))))
   (-visitEnd vtor))
 
-(defn mread-list [vtor ^CharReader rdr _openbracket]
+(defn mread-list [vtor rdr _openbracket]
   (read-delimited-list (-visitList vtor) rdr (int \) )))
 
-(defn mread-vector [vtor ^CharReader rdr _openbracket]
+(defn mread-vector [vtor rdr _openbracket]
   (read-delimited-list (-visitVector vtor) rdr (int \] )))
 
-(defn mread-map [vtor ^CharReader rdr _openbracket]
+(defn mread-map [vtor rdr _openbracket]
   (read-delimited-list (-visitMap vtor) rdr (int \} )))
   
-(defn mread-set [vtor ^CharReader rdr _openbracket]
+(defn mread-set [vtor rdr _openbracket]
   (read-delimited-list (-visitSet vtor) rdr (int \} )))
 
-(defn mread-unmatched-delim [_vtor _rdr delim]
-  (throw (RuntimeException. (str "Unmatched delimiter: " (char delim))))
+(defn mread-unmatched-delim [_vtor rdr delim]
+  (anom! rdr :incorrect (str "Unmatched delimiter: " (char delim)))
   #_(-visitUnmatchedDelim vtor delim))
 
-(defn mread-dispatch [vtor ^CharReader rdr _hash]
-  (let [c (.read rdr)
+(defn mread-dispatch [vtor rdr _hash]
+  (let [c (-read rdr)
         _ (when (= -1 c) (throw (RuntimeException. "EOF reading dispatch")))
         f (get-dispatch-macro c)]
     (when (nil? f)
@@ -229,7 +244,7 @@ Number repr:
     (aset \" #'mread-string)
     (aset \; #'mread-comment)
     (aset \' #'mread-quote)
-    ; (aset \@ mread-deref!)
+    ; (aset \@ #'mread-deref!)
     (aset \^ #'mread-meta)
     ; (aset \` mread-syntax-quote!)
     ; (aset \~ mread-unquote!)
@@ -240,8 +255,8 @@ Number repr:
     (aset \{ #'mread-map)
     (aset \} #'mread-unmatched-delim)
     (aset \\ #'mread-char)
-    ; (aset \% mread-arg!)
-    (aset \# mread-dispatch)
+    ; (aset \% #'mread-arg!)
+    (aset \# #'mread-dispatch)
     ))
 
 (def ^"[Lclojure.lang.IFn;" disp-macros
@@ -261,19 +276,19 @@ Number repr:
 
 (defn read-number
   "Always returns valid number string"
-  [^CharReader rdr c1]
+  [rdr c1]
   (let [sb (doto (StringBuilder.) 
              (.append (char c1)))]
     (loop []
-      (let [c (.read rdr)]
+      (let [c (-read rdr)]
         (when (<= 0 c)
           (if (or (macro? c) (whitespace? c))
-            (.unread rdr)
+            (-unread rdr)
             (do (.append sb (char c))
                 (recur))))))
     (.toString sb)))
 
-(defn read-next-form* [vtor ^CharReader rdr c]
+(defn read-next-form* [vtor rdr c]
   (<- (if (Character/isDigit c)
         (-visitNumber vtor (read-number rdr c)))
           
@@ -282,12 +297,12 @@ Number repr:
       (macro-fn vtor rdr c))
           
     (or (when (or (= (int \+) c) (= (int \-) c))
-          (let [c2 (.read rdr)
+          (let [c2 (-read rdr)
                 num? (Character/isDigit c2)]
             (if num?
-              (do (.unread rdr)
+              (do (-unread rdr)
                 (-visitNumber vtor (read-number rdr c)))
-              (.unread rdr))
+              (-unread rdr))
             num?)))
           
     (let [token (read-token rdr c)]
@@ -295,28 +310,58 @@ Number repr:
         (-visitKeyword vtor token)
         (-visitSymbol vtor token)))))
 
-(defn read-next-form [vtor ^CharReader rdr]
-  (when-not (.eof rdr)
+(defn read-next-form [vtor rdr]
+  (when-not (-eof? rdr)
     (let [c (read-nws rdr)]
       (when (<= 0 c)
         (read-next-form* vtor rdr c)
         true))))
 
-(defn read-all-forms [v ^CharReader rdr]
+(defn read-all-forms [v rdr]
   (while (read-next-form v rdr)))
+
+(deftype+ TrackedCharReader
+  [^CharReader rdr
+   ^:mut ^int line ^:mut ^int col ^:mut ^int prev-col]
+  PReader
+  (-read [_]
+    (let [r (.read rdr)]
+      (set! prev-col col)
+      (cond
+        (= r 10)
+        (do (set! line (unchecked-inc-int line))
+          (set! col (unchecked-int 1)))
+        (not (or (= r 13) (= r -1)))
+        (do (set! col (unchecked-inc-int col))))
+      r))
+  (-unread [_]
+    (cond
+      (= prev-col col) nil
+      (= 1 col) (set! line (unchecked-dec-int line))
+      :else (set! col (unchecked-dec-int col)))
+    (.unread rdr))
+  (-eof? [_] (.eof rdr))
+  PTextPosition
+  (-getLine [_] line)
+  (-getCol [_] col))
+
+(defn tracked-charreader [^CharReader rdr]
+  (->TrackedCharReader rdr 1 1 1))
 
 (defn file-reader-default 
   "Acceps File, FileDescriptor or String"
   [f]
-  (dtype.char-input/reader->char-reader
-    (java.io.InputStreamReader.
-      (java.io.FileInputStream. f))
-    {:bufsize 1024}))
+  (tracked-charreader
+    (dtype.char-input/reader->char-reader
+      (java.io.InputStreamReader.
+        (java.io.FileInputStream. f))
+      {:bufsize 1024})))
 
 (defn str-reader-default [s]
-  (dtype.char-input/reader->char-reader
-    (java.io.StringReader. s)
-    {:bufsize 1024}))
+  (tracked-charreader
+    (dtype.char-input/reader->char-reader
+      (java.io.StringReader. s)
+      {:bufsize 1024})))
 
 
 

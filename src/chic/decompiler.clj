@@ -50,6 +50,7 @@
 
 (comment
   (clean-tmp-dir)
+
   (doseq [[p c] (decompile-clj-expr :java
                   '(let [x 2]
                      (+ 1
@@ -57,6 +58,8 @@
                          (catch Exception _)))))]
     (println "-- FILE: " p)
     (println c))
+  
+  
 
   (let [path (first (compiled-classfile-paths))]
     (debug/println-main (decompile path :java)))
