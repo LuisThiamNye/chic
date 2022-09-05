@@ -13,7 +13,9 @@
   (or (Modifier/isPublic mods)
     (let [pack2 (.getPackage target)
           pack1 (.getPackage c1)]
-      (or (= pack2 pack1)
+      ;; Note: packages are specific to a classloader.
+      ;; this is too generous
+      (or (= (.getName pack2) (.getName pack1))
         (when (Modifier/isProtected mods)
           (.isAssignableFrom target c1))))))
 
@@ -101,20 +103,36 @@
                  (str "Ctor ambiguous: " classname " " (pr-str arg-types)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
-(defn get-field-type ^Type [classname static? field-name]
+(match-ctor-type "sq.lang.Keyword" ["java.lang.String"])
+(or (try (util/primitive-name->class "java.lang.String")
+      (catch Exception _))
+                      (try (Class/forName "java.lang.String")
+                        (catch ClassNotFoundException _ Object)
+                        (catch ExceptionInInitializerError _ Object)))
+(into [] (comp
+           (filter #(member-accessible? Object sq.lang.Keyword (.getModifiers ^Constructor %)))
+           (filter #(method-applicable? [Object] nil % nil))
+           )
+  (.getConstructors sq.lang.Keyword))
+
+(defn get-field-type ^Type [asking-classname classname static? field-name]
   (let [cls (Class/forName classname)
+        askcls (Class/forName asking-classname)
         field (first (eduction
                        (filter #(= field-name (.getName ^Field %)))
                        (filter #(= static?
                                  (Modifier/isStatic (.getModifiers ^Field %))))
-                       (filter #(member-accessible? Object cls (.getModifiers ^Field %)))
+                       (filter #(member-accessible? askcls cls (.getModifiers ^Field %)))
                        (.getDeclaredFields cls)))]
     (if field
       (Type/getType (.getType field))
-      (throw (RuntimeException. "Could not find accessible field")))))
+      (throw (ex-info "Could not find accessible field"
+               {:classname classname :field-name field-name
+                :asking-class asking-classname})))))
 
 (defn lookup-field-type
-  ^Type [{:keys [new-classes]} classname static? field-name]
+  ^Type [{:keys [new-classes self-classname]} classname static? field-name]
+  (assert (some? self-classname))
   (let [cls (get new-classes classname)
         field (first (eduction
                        (filter #(= field-name (:name %)))
@@ -129,7 +147,7 @@
                                                 :static? static?
                                                 :class classname})))
                       (type/classname->type cn)))
-                (get-field-type classname static? field-name))]
+                (get-field-type self-classname classname static? field-name))]
     (if field
       field
       (throw (RuntimeException. "Could not find accessible field")))))
@@ -178,8 +196,6 @@
   
     ; "Runtime"
     ; "Runtime$Version"
-    ; "RuntimePermission"
-    "SecurityManager"
   
     "System$Logger"
     ; "System$LoggerFinder"
@@ -237,7 +253,6 @@
     "MatchException"
     "RuntimeException"
     "ReflectiveOperationException"
-    "SecurityException"
     "StringIndexOutOfBoundsException"
     "TypeNotPresentException"
     "UnsupportedOperationException"

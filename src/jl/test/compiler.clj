@@ -122,9 +122,20 @@
     ; type
     )
   
-  (count (.get (doto (second (.getDeclaredFields clojure.lang.Keyword))
-                 (.setAccessible true))
-           clojure.lang.Keyword))
+  (def --kwcache (.get (doto (second (.getDeclaredFields clojure.lang.Keyword))
+                         (.setAccessible true))
+                   clojure.lang.Keyword))
+  (meta
+    (second
+      (keys
+        (frequencies
+          (map (fn [x] (with-meta [(count x)] {:key x}))
+            (vals (group-by #(.hashCode %) (keep #(.get %) (.values --kwcache)))))))))
+  
+  (frequencies
+    (map (fn [x] (with-meta [(count x)] {:key x}))
+      (vals (group-by #(.hashCode %)
+              (take 10300 (iterate (fn [_] (Object.)) (Object.)))))))
   
   (let [c (java.lang.ref.Cleaner/create)
         o (Object.)]

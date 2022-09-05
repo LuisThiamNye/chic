@@ -165,11 +165,14 @@
 (defn resolve-sf [nam]
   (@*sf-analysers nam))
 
-(defn analyse-symbol [{:keys [string] :as node}]
+(defn analyse-symbol [{:keys [^String string] :as node}]
   (assert (some? (:node/env node)))
   (or (when (:invoke-target? node)
-        (when-some [sf (resolve-sf string)]
-          (assoc node :special-form sf)))
+        (or (when-some [sf (resolve-sf string)]
+              (assoc node :special-form sf))
+          (when (.startsWith string ".")
+            (assoc node :special-form
+              (requiring-resolve 'jl.compiler.sforms/anasf-prefix-jcall)))))
     (condp = string
       "nil" (transfer-branch-env node {:node/kind :nil})
       "true" (new-const-prim-node node true)

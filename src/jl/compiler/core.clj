@@ -7,7 +7,7 @@
     [jl.compiler.op :as op]
     [jl.compiler.spec :as spec])
   (:import
-    (java.lang.invoke MethodHandles MethodHandles$Lookup$ClassOption)
+    (java.lang.invoke MethodHandles MethodHandles$Lookup$ClassOption MethodHandles$Lookup)
     (org.objectweb.asm ClassVisitor MethodVisitor Opcodes ClassWriter Type Label)))
 
 "
@@ -748,20 +748,34 @@ JLS:
         (visit-positional-ctor cv ciname instance-fields)))  
     [classname (.toByteArray cv)]))
 
-(defn load-ast-classes [node]
+(defn load-ast-classes-hidden [{:keys [^MethodHandles$Lookup lookup]} node]
   (let [new-classes (:new-classes (:node/env node))
         new-compiled-classes (mapv classinfo->bytes (vals new-classes))]
-    (doseq [[name bytes] new-compiled-classes]
-      (try (.defineClass (clojure.lang.RT/makeClassLoader) name bytes nil)
-        #_(catch Verify)))))
+    (into {}
+      (map (fn [[name bytes]]
+             (let [lk lookup]
+               [name
+                (try (.defineHiddenClass lk bytes true
+                      (make-array MethodHandles$Lookup$ClassOption 0))
+                 #_(catch Verify))])))
+      new-compiled-classes)))
+
+(let [lk (MethodHandles/lookup)
+      lk (MethodHandles/privateLookupIn sq.lang.Keyword lk)
+      ; lk (.privateLookupIn lk )
+      ]
+  (.hasFullPrivilegeAccess lk))
 
 (defn eval-ast
-  ([node] (eval-ast (clojure.lang.RT/makeClassLoader) node))
-  ([cl node]
+  ([node] (eval-ast {} node))
+  ([{:keys [^ClassLoader classloader package-name]} node]
    (let [lk (MethodHandles/lookup)
          lkc (.lookupClass lk)
          prim (spec/prim? (:node/spec node))
-         clsiname (str (.replace (.getPackageName lkc) \. \/) "/Eval")
+         classname (str (if classloader
+                          (or package-name "jl.run")
+                          (.getPackageName lkc)) (gensym ".Eval_"))
+         clsiname (.replace classname \. \/)
          cv (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
               (.visit Opcodes/V19 Opcodes/ACC_PUBLIC clsiname
                 nil "java/lang/Object" nil))
@@ -799,18 +813,24 @@ JLS:
                (make-array java.nio.file.OpenOption 0)))
            ; _ (assert (.hasFullPrivilegeAccess lk))
            eval-ba (.toByteArray cv)
-           elk (try (.defineHiddenClass lk eval-ba
-                      true (make-array MethodHandles$Lookup$ClassOption 0))
+           elk (try (if classloader
+                      (.defineClass classloader classname
+                        eval-ba nil)
+                      (.defineHiddenClass lk eval-ba
+                       true (make-array MethodHandles$Lookup$ClassOption 0)))
                  (catch java.lang.VerifyError e
                    (writeout "eval" eval-ba) (throw e)))
-           eval-class (.lookupClass elk)]
+           eval-class (if classloader
+                        (Class/forName classname true classloader)
+                        (.lookupClass elk))]
        (if e (throw e)
          (do
            (doseq [[name bytes] new-compiled-classes]
-             (writeout name bytes)
-             (.defineClass cl name bytes nil))
-           #_(.defineClass cl (str "jl.run." clsname)
-             (.toByteArray cv) nil)
+             (let [cl (clojure.lang.RT/makeClassLoader)]
+               (writeout name bytes)
+               (.defineClass cl name bytes nil)
+               ;; Force initialise the class with the defining loader
+               (Class/forName name true cl)))
            (let [p (promise)
                  th (Thread/ofPlatform)]
              (.start th
@@ -822,7 +842,7 @@ JLS:
              (let [rs (deref p 2000 [:timeout nil])]
                (match rs
                  [:ok r] r
-                 [:error e'] (do (writeout eval-ba) (throw e'))
+                 [:error e'] (do (writeout "eval" eval-ba) (throw e'))
                  [:timeout _] (do (.stop th) ::timeout))))))))))
 
 (comment

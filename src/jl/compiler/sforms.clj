@@ -364,18 +364,15 @@
        :method-type ctype
        :args args})))
 
-(defn anasf-jcall [{:keys [children] :as node}]
-  (assert (<= 3 (count children)))
-  (let [target (ana/analyse-after node (nth children 1))
-        m (:string (nth children 2))
-        _ (assert (string? m))
+(defn anasf-jcall* [node target-ast method-name args-ast]
+  (let [target (ana/analyse-after node target-ast)
         c (spec/get-exact-class (:node/spec target))
-        args (ana/analyse-args target (subvec children 3))
+        args (ana/analyse-args target args-ast)
         ; nargs (count args)
         ; new-method (first (filter #(= nargs (count (:param-classnames %)))
         ;                     (get-in node [:node/env :new-classes classname :instance-methods])))
         new-class (get-in node [:node/env :new-classes c])
-        mt (interop/match-method-type c false m
+        mt (interop/match-method-type c false method-name
              (mapv (comp spec/get-exact-class :node/spec) args) nil)
         final (or (last args) target)]
     (ana/transfer-branch-env final
@@ -384,13 +381,26 @@
        :interface? (if new-class
                      (contains? (:flags c) :interface)
                      (.isInterface (Class/forName c)))
-       :method-name m
+       :method-name method-name
        :method-type mt
        :node/spec {:spec/kind :exact-class
                    :classname (.getClassName (.getReturnType mt))}
        ; :desc (interop/match-method-desc c m
        ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
        :args args})))
+
+(defn anasf-jcall [{:keys [children] :as node}]
+  (assert (<= 3 (count children)))
+  (let [m (:string (nth children 2))
+        _ (assert (string? m))]
+    (anasf-jcall* node (nth children 1) m (subvec children 3))))
+
+(defn anasf-prefix-jcall [{:keys [children] :as node}]
+  (assert (<= 2 (count children)))
+  (let [m (:string (nth children 0))
+        _ (assert (string? m))
+        m (subs m 1)]
+    (anasf-jcall* node (nth children 1) m (subvec children 2))))
 
 (defn anasf-jscall [{:keys [children] :as node}]
   (assert (<= 3 (count children)))
@@ -424,7 +434,7 @@
         field (:string f)
         ; target (ana/analyse-after node obj)
         ; c (spec/get-exact-class (:node/spec target))
-        c (:string obj)
+        c (ana/expand-classname (:node/env node) (:string obj))
         ft (interop/lookup-field-type (:node/env node) c true field)]
     (ana/transfer-branch-env node ;target
       {:node/kind :get-field
@@ -480,9 +490,8 @@
         clsname (:string clsexpr)
         iface-parser (fn [opts {:keys [node/kind] :as x}]
                        (when (= :symbol kind)
-                         (doto (update opts :interfaces (fnil conj [])
-                                 (:string x))
-                           (comp/define-stub-class))))
+                         (update opts :interfaces (fnil conj [])
+                           (ana/expand-classname (:node/env node) (:string x)))))
         super-parser (fn [opts {:keys [node/kind string]}]
                        (if (= :symbol kind)
                          (assoc (dissoc opts :parser)
@@ -535,6 +544,7 @@
                                 :auto true}))))
         adapt-env (fn [clsinfo env1]
                     (-> env1
+                      (assoc :self-classname clsname)
                       (assoc-in [:new-classes clsname] clsinfo)
                       (assoc-in [:class-aliases "Self"] clsname)))
         parse-cfield
@@ -544,14 +554,25 @@
                 _ (assert (= :symbol (:node/kind namedecl)))
                 tags (get-tags namedecl)
                 name (:string namedecl)
-                flags (into #{:final}
-                        (comp (filter (fn [{:keys [node/kind]}]
-                                        (= :keyword kind)))
-                          (map (fn [t] (let [k (keyword (:string t))]
-                                         (condp = k
-                                           :priv :private
-                                           :pub :public k)))))
-                        tags)
+                flaginfo (reduce (fn [acc t]
+                                   (let [k (keyword (:string t))]
+                                     (condp = k
+                                       :priv (assoc acc :pub :private)
+                                       :pub (assoc acc :pub :public)
+                                       :pub-pkg (assoc acc :pub nil)
+                                       (update acc conj :flags k))))
+                           {:flags #{}}
+                           (filter (fn [{:keys [node/kind]}]
+                                     (= :keyword kind))
+                             tags))
+                flaginfo (conj {:pub :public
+                                :mut :final} flaginfo)
+                flags (cond-> (:flags flaginfo)
+                        (:mut flaginfo)
+                        (conj (:mut flaginfo)))
+                flags (cond-> flags
+                        (:pub flaginfo)
+                        (conj (:pub flaginfo)))
                 initdecl (nth children 2)
                 init (ana/analyse-after (update (:prev-node opts) :node/env
                                           (partial adapt-env opts)) initdecl)
@@ -661,6 +682,7 @@
               params (subvec children 2) "void")))
         parse-decl (fn [opts {:keys [children] :as dnode}]
                      (assert (<= 2 (count children)))
+                     (comp/define-stub-class opts)
                      (let [decl (nth children 0)
                            _ (assert (= :symbol (:node/kind decl)))
                            dname (:string decl)]
