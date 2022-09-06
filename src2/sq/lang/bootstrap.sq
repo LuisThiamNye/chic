@@ -1,0 +1,64 @@
+
+(Alias-Classes
+  ConcurrentHashMap java.util.concurrent.ConcurrentHashMap
+  MHLookup java.lang.invoke.MethodHandles$Lookup
+  MethodHandles java.lang.invoke.MethodHandles
+  MethodType java.lang.invoke.MethodType
+  CallSite java.lang.invoke.CallSite
+  SwitchPoint java.lang.invoke.SwitchPoint
+  MutableCallSite java.lang.invoke.MutableCallSite)
+
+(defclass sq.lang.BootstrapInfoProvider
+  (def ^:pub-pkg map (nw ConcurrentHashMap))
+  (defn ^:pub get [^Object key]
+    (.get map key)))
+
+(defclass sq.lang.InternalDataContainer
+  (def map (nw ConcurrentHashMap)))
+
+(defclass sq.lang.DynClassMethodCallSite
+  :super MutableCallSite
+  [^MHLookup lk ^String method-name ^MethodType type ^String target-classname]
+  
+  (init-auto [self]
+    (init-super type))
+  
+  (defi ^:priv reset ^void [self]
+    (l= map (jf sq.lang.InternalDataContainer :map))
+    (l= target-class
+      (.lookupClass
+        (ct MHLookup
+          (.get (ct ConcurrentHashMap
+                  (.get map "hclassLookups"))
+            target-classname))))
+    (when (nil? target-class)
+      (set! target-class (jc Class forName target-classname false
+                           (.getClassLoader (.lookupClass lk)))))
+
+    (l= method (ji target-class getMethod method-name (.parameterArray type)))
+    (l= target-mh (.unreflect lk method))
+    (l= fallback-mh
+      (do (l= lk' (jc MethodHandles lookup))
+        (.asType
+          (.asCollector
+           (.bind lk' self "fallback"
+             (jc MethodType methodType
+               (jc Class forName "java.lang.Object")
+               (jc Class forName "[Ljava.lang.Object;")))
+           (jc Class forName "[Ljava.lang.Object;")
+           (.parameterCount type))
+          type)))
+    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+  
+  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+    (.reset self)
+    (.invokeWithArguments (.getTarget self) args))
+  
+  (defn ^:pub bootstrap
+    ^CallSite [^MHLookup lk ^String method-name ^MethodType type
+               ^String target-classname]
+    (l= cs (nw Self lk method-name type target-classname))
+    (.reset cs)
+    cs)
+  )

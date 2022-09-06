@@ -1,6 +1,7 @@
 (ns jl.kickstart
   (:require
     [jl.compiler.core :as compiler]
+    [jl.interop :refer [find-class]]
     [jl.reader :as reader]
     [jl.compiler.analyser :as ana]))
 
@@ -43,18 +44,26 @@
     (.setAccessible method true)
     (.invoke method target (object-array args))))
 
+(do
+  (def file->classnames
+  {"src2/sq/lang/util.sq"
+   ["sq.lang.util.TrimRefValueMapLoopRunner"
+    "sq.lang.util.SilentThreadUncaughtExceptionHandler"]
+   "src2/sq/lang/keyword.sq"
+   ["sq.lang.i.Named"
+    "sq.lang.Keyword"
+    "sq.lang.KeywordMgr"
+    "sq.lang.KeywordFactory"]
+   "src2/sq/lang/bootstrap.sq"
+   ["sq.lang.InternalDataContainer"
+    "sq.lang.DynClassMethodCallSite"]})
 
 (def classname->file
-  {"sq.lang.util.TrimRefValueMapLoopRunner"
-   "src2/sq/lang/util.sq"
-   "sq.lang.util.SilentThreadUncaughtExceptionHandler"
-   "src2/sq/lang/util.sq"
-   "sq.lang.i.Named"
-   "src2/sq/lang/keyword.sq"
-   "sq.lang.Keyword"
-   "src2/sq/lang/keyword.sq"
-   "sq.lang.KeywordMgr"
-   "src2/sq/lang/keyword.sq"})
+  (reduce (fn [acc [f cns]]
+            (reduce (fn [acc cn]
+                      (assoc acc cn f))
+              acc cns))
+    {} file->classnames)))
 
 (defn uninstall-class [c]
   (some-> (first
@@ -62,9 +71,16 @@
               (.getMethods c)))
     (.invoke c (object-array 0))))
 
+(def ^java.util.concurrent.ConcurrentHashMap *hidden-class-lookups
+  (java.util.concurrent.ConcurrentHashMap.))
+
+(defn find-hidden-class [name]
+  (some-> ^java.lang.invoke.MethodHandles$Lookup
+    (.get *hidden-class-lookups name) .lookupClass))
+
 (defn analyse-defclass-node [clsname]
   (let [filename (classname->file clsname)
-        _ (assert (string? filename))
+        _ (assert (string? filename) "defclass not found")
         contents (slurp filename)
         asts (ana/str->ast contents)
         [dc-node class-aliases]
@@ -86,31 +102,25 @@
                         :else acc))))
           [nil {}] asts)]
     (ana/-analyse-node
-      (update-in (ana/inject-default-env dc-node)
-        [:node/env :class-aliases] into class-aliases))))
-
-(defn find-class [name]
-  ;; Ensure class initialises via its own classloader
-  ;; Otherwise, if using callers' CL, it won't see updated classes
-  ;; of the same name
-  (let [c (Class/forName name false (clojure.lang.RT/baseLoader))]
-    (Class/forName name true (.getClassLoader c))))
+      (update (ana/inject-default-env dc-node)
+        :node/env
+        (fn [env]
+          (-> env
+            (update :class-aliases into class-aliases)
+            (assoc :class-resolver
+              (fn [classname]
+                (or (find-hidden-class classname)
+                  (find-class classname))))))))))
 
 (defn load-class [clsname]
   (try (when-some [cold (try (find-class clsname)
-                              (catch Exception _))]
+                              (catch Throwable _))]
              (println "Uninstalling old class: " clsname)
              (uninstall-class cold))
       (let [ret (compiler/eval-ast
                   (analyse-defclass-node clsname))]
            ret)
       (catch Throwable e (.printStackTrace e) :error)))
-
-(def *hidden-class-lookups (atom {}))
-
-(defn find-hidden-class [name]
-  (some-> ^java.lang.invoke.MethodHandles$Lookup
-    (get @*hidden-class-lookups name) .lookupClass))
 
 (def ^java.util.WeakHashMap classloader-lookups (java.util.WeakHashMap.))
 (ns-unmap *ns* 'hidden-class-lo)
@@ -137,62 +147,53 @@
          (uninstall-class (.lookupClass lk))
          (swap! *hidden-class-lookups dissoc lk))
       (let [host-class (find-class host)
-            _ (prn (.getClassLoader host-class))
             lookup (get-class-lookup host-class)
             ret (compiler/load-ast-classes-hidden
                   {:lookup lookup}
                   (analyse-defclass-node clsname))]
-        (swap! *hidden-class-lookups into ret)   
+        (doseq [[c lk] ret]
+          (.put *hidden-class-lookups c lk))
         ret)
       (catch Throwable e (.printStackTrace e) :error)))
 
+(defn swinvalidate-dyncls []
+  (let [sw (.get (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+             "dynclsSwitchPoint")]
+    (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+      "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
+    (java.lang.invoke.SwitchPoint/invalidateAll
+      (into-array java.lang.invoke.SwitchPoint [sw]))))
+
 (comment
+  (load-class "sq.lang.InternalDataContainer")
+  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+    "hclassLookups" *hidden-class-lookups)
+  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+    "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
+  
+  (load-class "sq.lang.DynClassMethodCallSite")
+  
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
+  
+  (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
+  (load-class "sq.lang.KeywordFactory")
+ 
+
+ (try (sq.lang.KeywordFactory/from "x")
+   (catch Throwable e
+     (.printStackTrace e)))
+  
+  
+  (swinvalidate-dyncls)
+  
+  
   (load-class "sq.lang.util.TrimRefValueMapLoopRunner")
   (load-class "sq.lang.util.SilentThreadUncaughtExceptionHandler")
-  (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
-  
-  ;; true loader:
-  (prn (.getClassLoader (Class/forName "sq.lang.Keyword")))
-  (def --fnloader (.getClassLoader (Class/forName "sq.lang.Keyword" true
-                                     (.getClassLoader (class load-hidden-as)))))
-  ;; the fn's classloader did not define sq.lang.Keyword
-  ;; outdated loader:
-  (prn --fnloader)
-  ;; Class/forName calls loadClass https://stackoverflow.com/a/39768345/10496841 (and loadClass documentation)
-  ;; bad:
-  (prn (.getClassLoader (rcall --fnloader 'loadClass "sq.lang.Keyword" false)))
-  ;; - implies findLoadedClass returns non-null
-  ;; - implies "this loader has been recorded by the Java virtual machine as an initiating loader of a class with that binary name"
-  ;; - perhaps this means that while Keyword was defined by the other CL,
-  ;;   the fn's CL was the one that loaded it so the old Keyword gets priority over
-  ;;   the new one due to Clojure's implementation of loadClass (checks findLoadedClass first)
-  ;; a solution:
-  (prn (.getClassLoader (Class/forName "sq.lang.Keyword" true
-                          (clojure.lang.RT/makeClassLoader))))
-  ;; works:
-  (prn (.getClassLoader (rcall --fnloader 'findClass "sq.lang.Keyword")))
-  (prn (.getClassLoader (rcall clojure.lang.DynamicClassLoader
-                          'findInMemoryClass "sq.lang.Keyword")))
-  (prn (.getClassLoader (.get (get (rfield clojure.lang.DynamicClassLoader 'classCache)
-                                "sq.lang.Keyword"))))
-  ;; cache is correct
-  
-  (prn (.getClassLoader (.lookupClass (get-class-lookup (Class/forName "sq.lang.Keyword")))))
-  
-  (prn (.getClassLoader (find-hidden-class "sq.lang.KeywordMgr")))
-  
-  "
-https://github.com/openjdk/jdk/blob/6fc58b8324d5b2d36e8c62839eda50a16c9da7bd/src/hotspot/share/classfile/systemDictionary.cpp#L630
-"
   
   
-  (find-hidden-class "sq.lang.KeywordMgr")
   
-  (type (get @*hidden-classes "sq.lang.KeywordMgr"))
-  (get-class-lookup sq.lang.Keyword)
-  
+   (new sq.lang.DynClassMethodCallSite nil nil nil nil)
   
   
   (rfield (find-hidden-class "sq.lang.KeywordMgr") 'rqthread)
@@ -200,22 +201,14 @@ https://github.com/openjdk/jdk/blob/6fc58b8324d5b2d36e8c62839eda50a16c9da7bd/src
   (do (= (rcall (find-hidden-class "sq.lang.KeywordMgr") 'from "x")
         (rcall (find-hidden-class "sq.lang.KeywordMgr") 'from "x")))
   
-  
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.Keyword.class" :bytecode))
+             "tmp/eval.class" :bytecode))
+  (println (chic.decompiler/decompile
+             "tmp/sq.lang.KeywordFactory.class" :bytecode))
   (println (chic.decompiler/decompile
              "tmp/sq.lang.util.SilentThreadUncaughtExceptionHandler.class" :bytecode))
   
   
-  (.compareTo "a" "-")
-  
-  (.get (doto (.getDeclaredField sq.lang.Keyword "rqthread")
-          (.setAccessible true))
-    sq.lang.Keyword)
-  
-  
-  (sq.lang.util.TrimRefValueMapLoopRunner.
-    nil (java.util.concurrent.ConcurrentHashMap.))
   )
 
 "
@@ -262,5 +255,10 @@ https://www.youtube.com/watch?v=iSEjlLFCS3E
 For dynamic constants: https://www.youtube.com/watch?v=knPSQyUtM4I
 prefer using ConstantBootstraps where possible.
 ConstantBootstraps::invoke intended for adapting existing MHs
+"
+
+"
+Note: problem with converting Keywords to a unique int is that the keyword might
+get GC'd at some point and the int loses its mapping + risks collisions
 "
 

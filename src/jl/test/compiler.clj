@@ -1,7 +1,8 @@
 (ns jl.test.compiler
   (:require
     [jl.compiler.core :as compiler]
-    [jl.compiler.analyser :as ana]))
+    [jl.compiler.analyser :as ana]
+    [jl.interop :as interop]))
 
 (declare samples)
 (defn load-samples []
@@ -11,19 +12,22 @@
       (partitionv 2 (ana/str->ast (slurp "src2/test/samples.sq"))))))
 (load-samples)
 
+(defn analyse-ast-node [ast]
+  (ana/-analyse-node
+    (ana/inject-default-env ast)))
+
+(defn eval-ast-node [ast]
+  (try (compiler/eval-ast (analyse-ast-node ast))
+    (catch Throwable e (.printStackTrace e) :ERROR)))
+
 (defn eval-str [s]
-  (compiler/eval-ast
-    (ana/-analyse-node
-      (ana/inject-default-env
-        (first (ana/str->ast s))))))
+  (eval-ast-node (first (ana/str->ast s))))
 
 (defn eval-sample [n]
-  (compiler/eval-ast
-    (ana/-analyse-node
-      (ana/inject-default-env
-        (or ;(get samples n)
-         (do (load-samples) (get samples n))
-         (throw (ex-info "Sample not found" {:name n})))))))
+  (eval-ast-node
+    (or ;(get samples n)
+      (do (load-samples) (get samples n))
+      (throw (ex-info "Sample not found" {:name n})))))
 
 
 (= [] (ana/str->ast "#_#_(+) (-)"))
@@ -74,9 +78,9 @@
 :interfaces java.lang.Runnable java.lang.AutoCloseable
 [^int x ^java.lang.String s]
 (defi run [self] self x))")
-    first (ana/-analyse-node)
-    (->> (compiler/eval-ast cl)))
-  (let [c (Class/forName "repl.Tmp")
+    first (analyse-ast-node)
+    (->> (compiler/eval-ast {:classloader cl})))
+  (let [c (interop/find-class "repl.Tmp")
         r (clojure.reflect/reflect c)
         fs (group-by :name (:members r))
         obj (.newInstance (first (.getDeclaredConstructors c))
@@ -97,7 +101,7 @@
         (:parameter-types (first (get fs 'repl.Tmp))))
       (= 1 (.run obj)))))
 
-
+(eval-str ":x")
 
 (comment
   (defn --cleanast [ast]

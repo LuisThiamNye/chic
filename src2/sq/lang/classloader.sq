@@ -1,0 +1,10 @@
+"
+Notes:
+findLoadedClass finds a class *initialised* by the class loader.
+A CL of a function class can inadvertently initialise a class via Class/forName
+so that new classes of the same name will not be visible assuming findLoadedClass
+is checked before the class cache (Clojure's impl).
+For initialising classes:
+- Public: Class/forName(3)
+- Protected: resolveClass (or loadClass(2))
+"

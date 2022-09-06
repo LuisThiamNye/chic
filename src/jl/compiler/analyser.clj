@@ -14,6 +14,11 @@
    :node/spec {:spec/kind :exact-class
                :classname "void"}})
 
+(defn get-meta-tags [m]
+  (let [tag (:tag m)]
+    (when (= :vector (:node/kind tag))
+      (:children tag))))
+
 (defn transfer-branch-env [prev node]
   (assert (some? (:node/env prev))
     (assoc (select-keys prev [:node/kind]) :keys (keys prev)))
@@ -94,7 +99,7 @@
 
 (defn analyse-keyword [node]
   (assoc node :node/spec {:spec/kind :exact-class
-                          :classname "clojure.lang.Keyword"}))
+                          :classname "sq.lang.Keyword"}))
 
 (defn anasf-quote [{:keys [children] :as node}]
   (when (< 2 (count children))
@@ -230,7 +235,8 @@
                  {:node (select-keys node [:node/kind :node/source])} e))))))
 
 (defn inject-default-env [node]
-  (assoc node :node/env {:class-aliases interop/base-class-aliases}))
+  (assoc node :node/env {:class-aliases interop/base-class-aliases
+                         :class-resolver interop/find-class}))
 
 (defn expand-classname [env s]
   (or (get (:class-aliases env) s) s))

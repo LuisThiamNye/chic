@@ -66,4 +66,4 @@
           :synthetic :annotation :enum :module :static
           :private}))
 
-(comment (acc-flags->kws 0x400))
+(comment (acc-flags->kws 0x001B))

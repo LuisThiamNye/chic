@@ -9,6 +9,13 @@
 "Accessible https://docs.oracle.com/javase/specs/jls/se18/html/jls-6.html#jls-6.6
  and applicable https://docs.oracle.com/javase/specs/jls/se18/html/jls-15.html#jls-15.12.1"
 
+(defn find-class [name]
+  ;; Ensure class initialises via its own classloader
+  ;; Otherwise, if using callers' CL, it won't see updated classes
+  ;; of the same name
+  (let [c (Class/forName name false (clojure.lang.RT/baseLoader))]
+    (Class/forName name true (.getClassLoader c))))
+
 (defn member-accessible? [^Class c1 ^Class target mods]
   (or (Modifier/isPublic mods)
     (let [pack2 (.getPackage target)
@@ -26,13 +33,13 @@
             (every? identity
               (map #(.isAssignableFrom %1 %2)
                 pts arg-cs)))
-          (when (.isVarArgs method)
-            (let [vararg-type (.getComponentType (last (.getParameterTypes method)))]
+          (when (and (.isVarArgs method) (<= (count pts) (count arg-cs)))
+            (let [vararg-type (.getComponentType (last pts))]
               (and (every? identity
                      (map #(.isAssignableFrom %1 %2)
                        (butlast pts) arg-cs))
                 (every? #(.isAssignableFrom vararg-type %)
-                  (subvec arg-cs (dec (count (.getParameterTypes method))))))))))))
+                  (subvec arg-cs (dec (count pts)))))))))))
 
 (defn sig-specificity>= [sig1 sig2]
   (every? (fn [[^Class t1 ^Class t2]]
@@ -49,12 +56,13 @@
                 :else (reduced nil))))
     (first methods) (next methods)))
 
-(defn match-method-type ^Type [classname static? method-name arg-types ret-type]
-  (assert (every? some? arg-types))
-  (let [c (Class/forName classname)
+(defn match-method-type ^Type [{:keys [class-resolver]}classname static? method-name arg-types ret-type]
+  (assert (every? some? arg-types)
+    (pr-str classname static? method-name arg-types))
+  (let [c (class-resolver classname)
         ->c (fn [c] (or (try (util/primitive-name->class c)
                           (catch Exception _))
-                      (try (Class/forName c)
+                      (try (find-class c)
                         (catch ClassNotFoundException _ Object)
                         (catch ExceptionInInitializerError _ Object))))
         arg-cs (mapv #(->c %) arg-types)
@@ -79,12 +87,22 @@
                    " " (pr-str arg-types) " => " (pr-str ret-type)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
+(defn lookup-method-type
+  ^Type [{:keys [new-classes] :as env} classname static? method-name arg-types ret-type]
+  (let [mthds (get-in new-classes
+                [classname (if static? :class-methods :instance-methods)])
+        mthd (first (filter #(= method-name (:name %)) mthds))]
+    (if mthd
+      (Type/getMethodType (type/classname->type (:ret-classname mthd))
+        (into-array Type (map type/classname->type (:param-classnames mthd))))
+      (match-method-type env classname static? method-name arg-types ret-type))))
+
 (defn match-ctor-type ^Type [classname arg-types]
   (assert (every? some? arg-types))
-  (let [c (Class/forName classname)
+  (let [c (find-class classname)
         ->c (fn [c] (or (try (util/primitive-name->class c)
                           (catch Exception _))
-                      (try (Class/forName c)
+                      (try (find-class c)
                         (catch ClassNotFoundException _ Object)
                         (catch ExceptionInInitializerError _ Object))))
         arg-cs (mapv #(->c %) arg-types)
@@ -103,21 +121,9 @@
                  (str "Ctor ambiguous: " classname " " (pr-str arg-types)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
-(match-ctor-type "sq.lang.Keyword" ["java.lang.String"])
-(or (try (util/primitive-name->class "java.lang.String")
-      (catch Exception _))
-                      (try (Class/forName "java.lang.String")
-                        (catch ClassNotFoundException _ Object)
-                        (catch ExceptionInInitializerError _ Object)))
-(into [] (comp
-           (filter #(member-accessible? Object sq.lang.Keyword (.getModifiers ^Constructor %)))
-           (filter #(method-applicable? [Object] nil % nil))
-           )
-  (.getConstructors sq.lang.Keyword))
-
 (defn get-field-type ^Type [asking-classname classname static? field-name]
-  (let [cls (Class/forName classname)
-        askcls (Class/forName asking-classname)
+  (let [cls (find-class classname)
+        askcls (if asking-classname (find-class asking-classname) Object)
         field (first (eduction
                        (filter #(= field-name (.getName ^Field %)))
                        (filter #(= static?
@@ -132,7 +138,6 @@
 
 (defn lookup-field-type
   ^Type [{:keys [new-classes self-classname]} classname static? field-name]
-  (assert (some? self-classname))
   (let [cls (get new-classes classname)
         field (first (eduction
                        (filter #(= field-name (:name %)))

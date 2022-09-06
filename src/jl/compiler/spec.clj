@@ -1,4 +1,6 @@
-(ns jl.compiler.spec)
+(ns jl.compiler.spec
+  (:require
+    [jl.compiler.type :as type]))
 
 (defn with-cast [ctor spec])
 
@@ -25,8 +27,20 @@
 (defn get-exact-class [spec]
   (assert (or (nil? spec) (contains? spec :spec/kind))
     (pr-str spec))
-  (when (= :exact-class (:spec/kind spec))
-    (:classname spec)))
+  (cond
+    (= :exact-class (:spec/kind spec))
+    (:classname spec)
+    (= :exact-array (:spec/kind spec))
+    (let [c (:classname spec)
+          sb (StringBuilder.)]
+      (dotimes [_ (:ndims spec)]
+        (.append sb "["))
+      (if-some [prim(type/prim-classname->type c)]
+        (.append sb (.getDescriptor prim))
+        (do (.append sb "L")
+          (.append sb c)
+          (.append sb ";")))
+      (.toString sb))))
 
 (defn prim? [spec]
   (#{"boolean" "byte" "short" "char" "int" "long" "float" "double" "void"}

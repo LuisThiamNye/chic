@@ -1,6 +1,8 @@
 (ns jl.compiler.sforms
   (:require
+    [chic.util :refer [inherit-vars]]
     [jl.interop :as interop]
+    [jl.compiler.defclass :as defclass]
     [jl.compiler.spec :as spec]
     [jl.compiler.core :as comp]
     [clojure.core.match :refer [match]]
@@ -9,7 +11,7 @@
   (:import
     (org.objectweb.asm Type)))
 
-
+(inherit-vars defclass/anasf-defclass)
 
 #_(defn anasf-isnil [{:keys [children] :as node}]
   (assert (= 3 (count children)))
@@ -127,21 +129,6 @@
        :test child
        :then (ana/new-const-prim-node child true)
        :else (ana/new-const-prim-node child false)})))
-
-(defn anasf-new-array [{:keys [children] :as node}]
-  (assert (<= 3 (count children)))
-  (let [classname (:string (nth children 1))
-        classname (ana/expand-classname (:node/env node) classname)
-        dims (ana/analyse-args node (subvec children 2))
-        ndims (count dims)]
-    (ana/transfer-branch-env (peek dims)
-      {:node/kind :new-array
-       :node/spec {:spec/kind :exact-array
-                   :classname classname
-                   :ndims ndims}
-       :classname classname
-       :ndims ndims ;; TODO allow override with keyword option :dims n
-       :dims dims})))
 
 (defn anasf-array-set [{:keys [children] :as node}]
   (assert (<= 4 (count children)))
@@ -364,6 +351,21 @@
        :method-type ctype
        :args args})))
 
+(defn anasf-new-array [{:keys [children] :as node}]
+  (assert (<= 3 (count children)))
+  (let [classname (:string (nth children 1))
+        classname (ana/expand-classname (:node/env node) classname)
+        dims (ana/analyse-args node (subvec children 2))
+        ndims (count dims)]
+    (ana/transfer-branch-env (peek dims)
+      {:node/kind :new-array
+       :node/spec {:spec/kind :exact-array
+                   :classname classname
+                   :ndims ndims}
+       :classname classname
+       :ndims ndims ;; TODO allow override with keyword option :dims n
+       :dims dims})))
+
 (defn anasf-jcall* [node target-ast method-name args-ast]
   (let [target (ana/analyse-after node target-ast)
         c (spec/get-exact-class (:node/spec target))
@@ -372,9 +374,10 @@
         ; new-method (first (filter #(= nargs (count (:param-classnames %)))
         ;                     (get-in node [:node/env :new-classes classname :instance-methods])))
         new-class (get-in node [:node/env :new-classes c])
-        mt (interop/match-method-type c false method-name
+        final (or (last args) target)
+        mt (interop/lookup-method-type (:node/env final) c false method-name
              (mapv (comp spec/get-exact-class :node/spec) args) nil)
-        final (or (last args) target)]
+        tags (ana/get-meta-tags (:node/meta node))]
     (ana/transfer-branch-env final
       {:node/kind :jcall
        :target target
@@ -383,8 +386,9 @@
                      (.isInterface (Class/forName c)))
        :method-name method-name
        :method-type mt
+       :dynamic? (some #{:dynamic} tags)
        :node/spec {:spec/kind :exact-class
-                   :classname (.getClassName (.getReturnType mt))}
+                   :classname (type/get-classname (.getReturnType mt))}
        ; :desc (interop/match-method-desc c m
        ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
        :args args})))
@@ -406,18 +410,20 @@
   (assert (<= 3 (count children)))
   (let [c (:string (nth children 1))
         m (:string (nth children 2))
-        _ (assert (string? m))
+        _ (assert (string? m) "Invalid method-name argument")
         _ (assert (string? c))
         c (ana/expand-classname (:node/env node) c)
         args (ana/analyse-args node (subvec children 3))
-        mt (interop/match-method-type c true m
+        final (or (last args) node)
+        mt (interop/lookup-method-type (:node/env final) c true m
              (mapv (comp spec/get-exact-class :node/spec) args) nil)
-        final (or (last args) node)]
+        tags (mapv :string (ana/get-meta-tags (:node/meta (nth children 0))))]
     (ana/transfer-branch-env final
       {:node/kind :jcall
        :classname c
        :method-name m
        :method-type mt
+       :dynamic? (some #{"dynamic"} tags)
        :node/spec {:spec/kind :exact-class
                    :classname (.getClassName (.getReturnType mt))}
        ; :desc (interop/match-method-desc c m
@@ -482,239 +488,6 @@
        :body x
        :node/spec {:spec/kind :exact-class
                    :classname classname}})))
-
-(defn anasf-defclass [{:keys [children] :as node}]
-  (assert (<= 2 (count children)))
-  (let [clsexpr (nth children 1)
-        _ (assert (= :symbol (:node/kind clsexpr)))
-        clsname (:string clsexpr)
-        iface-parser (fn [opts {:keys [node/kind] :as x}]
-                       (when (= :symbol kind)
-                         (update opts :interfaces (fnil conj [])
-                           (ana/expand-classname (:node/env node) (:string x)))))
-        super-parser (fn [opts {:keys [node/kind string]}]
-                       (if (= :symbol kind)
-                         (assoc (dissoc opts :parser)
-                           :super string)
-                         (throw (UnsupportedOperationException.))))
-        tag-parser
-        (fn [opts {:keys [node/kind children]}]
-          (if (= :vector kind)
-            (assoc (dissoc opts :parser)
-              :flags
-              (vec (reduce
-                     (fn [acc kw]
-                       (let []
-                         (when (acc kw)
-                           (throw (IllegalArgumentException. "duplicate tag")))
-                         (cond-> (conj acc kw)
-                           (= :interface kw)
-                           (recur :abstract))))
-                     #{} (map (fn [c]
-                                (assert (= :keyword (:node/kind c)))
-                                (keyword (:string c)))
-                           children))))
-            (throw (UnsupportedOperationException.))))
-        get-tags (fn [n]
-                   (let [tag (:tag (:node/meta n))]
-                      (when (= :vector (:node/kind tag))
-                        (:children tag))))
-        class-tag (fn [n]
-                    (let [tag (:tag (:node/meta n))]
-                      (when (= :vector (:node/kind tag))
-                        (let [s(some #(when (= :symbol (:node/kind %))
-                                        (:string %))
-                                 (:children tag))]
-                          (if (= "Self" s) clsname
-                            (ana/expand-classname (:node/env node) s))))))
-        parse-fieldvec (fn [opts x]
-                         (let [flds (reduce (fn [fields f]
-                                              (if (= :symbol (:node/kind f))
-                                                (conj fields
-                                                  {:name (:string f)
-                                                   :flags #{:private :final}
-                                                   :classname
-                                                   (or (class-tag f)
-                                                     "java.lang.Object")})
-                                                (throw (UnsupportedOperationException.))))
-                                      [] (:children x))]
-                           (-> opts (assoc :fields flds)
-                             (update :constructors (fnil conj [])
-                               {:param-classnames (mapv :classname flds)
-                                :auto true}))))
-        adapt-env (fn [clsinfo env1]
-                    (-> env1
-                      (assoc :self-classname clsname)
-                      (assoc-in [:new-classes clsname] clsinfo)
-                      (assoc-in [:class-aliases "Self"] clsname)))
-        parse-cfield
-        (fn [opts {:keys [children]}]
-          (assert (<= 3 (count children)))
-          (let [namedecl (nth children 1)
-                _ (assert (= :symbol (:node/kind namedecl)))
-                tags (get-tags namedecl)
-                name (:string namedecl)
-                flaginfo (reduce (fn [acc t]
-                                   (let [k (keyword (:string t))]
-                                     (condp = k
-                                       :priv (assoc acc :pub :private)
-                                       :pub (assoc acc :pub :public)
-                                       :pub-pkg (assoc acc :pub nil)
-                                       (update acc conj :flags k))))
-                           {:flags #{}}
-                           (filter (fn [{:keys [node/kind]}]
-                                     (= :keyword kind))
-                             tags))
-                flaginfo (conj {:pub :public
-                                :mut :final} flaginfo)
-                flags (cond-> (:flags flaginfo)
-                        (:mut flaginfo)
-                        (conj (:mut flaginfo)))
-                flags (cond-> flags
-                        (:pub flaginfo)
-                        (conj (:pub flaginfo)))
-                initdecl (nth children 2)
-                init (ana/analyse-after (update (:prev-node opts) :node/env
-                                          (partial adapt-env opts)) initdecl)
-                fcls (or (spec/get-exact-class (:node/spec init))
-                       "java.lang.Object")]
-            (-> opts
-              (assoc :prev-node
-                (assoc-in init [:node/env :special-locals name]
-                  {:fn (fn [pn]
-                         (ana/transfer-branch-env pn
-                           {:node/kind :get-field
-                            :classname clsname
-                            :field-name name
-                            :type (type/classname->type fcls)
-                            :node/spec {:spec/kind :exact-class
-                                        :classname fcls}}))}))
-              (update :class-fields (fnil conj [])
-                {:name name
-                 :flags flags
-                 :val init
-                 :classname fcls}))))
-        parse-amethod
-        (fn [opts {:keys [children]}]
-          (assert (<= 2 (count children)))
-          (let [mexp (nth children 1)
-                _ (assert (= :symbol (:node/kind mexp)))
-                mn (:string mexp)
-                params (:children (nth children 2))
-                ret-classname (or (class-tag params) "void")]
-            (update opts :instance-methods conj
-              {:name mn
-               :flags #{:abstract :public} ;; either pub or priv must be set
-               :ret-classname ret-classname
-               :param-names (mapv :string params)
-               :param-classnames
-               (mapv (fn [p]
-                       (class-tag p))
-                 (drop 1 params))})))
-        analyse-method-body
-        (fn [prev-node clsinfo static? mn paramdecl bodydecl retc]
-          (let [params (:children paramdecl)
-                body (ana/analyse-body
-                       {:node/env (adapt-env clsinfo (:node/env prev-node))
-                        :node/locals
-                        (into {}
-                          (map-indexed
-                            (fn [i {:keys [string] :as arg-node}]
-                              (assert (= :symbol (:node/kind arg-node)))
-                              [string {:arg-idx i
-                                       :spec (when-some [cn (class-tag arg-node)]
-                                               {:spec/kind :exact-class
-                                                :classname cn})}]))
-                          params)}
-                       bodydecl)
-                ret-classname (or retc (spec/get-exact-class (:node/spec body))
-                                "void")]
-            {:name mn
-             :body body
-             :flags #{:public}
-             :ret-classname ret-classname
-             :param-names (mapv :string params)
-             :param-classnames
-             (mapv (fn [p]
-                     (let [c (class-tag p)]
-                       (assert (some? c))
-                       c))
-               (if static? params (drop 1 params)))}))
-        parse-named-cmethod
-        (fn [opts mn paramdecl bodydecl retc]
-          (update opts :class-methods conj
-            (analyse-method-body (:prev-node opts) opts true mn paramdecl bodydecl retc)))
-        parse-cmethod
-        (fn [opts {:keys [children]}]
-          (assert (<= 2 (count children)))
-          (let [mexp (nth children 1)
-                _ (assert (= :symbol (:node/kind mexp)))
-                mn (:string mexp)
-                paramdecl (nth children 2)]
-            (parse-named-cmethod opts mn paramdecl (subvec children 3) nil)))
-        parse-named-imethod
-        (fn [opts mn paramdecl bodydecl retc]
-          (let [fieldmap (into {}
-                           (map (fn [{:keys [name classname]}]
-                                  [name {:spec {:spec/kind :exact-class
-                                                :classname classname}}]))
-                           (:fields opts))]
-            (update opts :instance-methods conj
-            (analyse-method-body
-              (assoc-in (:prev-node opts) [:node/env :fields] fieldmap)
-              opts false mn paramdecl bodydecl retc))))
-        parse-imethod
-        (fn [opts {:keys [children]}]
-          (assert (<= 2 (count children)))
-          (let [mexp (nth children 1)
-                _ (assert (= :symbol (:node/kind mexp)))
-                mn (:string mexp)
-                paramdecl (nth children 2)]
-            (parse-named-imethod opts mn paramdecl (subvec children 3) nil)))
-        parse-uninstall-method
-        (fn [opts {:keys [children]}]
-          (assert (<= 2 (count children)))
-          (let [params (nth children 1)
-                paramvec (:children params)
-                _ (assert (and (= :vector (:node/kind params))
-                    (empty? paramvec)))]
-            (parse-named-cmethod opts "\uDB80\uDC00uninstall"
-              params (subvec children 2) "void")))
-        parse-decl (fn [opts {:keys [children] :as dnode}]
-                     (assert (<= 2 (count children)))
-                     (comp/define-stub-class opts)
-                     (let [decl (nth children 0)
-                           _ (assert (= :symbol (:node/kind decl)))
-                           dname (:string decl)]
-                       (condp = dname
-                         "defi" (parse-imethod opts dnode)
-                         "defn" (parse-cmethod opts dnode)
-                         "defabstract" (parse-amethod opts dnode)
-                         "def" (parse-cfield opts dnode)
-                         "uninstall" (parse-uninstall-method opts dnode))))
-        opts
-        (reduce
-          (fn [opts {:keys [node/kind] :as x}]
-            (or (when-some [p (:parser opts)]
-                  (p opts x))
-              (let [opts (dissoc opts :parser)]
-                (condp = kind
-                  :keyword (let [p (condp = (:string x)
-                                     "interfaces" iface-parser
-                                     "super" super-parser
-                                     "tag" tag-parser)]
-                             (if (nil? p)
-                               (throw (UnsupportedOperationException.))
-                               (assoc opts :parser p)))
-                  :vector (parse-fieldvec opts x)
-                  :list (parse-decl opts x)))))
-          {:classname clsname
-           :prev-node node} (subvec children 2))
-        ; {:keys [prev-node]} opts
-        opts (dissoc opts :prev-node)]
-    (assoc (ana/new-void-node)
-      :node/locals (:node/locals node)
-      :node/env (assoc-in (:node/env node) [:new-classes clsname] opts))))
 
 ; (swap! ana/*sf-analysers assoc "not" #'anasf-not)
 (swap! ana/*sf-analysers assoc "=" #'anasf-eq)

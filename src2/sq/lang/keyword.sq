@@ -16,12 +16,15 @@
   :tag [:interface]
   (defabstract getName ^String []))
 
+(Alias-Classes
+  ConcurrentHashMap java.util.concurrent.ConcurrentHashMap)
+
 (defclass sq.lang.Keyword
   :interfaces Comparable sq.lang.i.Named java.lang.constant.Constable
   [^String string]
   
   ;; str -> weakreference
-  (def ^:pub-pkg cache (nw java.util.concurrent.ConcurrentHashMap 2048))
+  (def ^:pub-pkg cache (nw ConcurrentHashMap 2048))
 
   (defi getName [_] string)
 
@@ -43,6 +46,8 @@
 
 (defclass sq.lang.KeywordMgr
   ;; static component of Keyword; could be merged into Keyword to save bytes
+  
+  (def ^:pub-pkg __switchpoint (nw java.lang.invoke.SwitchPoint))
   
   (def ^:priv refqueue (nw java.lang.ref.ReferenceQueue))
   (def ^:priv rqthread
@@ -86,5 +91,11 @@
     ^Keyword [^String string]
     (l= ref (ji (jf Keyword :cache) get string))
     (when (not (nil? ref))
-      (ji (ct Reference ref) get)))
+      (ct Keyword (ji (ct Reference ref) get))))
   )
+
+(defclass sq.lang.KeywordFactory
+  ;; A static target for bootstrap methods
+  (defn from [^String string]
+    (^:dynamic jc sq.lang.KeywordMgr from string)))
+

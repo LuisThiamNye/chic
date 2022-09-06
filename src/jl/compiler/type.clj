@@ -68,3 +68,9 @@
         _ (.append sb (.getDescriptor type))
         adesc (.toString sb)]
     (Type/getType adesc)))
+
+(defn get-classname ^String [^Type type]
+  (if (prim? type)
+    (.getClassName type)
+    ;; because getClassName returns java.lang.Object[], but want [Ljava.lang.Object;
+    (.replace (.getInternalName type) \/ \.)))

@@ -8,7 +8,8 @@
     [jl.compiler.spec :as spec])
   (:import
     (java.lang.invoke MethodHandles MethodHandles$Lookup$ClassOption MethodHandles$Lookup)
-    (org.objectweb.asm ClassVisitor MethodVisitor Opcodes ClassWriter Type Label)))
+    (org.objectweb.asm ClassVisitor MethodVisitor Opcodes ClassWriter Type Label
+      Handle ConstantDynamic)))
 
 "
 JVM Local variales
@@ -118,6 +119,7 @@ JLS:
   (-emitTypeInsn [_ op type])
   (-emitNewArray [_ type ndims])
   (-emitInvokeMethod [_ op owner method sig])
+  (-emitInvokeDynamic [_ name method-type bsmhandle bsmargs])
   (-emitLoadLocal [_ id])
   (-emitStoreLocal [_ sort id])
   (-emitTryCatch [_ start end hander ex-type])
@@ -161,12 +163,15 @@ JLS:
 
 (declare emit-ast-node)
 
+(defn emit-discard-return [ctx node]
+  (when-not (= "void" (spec/prim? (:node/spec node)))
+    (-emitInsn ctx :pop)))
+
 (defn emit-do [ctx {:keys [children]}]
   (when-some [lc (peek children)]
     (run! (fn [c]
             (emit-ast-node ctx c)
-            (when-not (= "void" (spec/prim? (:node/spec c)))
-              (-emitInsn ctx :pop)))
+            (emit-discard-return ctx c))
       (pop children))
     (emit-ast-node ctx lc)))
 
@@ -379,7 +384,8 @@ JLS:
     (emit-ast-node ctx d))
   (-emitNewArray ctx (type/classname->type classname) ndims))
 
-(defn emit-jcall [ctx {:keys [classname target interface? method-name args method-type] :as node}]
+(defn emit-jcall
+  [ctx {:keys [classname target interface? method-name args method-type dynamic?]}]
   (let [classname (or classname (spec/get-exact-class (:node/spec target)))
         ; sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
         ;       (type/classname->type (spec/get-exact-class (:node/spec node))))
@@ -387,8 +393,18 @@ JLS:
     (when target (emit-ast-node ctx target))
     (doseq [a args]
       (emit-ast-node ctx a))
-    (-emitInvokeMethod ctx (if target (if interface? :interface :virtual) :static)
-      (type/obj-classname->type classname) method-name method-type)))
+    (if dynamic?
+      (-emitInvokeDynamic ctx method-name method-type
+        (Handle. Opcodes/H_INVOKESTATIC
+          (when-not target "sq/lang/DynClassMethodCallSite")
+          "bootstrap"
+          (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
+            "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;)"
+            "Ljava/lang/invoke/CallSite;")
+          false)
+        [classname])
+      (-emitInvokeMethod ctx (if target (if interface? :interface :virtual) :static)
+        (type/obj-classname->type classname) method-name method-type))))
 
 (defn emit-get-field [ctx {:keys [field-name target classname type]}]
   (when target (emit-ast-node ctx target))
@@ -400,6 +416,13 @@ JLS:
   (-emitFieldInsn ctx :getfield
     (-selfType ctx) field-name (type/classname->type
                                  (spec/get-exact-class spec))))
+
+(defn emit-jcall-super [ctx {:keys [classname method-name method-type args]}]
+  (-emitLoadSelf ctx)
+  (doseq [a args]
+    (emit-ast-node ctx a))
+  (-emitInvokeMethod ctx :special (type/obj-classname->type classname)
+    method-name method-type))
 
 (defn emit-string [ctx {:keys [value]}]
   (-emitLdcInsn ctx value))
@@ -491,24 +514,47 @@ JLS:
     (emit-ast-node ctx index)
     (-emitInsn ctx insn)))
 
+(defn emit-keyword [ctx {:keys [string]}]
+  (-emitLdcInsn ctx
+    (ConstantDynamic. (str ":" string)
+      ; "Lsq/lang/Keyword;"
+      "Ljava/lang/Object;"
+      #_(Handle. Opcodes/H_INVOKESTATIC
+        "java/lang/invoke/ConstantBootstraps"
+        "nullConstant"
+        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"
+        false)
+      #_(Handle. Opcodes/INVOKESTATIC
+        "java/lang/invoke/ConstantBootstraps"
+        "invoke"
+        "DESC"
+        false)
+      (Handle. Opcodes/H_INVOKESTATIC
+        "sq/lang/KeywordMgr" "from"
+        "(Ljava/lang/String;)Lsq/lang/Keyword;"
+        false)
+      (object-array [string]))))
+
 (defn type-sort->load-op [sort]
   (op/kw->opcode
     (enc/case-eval sort
-      Type/OBJECT :aload Type/LONG :lload Type/INT :iload Type/FLOAT :fload
+      (list Type/OBJECT Type/ARRAY) :aload Type/LONG :lload Type/INT :iload Type/FLOAT :fload
       Type/DOUBLE :dload Type/BOOLEAN :iload Type/BYTE :iload
-      Type/CHAR :iload Type/SHORT :iload)))
+      Type/CHAR :iload Type/SHORT :iload
+      (throw (ex-info "invalid sort" {:sort sort})))))
 
 (defn type-sort->store-op [sort]
   (op/kw->opcode
     (enc/case-eval sort
-      Type/OBJECT :astore Type/LONG :lstore Type/INT :istore Type/FLOAT :fstore
+      (list Type/OBJECT Type/ARRAY) :astore Type/LONG :lstore Type/INT :istore Type/FLOAT :fstore
       Type/DOUBLE :dstore Type/BOOLEAN :istore Type/BYTE :istore
-      Type/CHAR :istore Type/SHORT :istore)))
+      Type/CHAR :istore Type/SHORT :istore
+      (throw (ex-info "invalid sort" {:sort sort})))))
 
 (defn type-sort->return-op [sort]
   (op/kw->opcode
     (enc/case-eval sort
-      Type/OBJECT :areturn Type/LONG :lreturn Type/INT :ireturn Type/FLOAT :freturn
+      (list Type/OBJECT Type/ARRAY)  :areturn Type/LONG :lreturn Type/INT :ireturn Type/FLOAT :freturn
       Type/DOUBLE :dreturn Type/BOOLEAN :ireturn Type/BYTE :ireturn
       Type/CHAR :ireturn Type/SHORT :ireturn Type/VOID :return
       (throw (RuntimeException. (str sort " not valid sort"))))))
@@ -548,7 +594,9 @@ JLS:
     (let [l (.get locals id)
           _ (when (nil? l)
               (throw (ex-info (str "Can't load local: " id) {:locals locals})))
-          insn (type-sort->load-op (:type-sort l))]
+          ts (:type-sort l)
+          _ (assert (some? ts))
+          insn (type-sort->load-op ts)]
       (.visitVarInsn mv insn (:idx l))))
   (-emitStoreLocal [_ tsort id]
     (let [wide? (contains? #{:long :double} tsort)
@@ -582,6 +630,9 @@ JLS:
       (if (instance? Type sig)
         (.getDescriptor ^Type sig)
         (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))))
+  (-emitInvokeDynamic [_ name method-type bsmhandle bsmargs]
+    (.visitInvokeDynamicInsn mv name (.getDescriptor ^Type method-type)
+      bsmhandle (object-array bsmargs)))
   (-emitFieldInsn [_ op owner-type field type]
     (.visitFieldInsn mv (op/kw->opcode op) (.getInternalName ^Type owner-type)
       field (.getDescriptor ^Type type)))
@@ -619,7 +670,7 @@ JLS:
       (java.util.HashMap.))))
 
 (defn emit-ast-node [ctx node]
-  ((condp = (:node/kind node)
+  ((case (:node/kind node)
      :const-prim emit-const-prim
      :nil emit-nil
      :void (constantly nil)
@@ -645,39 +696,61 @@ JLS:
      :array-get emit-array-get
      :array-set emit-array-set
      :self-field-get emit-self-get-field
-     (throw (RuntimeException. (str "No handler for bytecode node " (pr-str node)))))
+     :keyword emit-keyword
+     :jcall-super emit-jcall-super
+     (throw (RuntimeException. (str "No handler for bytecode node "
+                                 (pr-str (select-keys node [:node/kind]))))))
    ctx node))
 
 
-;; Note: theretically possible to init object without ctor by inlining the bytecode
-(defn visit-positional-ctor [^ClassVisitor cv ciname fields]
+;; Note: theoretically possible to init object without ctor by inlining the bytecode
+(defn visit-positional-ctor
+  [^ClassVisitor cv super-iname ^Type class-type fields self-bindname body]
   (let [mv (.visitMethod cv Opcodes/ACC_PUBLIC "<init>"
              (Type/getMethodDescriptor Type/VOID_TYPE
                (into-array Type (mapv :type fields)))
-             nil nil)]
-    ;; Emits same bytecode as Java would
-    (.visitVarInsn mv Opcodes/ALOAD 0)
-    (.visitMethodInsn mv Opcodes/INVOKESPECIAL "java/lang/Object" "<init>" "()V")
-    (doseq [[i {:keys [name type]}]
-            (map-indexed vector fields)]
-      (.visitVarInsn mv Opcodes/ALOAD 0)
-      (.visitVarInsn mv (type-sort->load-op (.getSort type)) (inc i))
-      (.visitFieldInsn mv Opcodes/PUTFIELD ciname name (.getDescriptor type)))
-    (.visitInsn mv Opcodes/RETURN)
-    (.visitMaxs mv 1 (inc (count fields)))
+             nil nil)
+        emit-field-puts
+        (fn []
+          (doseq [[i {:keys [name type]}]
+                  (map-indexed vector fields)]
+            (.visitVarInsn mv Opcodes/ALOAD 0)
+            (.visitVarInsn mv (type-sort->load-op (.getSort type)) (inc i))
+            (.visitFieldInsn mv Opcodes/PUTFIELD (.getInternalName class-type)
+              name (.getDescriptor type))))]
+    (if body
+      (let [ctx (new-mcctx mv
+                  {:class-type class-type :instance? true
+                   :param-names (into [self-bindname] (map :name) fields)
+                   :param-types (mapv :type fields)})]
+        (emit-ast-node ctx body)
+        (emit-discard-return ctx body)
+        (emit-field-puts)
+        (.visitInsn mv Opcodes/RETURN)
+        (.visitMaxs mv -1 -1))
+      (do
+        ;; Emits same bytecode as Java would
+        (.visitVarInsn mv Opcodes/ALOAD 0)
+        ;; FIXME this assumes there exists a super ctor with 0 args
+        (.visitMethodInsn mv Opcodes/INVOKESPECIAL super-iname "<init>" "()V")
+        (emit-field-puts)
+        (.visitInsn mv Opcodes/RETURN)
+        (.visitMaxs mv 1 (inc (count fields)))))
     (.visitEnd mv)))
 
 ;; ideally override getCommonClass, for now create stub for reflection
-(defn define-stub-class [{:keys [interfaces flags super classname]}]
+(defn create-stub-class [{:keys [interfaces flags super classname]}]
   (let [ciname (.replace classname \. \/)
         super-in (if super (.replace super \. \/) "java/lang/Object")
         cv-stub (doto (ClassWriter. 0)
                   (.visit Opcodes/V19 (reduce bit-or 0 (map op/kw->acc-opcode flags))
                     ciname nil super-in
                     (when (seq interfaces)
-                      (into-array String (map #(.replace % \. \/) interfaces)))))]
-    (.defineClass (clojure.lang.RT/makeClassLoader)
-      classname (.toByteArray cv-stub) nil)))
+                      (into-array String (map #(.replace % \. \/) interfaces)))))
+        cl (clojure.lang.RT/makeClassLoader)]
+    (.defineClass cl
+      classname (.toByteArray cv-stub) nil)
+    (Class/forName classname true cl)))
 
 (defn classinfo->bytes
   [{:keys [^String classname ^String super instance-methods
@@ -743,9 +816,10 @@ JLS:
       (.visitInsn mv Opcodes/RETURN)
       (.visitMaxs mv -1 -1)
       (.visitEnd mv))
-    (doseq [{:keys [arg-classnames auto]} constructors]
+    (doseq [{:keys [param-classnames param-names auto body]} constructors]
       (when auto ;; TODO ctor
-        (visit-positional-ctor cv ciname instance-fields)))  
+        (visit-positional-ctor cv super-in class-type instance-fields
+          (first param-classnames) body)))
     [classname (.toByteArray cv)]))
 
 (defn load-ast-classes-hidden [{:keys [^MethodHandles$Lookup lookup]} node]
@@ -760,18 +834,13 @@ JLS:
                  #_(catch Verify))])))
       new-compiled-classes)))
 
-(let [lk (MethodHandles/lookup)
-      lk (MethodHandles/privateLookupIn sq.lang.Keyword lk)
-      ; lk (.privateLookupIn lk )
-      ]
-  (.hasFullPrivilegeAccess lk))
+
 
 (defn eval-ast
   ([node] (eval-ast {} node))
   ([{:keys [^ClassLoader classloader package-name]} node]
    (let [lk (MethodHandles/lookup)
          lkc (.lookupClass lk)
-         prim (spec/prim? (:node/spec node))
          classname (str (if classloader
                           (or package-name "jl.run")
                           (.getPackageName lkc)) (gensym ".Eval_"))
@@ -787,17 +856,20 @@ JLS:
          sl2 (Label.)
          el2 (Label.)
          new-classes (:new-classes (:node/env node))
-         new-compiled-classes (mapv classinfo->bytes (vals new-classes))]
+         new-compiled-classes (mapv classinfo->bytes (vals new-classes))
+         conform-return
+         (fn []
+           (let [prim (spec/prim? (:node/spec node))
+                 ctx (new-mcctx mv {})]
+             (emit-ast-node ctx node)
+             (when prim
+               (if (= "void" prim)
+                 (-emitInsn ctx :aconst-null)
+                 (emit-box ctx (type/box (type/prim-classname->type prim)))))))]
      (doto mv
        (.visitCode)
        ; #_
-       (do 
-         (let [ctx (new-mcctx mv {})]
-           (emit-ast-node ctx node)
-           (when prim
-             (if (= "void" prim)
-               (-emitInsn ctx :aconst-null)
-               (emit-box ctx (type/box (type/prim-classname->type prim)))))))
+       (do (conform-return))
        ; (.visitFrame Opcodes/F_SAME1 0 (object-array 0) 1 (object-array [Opcodes/NULL]))
        (.visitInsn Opcodes/ARETURN))
     
@@ -813,20 +885,23 @@ JLS:
                (make-array java.nio.file.OpenOption 0)))
            ; _ (assert (.hasFullPrivilegeAccess lk))
            eval-ba (.toByteArray cv)
-           elk (try (if classloader
-                      (.defineClass classloader classname
+           eval-class
+           (try (if classloader
+                  (do (.defineClass classloader classname
                         eval-ba nil)
-                      (.defineHiddenClass lk eval-ba
-                       true (make-array MethodHandles$Lookup$ClassOption 0)))
-                 (catch java.lang.VerifyError e
-                   (writeout "eval" eval-ba) (throw e)))
-           eval-class (if classloader
-                        (Class/forName classname true classloader)
-                        (.lookupClass elk))]
+                    (Class/forName classname true classloader)
+                    )
+                  (.lookupClass
+                    (.defineHiddenClass lk eval-ba
+                      true (make-array MethodHandles$Lookup$ClassOption 0))))
+             (catch java.lang.ClassFormatError e
+               (writeout "eval" eval-ba) (throw e))
+             (catch java.lang.VerifyError e
+               (writeout "eval" eval-ba) (throw e)))]
        (if e (throw e)
          (do
            (doseq [[name bytes] new-compiled-classes]
-             (let [cl (clojure.lang.RT/makeClassLoader)]
+             (let [cl (or classloader (clojure.lang.RT/makeClassLoader))]
                (writeout name bytes)
                (.defineClass cl name bytes nil)
                ;; Force initialise the class with the defining loader
