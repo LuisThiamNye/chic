@@ -179,7 +179,7 @@
   (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
   (load-class "sq.lang.KeywordFactory")
  
-
+(.getModifiers sq.lang.KeywordFactory)
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e
      (.printStackTrace e)))

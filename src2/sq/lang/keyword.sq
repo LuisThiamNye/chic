@@ -20,7 +20,7 @@
   ConcurrentHashMap java.util.concurrent.ConcurrentHashMap)
 
 (defclass sq.lang.Keyword
-  :interfaces Comparable sq.lang.i.Named java.lang.constant.Constable
+  :interfaces Comparable sq.lang.i.Named
   [^String string]
   
   ;; str -> weakreference
@@ -96,6 +96,8 @@
 
 (defclass sq.lang.KeywordFactory
   ;; A static target for bootstrap methods
+  ;; perhaps move keywordmgr into keywordfactory
+  ;; then auto generate named class that dynamically calls hidden impl
   (defn from [^String string]
     (^:dynamic jc sq.lang.KeywordMgr from string)))
 

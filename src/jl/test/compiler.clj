@@ -101,7 +101,8 @@
         (:parameter-types (first (get fs 'repl.Tmp))))
       (= 1 (.run obj)))))
 
-(eval-str ":x")
+(= "sq.lang.Keyword"
+  (.getName (class (eval-str ":x"))))
 
 (comment
   (defn --cleanast [ast]

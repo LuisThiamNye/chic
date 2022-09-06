@@ -517,23 +517,19 @@ JLS:
 (defn emit-keyword [ctx {:keys [string]}]
   (-emitLdcInsn ctx
     (ConstantDynamic. (str ":" string)
-      ; "Lsq/lang/Keyword;"
-      "Ljava/lang/Object;"
-      #_(Handle. Opcodes/H_INVOKESTATIC
-        "java/lang/invoke/ConstantBootstraps"
-        "nullConstant"
-        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"
-        false)
-      #_(Handle. Opcodes/INVOKESTATIC
+      "Lsq/lang/Keyword;"
+      (Handle. Opcodes/H_INVOKESTATIC
         "java/lang/invoke/ConstantBootstraps"
         "invoke"
-        "DESC"
+        (str "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;"
+          "Ljava/lang/invoke/MethodHandle;[Ljava/lang/Object;)Ljava/lang/Object;")
         false)
-      (Handle. Opcodes/H_INVOKESTATIC
-        "sq/lang/KeywordMgr" "from"
-        "(Ljava/lang/String;)Lsq/lang/Keyword;"
-        false)
-      (object-array [string]))))
+      (object-array
+        [(Handle. Opcodes/H_INVOKESTATIC
+           "sq/lang/KeywordFactory" "from"
+           "(Ljava/lang/String;)Lsq/lang/Keyword;"
+           false)
+         string]))))
 
 (defn type-sort->load-op [sort]
   (op/kw->opcode
