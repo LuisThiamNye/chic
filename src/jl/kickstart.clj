@@ -4,7 +4,10 @@
     [jl.interop :refer [find-class]]
     [jl.reader :as reader]
     [jl.compiler.analyser :as ana]
-    [io.github.humbleui.core :as hui]))
+    [io.github.humbleui.core :as hui])
+  (:import
+    (org.objectweb.asm ClassWriter Opcodes)
+    (java.lang.invoke MethodHandles MethodHandle MethodHandles$Lookup)))
 
 (defn reflect-find-field* [fld flds]
   (reduce (fn [_ ^java.lang.reflect.Field f]
@@ -60,7 +63,9 @@
     "sq.lang.DynClassMethodCallSite"
     "sq.lang.EnumSwitchMapCallSite"]
    "src2/sq/lang/globals.sq"
-   ["sq.lang.GlobalCHM"]})
+   ["sq.lang.GlobalCHM"]
+   "src2/window.sq"
+   ["chic.window.Main"]})
 
 (def classname->file
   (reduce (fn [acc [f cns]]
@@ -75,14 +80,19 @@
               (.getMethods c)))
     (.invoke c (object-array 0))))
 
-(def ^java.util.concurrent.ConcurrentHashMap *hidden-class-lookups
+(def ^java.util.concurrent.ConcurrentHashMap
+  *hidden-class-lookups
   (java.util.concurrent.ConcurrentHashMap.))
 
 (defn find-hidden-class [name]
   (some-> ^java.lang.invoke.MethodHandles$Lookup
     (.get *hidden-class-lookups name) .lookupClass))
 
-(defn analyse-defclass-node [clsname]
+(defn cof [classname]
+  (or (find-hidden-class classname)
+    (find-class classname)))
+
+(defn analyse-defclass-node [opts clsname]
   (let [filename (classname->file clsname)
         _ (assert (string? filename) "defclass not found")
         contents (slurp filename)
@@ -103,6 +113,13 @@
                         (= "Alias-Classes" (:string sym))
                         [nil (into class-aliases
                                (partitionv 2 (map :string args)))]
+                        (= "Refer-Classes" (:string sym))
+                        [nil (into class-aliases
+                               (mapcat (fn [{:keys [children]}]
+                                         (let [pkg (:string (first children))
+                                               names (map :string (rest children))]
+                                           (map #(vector % (str pkg "." %)) names))))
+                               args)]
                         :else acc))))
           [nil {}] asts)]
     (ana/-analyse-node
@@ -111,6 +128,8 @@
         (fn [env]
           (-> env
             (update :class-aliases into class-aliases)
+            (cond-> (:hidden? opts)
+              (assoc :def-classes-to-underscore true))
             (assoc :class-resolver
               (fn [classname]
                 (or (find-hidden-class classname)
@@ -122,27 +141,36 @@
              (println "Uninstalling old class: " clsname)
              (uninstall-class cold))
       (let [ret (compiler/eval-ast
-                  (analyse-defclass-node clsname))]
+                  (analyse-defclass-node {} clsname))]
            ret)
       (catch Throwable e (.printStackTrace e) :error)))
 
 (def ^java.util.WeakHashMap classloader-lookups (java.util.WeakHashMap.))
 (ns-unmap *ns* 'hidden-class-lo)
 
-(defn get-class-lookup [^Class cls]
+(defn get-classloader-lookup [cl classname]
+  ;; workaround to obtain full privilege access to unnamed module of cl
   (locking classloader-lookups
-    (let [cl (.getClassLoader cls)]
-      (java.lang.invoke.MethodHandles/privateLookupIn cls
-        (or (.get classloader-lookups cl)
-          (let [lk (compiler/eval-ast
-                     {:classloader cl}
-                     (ana/-analyse-node
-                       (ana/inject-default-env
-                         (first
-                           (ana/str->ast "
-  (jc java.lang.invoke.MethodHandles lookup)")))))]
-            (.put classloader-lookups cl lk)
-            lk))))))
+    (or (.get classloader-lookups cl)
+      (let [lk (compiler/eval-ast
+                 {:classloader cl
+                  :classname classname}
+                 (ana/-analyse-node
+                   (ana/inject-default-env
+                     (first
+                       (ana/str->ast "
+(jc java.lang.invoke.MethodHandles lookup)")))))]
+        (.put classloader-lookups cl lk)
+        lk))))
+
+(defn get-class-lookup [^Class cls]
+  (java.lang.invoke.MethodHandles/privateLookupIn cls
+    (get-classloader-lookup (.getClassLoader cls)
+      (str (.getName (.getPackage cls)) ".(LookupInit)"))))
+
+(def hidden-class-host-lookup
+  (get-classloader-lookup (clojure.lang.RT/makeClassLoader)
+    "_.LookupInit"))
 
 (defn load-hidden-as [host clsname]
   (try (when-some [lk (try (get @*hidden-class-lookups clsname)
@@ -150,15 +178,23 @@
          (println "Uninstalling old class: " clsname)
          (uninstall-class (.lookupClass lk))
          (swap! *hidden-class-lookups dissoc lk))
-      (let [host-class (find-class host)
-            lookup (get-class-lookup host-class)
+      (let [lookup (if host
+                     (get-class-lookup (find-class host))
+                     hidden-class-host-lookup)
             ret (compiler/load-ast-classes-hidden
                   {:lookup lookup}
-                  (analyse-defclass-node clsname))]
+                  (analyse-defclass-node
+                    {:hidden? true}
+                    clsname))
+            hclsname (str "_." (.replace clsname \. \,))]
         (doseq [[c lk] ret]
-          (.put *hidden-class-lookups c lk))
+          (.put *hidden-class-lookups
+            (if (= hclsname c) clsname c) lk))
         ret)
       (catch Throwable e (.printStackTrace e) :error)))
+
+(defn load-hidden [classname]
+  (load-hidden-as nil classname))
 
 (defn swinvalidate-dyncls []
   (let [sw (.get (rfield (find-class "sq.lang.InternalDataContainer") 'map)
@@ -182,11 +218,6 @@
   (load-class "sq.lang.DynClassMethodCallSite")
   (load-class "sq.lang.EnumSwitchMapCallSite")
   
-  (.getMethod sq.lang.EnumSwitchMapCallSite "bsm"
-    (into-array Class [java.lang.invoke.MethodHandles$Lookup
-                       String java.lang.invoke.MethodType
-                       String (class (object-array 0))]))
-  
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
   
@@ -195,10 +226,11 @@
   
   (.put (get-globalchm) "chic.window"
     (new java.util.concurrent.ConcurrentHashMap))
-  
   (.put (.get (get-globalchm) "chic.window") "windows"
     (new io.lacuna.bifurcan.Set))
- 
+  (load-hidden "chic.window.Main")
+  
+  (rcall (cof "chic.window.Main") 'new-jwm-window)
 
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e

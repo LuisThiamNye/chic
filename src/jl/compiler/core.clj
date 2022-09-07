@@ -334,7 +334,7 @@ JLS:
         (-emitTypeInsn ctx :new "java.lang.Error")
         (-emitInsn ctx :dup)
         (-emitLdcInsn ctx "No match for case")
-        (-emitInvokeMethod ctx :special (type/obj-classname->type classname)
+        (-emitInvokeMethod ctx :special (type/obj-classname->type "java.lang.Error")
           "<init>" (Type/getMethodType Type/VOID_TYPE
                      (into-array Type [(Type/getObjectType "java/lang/String")])))
         (-emitInsn ctx :athrow)))
@@ -903,12 +903,13 @@ JLS:
 
 (defn eval-ast
   ([node] (eval-ast {} node))
-  ([{:keys [^ClassLoader classloader package-name]} node]
+  ([{:keys [^ClassLoader classloader package-name classname]} node]
    (let [lk (MethodHandles/lookup)
          lkc (.lookupClass lk)
-         classname (str (if classloader
-                          (or package-name "jl.run")
-                          (.getPackageName lkc)) ".Eval" #_(gensym ".Eval_"))
+         classname (or classname
+                     (str (if classloader
+                            (or package-name "jl.run")
+                            (.getPackageName lkc)) ".Eval" #_(gensym ".Eval_")))
          clsiname (.replace classname \. \/)
          cv (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
               (.visit Opcodes/V19 Opcodes/ACC_PUBLIC clsiname

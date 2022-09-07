@@ -16,6 +16,35 @@
   (let [c (Class/forName name false (clojure.lang.RT/baseLoader))]
     (Class/forName name true (.getClassLoader c))))
 
+(defprotocol PClassNode
+  (-satisfies? [_ super])
+  (-getInterfaces [_])
+  (-getSuperclass [_]))
+
+(extend-type Class PClassNode
+  (-getInterfaces [self]
+    (.getInterfaces self))
+  (-getSuperclass [self]
+    (.getSuperclass self))
+  (-satisfies? [self sup]
+    ;; Class can only satisfy classes that already exist
+    (when (class? sup)
+      (.isAssignableFrom ^Class sup self))))
+
+(defrecord UnrealClass [super interfaces flags fields methods]
+  PClassNode
+  (-getInterfaces [_] interfaces)
+  (-getSuperclass [_] super)
+  (-satisfies? [self other]
+    ;; could also implement by keeping set of visited bases and only checking the unvisited
+    (or (identical? self other)
+      (-satisfies? super other)
+      (some #(-satisfies? % other)
+        interfaces))))
+
+(defn new-unreal-class [super interfaces]
+  (->UnrealClass super interfaces 0 nil nil))
+
 (defn member-accessible? [^Class c1 ^Class target mods]
   (or (Modifier/isPublic mods)
     (let [pack2 (.getPackage target)
@@ -26,24 +55,25 @@
         (when (Modifier/isProtected mods)
           (.isAssignableFrom target c1))))))
 
-(defn method-applicable? [arg-cs ^Class ret-c ^Executable method ^Class method-ret]
-  (and (or (nil? ret-c) (.isAssignableFrom method-ret ret-c))
+(defn method-applicable? [arg-cs desired-ret-c ^Executable method method-ret-c]
+  (and (or (nil? desired-ret-c)
+         (-satisfies? method-ret-c desired-ret-c))
     (let [pts (.getParameterTypes method)]
       (or (and (= (count pts) (count arg-cs))
             (every? identity
-              (map #(.isAssignableFrom %1 %2)
-                pts arg-cs)))
+              (map #(-satisfies? %1 %2)
+                arg-cs pts)))
           (when (and (.isVarArgs method) (<= (count pts) (count arg-cs)))
             (let [vararg-type (.getComponentType (last pts))]
               (and (every? identity
-                     (map #(.isAssignableFrom %1 %2)
-                       (butlast pts) arg-cs))
-                (every? #(.isAssignableFrom vararg-type %)
+                     (map #(-satisfies? %1 %2)
+                       arg-cs (butlast pts)))
+                (every? #(-satisfies? % vararg-type)
                   (subvec arg-cs (dec (count pts)))))))))))
 
 (defn sig-specificity>= [sig1 sig2]
-  (every? (fn [[^Class t1 ^Class t2]]
-            (.isAssignableFrom t2 t1))
+  (every? (fn [[t1 t2]]
+            (-satisfies? t1 t2))
     (map vector sig1 sig2)))
 
 (defn most-specific-method [methods]
@@ -56,11 +86,13 @@
                 :else (reduced nil))))
     (first methods) (next methods)))
 
-(defn match-method-type ^Type [{:keys [class-resolver]}classname static? method-name arg-types ret-type]
+(defn match-method-type ^Type
+  [{:keys [class-resolver]}classname static? method-name arg-types ret-type]
   (assert (every? some? arg-types)
     (pr-str classname static? method-name arg-types))
   (let [c (class-resolver classname)
-        ->c (fn [c] (or (try (util/primitive-name->class c)
+        ->c (fn [c] (or (when (satisfies? PClassNode c) c)
+                      (try (util/primitive-name->class c)
                           (catch Exception _))
                       (try (find-class c)
                         (catch ClassNotFoundException _ Object)
@@ -156,6 +188,46 @@
     (if field
       field
       (throw (RuntimeException. "Could not find accessible field")))))
+
+(defn find-common-ancestor [classes]
+  ;; finds most specific common class (not interface)
+  (let [clss (java.util.ArrayList. 5)
+        _ (loop [cls (first classes)]
+                 (when cls
+                   (.add clss cls)
+                   (recur (-getSuperclass cls))))
+        clss (.toArray clss)
+        aindexof (fn [a offset x]
+                    (loop [i (dec (alength a))]
+                      (when (<= offset i)
+                        (if (= x (aget a i))
+                          i
+                          (recur (dec i))))))
+        *lb (volatile! 0)]
+    (doseq [c (next classes)]
+      (loop [c c]
+        (if-some [i (aindexof clss @*lb c)]
+          (vreset! *lb i)
+          (when-some [s (-getSuperclass c)]
+            (recur s)))))
+    (aget clss @*lb)))
+
+(defn get-interfaces-since-super [sub super]
+  (loop [acc (transient #{})
+         sub sub]
+    (if-let [ifaces (and (not= sub super)
+                      (-getInterfaces sub))]
+      (recur (reduce conj! acc ifaces)
+        (-getSuperclass sub))
+      (persistent! acc))))
+
+;; want to unroll each class up to the common ancestor - intersecting excess interfaces
+(defn intersect-classes [classes]
+  (let [ca (find-common-ancestor classes)]
+    (new-unreal-class ca
+      (reduce (fn [acc c]
+                (into acc (get-interfaces-since-super c ca)))
+        #{} classes))))
 
 
 (def jlc-essential

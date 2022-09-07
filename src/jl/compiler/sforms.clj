@@ -93,7 +93,9 @@
           [] (partitionv 2 (subvec children 2)))
         fallback (when (odd? (count children))
                    (ana/analyse-after test (peek children)))
-        enum-cls (spec/get-exact-class (:node/spec test))]
+        enum-cls (spec/get-exact-class (:node/spec test))
+        spec (join-branch-specs (cond-> (mapv peek cases)
+                                  fallback (conj fallback)))]
     (assert (some? enum-cls))
     (ana/transfer-branch-env test
       {:node/kind :case
@@ -102,8 +104,7 @@
        :test test
        :cases cases
        :fallback fallback
-       :node/spec (join-branch-specs (cond-> (mapv peek cases)
-                                       fallback (conj fallback)))})))
+       :node/spec spec})))
 
 (defn anasf-when [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
@@ -179,9 +180,11 @@
 
 (defn anasf-throw [{:keys [children] :as node}]
   (assert (= 2 (count children)))
-  {:node/kind :throw
-   :node/spec {:spec/kind :jump}
-   :arg (first (ana/analyse-args node (subvec children 1)))})
+  (let [arg (first (ana/analyse-args node (subvec children 1)))]
+    (ana/transfer-branch-env arg
+      {:node/kind :throw
+       :node/spec {:spec/kind :jump}
+       :arg arg})))
 
 (defn anasf-locking [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
@@ -401,7 +404,7 @@
         new-class (get-in node [:node/env :new-classes c])
         final (or (last args) target)
         mt (interop/lookup-method-type (:node/env final) c false method-name
-             (mapv (comp spec/get-exact-class :node/spec) args) nil)
+             (mapv (comp spec/get-duck-class :node/spec) args) nil)
         tags (ana/get-meta-tags (:node/meta node))]
     (ana/transfer-branch-env final
       {:node/kind :jcall
@@ -441,7 +444,7 @@
         args (ana/analyse-args node (subvec children 3))
         final (or (last args) node)
         mt (interop/lookup-method-type (:node/env final) c true m
-             (mapv (comp spec/get-exact-class :node/spec) args) nil)
+             (mapv (comp spec/get-duck-class :node/spec) args) nil)
         tags (mapv :string (ana/get-meta-tags (:node/meta (nth children 0))))]
     (ana/transfer-branch-env final
       {:node/kind :jcall

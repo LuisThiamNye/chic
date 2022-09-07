@@ -23,20 +23,25 @@
 
 (swap! ana/*sf-analysers assoc "init-super" #'anasf-init-super)
 
-(defn anasf-defclass [{:keys [children] :as node}]
+(defn anasf-defclass [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
   (let
     [clsexpr (nth children 1)
      _ (assert (= :symbol (:node/kind clsexpr)))
      clsname (:string clsexpr)
+     [clsname env] (if (:def-classes-to-underscore env)
+                     (let [n2 (str "_." (.replace clsname \. \,))]
+                       [n2 (update env :class-aliases assoc
+                             clsname n2)])
+                     [clsname env])
      iface-parser (fn [opts {:keys [node/kind] :as x}]
                     (when (= :symbol kind)
                       (update opts :interfaces (fnil conj [])
-                        (ana/expand-classname (:node/env node) (:string x)))))
+                        (ana/expand-classname env (:string x)))))
      super-parser (fn [opts {:keys [node/kind string]}]
                     (if (= :symbol kind)
                       (assoc (dissoc opts :parser)
-                        :super (ana/expand-classname (:node/env node) string))
+                        :super (ana/expand-classname env string))
                       (throw (UnsupportedOperationException.))))
      tag-parser
      (fn [opts {:keys [node/kind children]}]
@@ -66,7 +71,7 @@
                                      (= :string (:node/kind %)) (:value %))
                               (:children tag))]
                        (if (= "Self" s) clsname
-                         (ana/expand-classname (:node/env node) s))))))
+                         (ana/expand-classname env s))))))
      parse-fieldvec (fn [opts x]
                       (let [flds (reduce (fn [fields f]
                                            (if (= :symbol (:node/kind f))

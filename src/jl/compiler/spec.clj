@@ -1,5 +1,6 @@
 (ns jl.compiler.spec
   (:require
+    [jl.interop :as interop]
     [jl.compiler.type :as type]))
 
 (defn with-cast [ctor spec])
@@ -41,6 +42,12 @@
           (.append sb c)
           (.append sb ";")))
       (.toString sb))))
+
+(defn get-duck-class [spec] ;; returns a class of the intersection of behaviours
+  (if (= :union (:spec/kind spec))
+    (interop/intersect-classes
+      (map (comp interop/find-class get-duck-class) (:specs spec)))
+    (get-exact-class spec)))
 
 (defn prim? [spec]
   (#{"boolean" "byte" "short" "char" "int" "long" "float" "double" "void"}

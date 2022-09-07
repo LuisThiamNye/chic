@@ -143,6 +143,10 @@ GREEK 2
 GREEK 2
 4)"))
 
+;; no match
+(true? (eval-str "(try (case-enum (jf java.lang.Character$UnicodeScript HEBREW))
+(catch java.lang.Error _ true))"))
+
 
 (comment
   (defn --cleanast [ast]

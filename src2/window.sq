@@ -1,9 +1,17 @@
 
+(Refer-Classes
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event EventWindowClose EventWindowCloseRequest)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija))
+
 (defclass chic.window.Main
   
   (defn new-jwm-window []
     (.setLayer (jc App makeWindow)
-      (case-enum (jc Platform CURRENT)
+      (case-enum (jf Platform CURRENT)
         WINDOWS (nw LayerD3D12Skija)
         MACOS (nw LayerMetalSkija)
         X11 (nw LayerGLSkija)
