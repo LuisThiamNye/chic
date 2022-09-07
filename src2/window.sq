@@ -1,0 +1,31 @@
+
+(defclass chic.window.Main
+  
+  (defn new-jwm-window []
+    (.setLayer (jc App makeWindow)
+      (case-enum (jc Platform CURRENT)
+        WINDOWS (nw LayerD3D12Skija)
+        MACOS (nw LayerMetalSkija)
+        X11 (nw LayerGLSkija)
+        (throw (nw RuntimeException "Unsupported platform"))))))
+
+"Switching on Enum
+java creates synthetic class for enum to contain array mapping ordinal->case-idx
+which is used for tableswitch - because you may switch on a subset of enums.
+SwitchMap array is same length as number of enums. It is initialised by
+accessing the enum fields, and getting the ordinals at runtime.
+By contrast, the switch's case indexes are statically embedded in bytecode.
+Therefore, this strategy ensures binary compatibility if enums are
+added or reordered.
+
+Incidentally, this could work well for a dynamic system, by resetting the
+switchmap array (unless stable annotation is used?)
+
+Also: There's a values() method on the enum (not an interface) - array of all values
+that returns the synthetic field $VALUES.
+
+Lookup switch is used for 2 or fewer cases (+ default), tableswitch for 3+ cases.
+
+Enum ordinals appear determined by alphametical order
+
+"

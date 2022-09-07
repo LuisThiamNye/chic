@@ -125,6 +125,8 @@ JLS:
   (-emitTryCatch [_ start end hander ex-type])
   (-emitFieldInsn [_ op owner field type])
   (-emitLoadSelf [_])
+  (-emitTableSwitch [_ min max fallback-label case-labels])
+  (-emitLookupSwitch [_ fallback-label keys labels])
   
   (-regJumpTarget [_ id label])
   (-unregJumpTarget [_ id])
@@ -133,20 +135,23 @@ JLS:
   
   #_(-emitDeclareLocal [_ name]))
 
+(defn emit-int-value [ctx value]
+  (if-some [li (case (int value)
+                 -1 :iconst-m1 0 :iconst-0 1 :iconst-1 2 :iconst-2
+                 3 :iconst-3 4 :iconst-4 5 :iconst-5 nil)]
+    (-emitInsn ctx li)
+    (cond
+      (<= Byte/MIN_VALUE value Byte/MAX_VALUE)
+      (-emitInsn ctx :bipush value)
+      (<= Short/MIN_VALUE value Short/MAX_VALUE)
+      (-emitInsn ctx :sipush value)
+      :else
+      (-emitLdcInsn ctx (int value)))))
+
 (defn emit-const-prim [ctx {:keys [value]}]
   (let [cls (type value)]
     (if (#{Integer Boolean Byte Character Short} cls)
-      (if-some [li (case (int (if (= Boolean cls) (if value 1 0) value))
-                     -1 :iconst-m1 0 :iconst-0 1 :iconst-1 2 :iconst-2
-                     3 :iconst-3 4 :iconst-4 5 :iconst-5 nil)]
-        (-emitInsn ctx li)
-        (cond
-          (<= Byte/MIN_VALUE value Byte/MAX_VALUE)
-          (-emitInsn ctx :bipush value)
-          (<= Short/MIN_VALUE value Short/MAX_VALUE)
-          (-emitInsn ctx :sipush value)
-          :else
-          (-emitLdcInsn ctx (int value))))
+      (emit-int-value ctx (if (= Boolean cls) (if value 1 0) value))
       (condp = cls
         Long
         (if-some [li (case value
@@ -297,6 +302,44 @@ JLS:
     (emit-ast-node ctx else)
     (-emitLabel ctx done-label)))
 
+(defn emit-case [ctx {:keys [mode classname test cases fallback]}]
+  (assert (= :enum mode))
+  (emit-ast-node ctx test)
+  (-emitInvokeDynamic ctx "idx"
+    (Type/getMethodType Type/INT_TYPE
+      (into-array Type [(type/obj-classname->type classname)]))
+    (Handle. Opcodes/H_INVOKESTATIC
+      "sq/lang/EnumSwitchMapCallSite" "bsm"
+      (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
+        "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;"
+        "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;")
+      false)
+    (into [classname] (map first cases)))
+  (let [case-labels (mapv (fn [_] (Label.)) cases)
+        fb-label (Label.)
+        end-label (Label.)
+        tableswitch-min-cases 3 ;; same as java (for enums)
+        ncases (count cases)]
+    (if (<= tableswitch-min-cases ncases)
+      (-emitTableSwitch ctx 1 ncases fb-label case-labels)
+      (-emitLookupSwitch ctx fb-label (range 1 (inc ncases)) case-labels))
+    (doseq [[label c] (map vector case-labels (map peek cases))]
+      (-emitLabel ctx label)
+      (emit-ast-node ctx c)
+      (-emitJump ctx :goto end-label))
+    (-emitLabel ctx fb-label)
+    (if fallback
+      (emit-ast-node ctx fallback)
+      (do ;; no match error
+        (-emitTypeInsn ctx :new "java.lang.Error")
+        (-emitInsn ctx :dup)
+        (-emitLdcInsn ctx "No match for case")
+        (-emitInvokeMethod ctx :special (type/obj-classname->type classname)
+          "<init>" (Type/getMethodType Type/VOID_TYPE
+                     (into-array Type [(Type/getObjectType "java/lang/String")])))
+        (-emitInsn ctx :athrow)))
+    (-emitLabel ctx end-label)))
+
 (defn emit-throw [ctx {:keys [arg]}]
   (emit-ast-node ctx arg)
   (-emitInsn ctx :athrow))
@@ -379,10 +422,29 @@ JLS:
       (emit-ast-node ctx arg))
     (-emitInvokeMethod ctx :special type "<init>" method-type)))
 
-(defn emit-new-array [ctx {:keys [classname ndims dims]}]
+(defn classname->ary-store-insn [classname]
+  (condp = classname
+    "int" :iastore
+    "long" :lastore
+    "double" :dastore
+    "float" :fastore
+    "byte" :bastore
+    "boolean" :bastore
+    "char" :castore
+    "short" :sastore
+    :aastore))
+
+(defn emit-new-array [ctx {:keys [classname ndims dims items]}]
+  (assert (vector? dims))
   (doseq [d dims]
     (emit-ast-node ctx d))
-  (-emitNewArray ctx (type/classname->type classname) ndims))
+  (-emitNewArray ctx (type/classname->type classname) ndims)
+  (doseq [[i item] (map-indexed vector items)]
+    (when item
+      (-emitInsn ctx :dup)
+      (emit-int-value ctx i)
+      (emit-ast-node ctx item)
+      (-emitInsn ctx (classname->ary-store-insn classname)))))
 
 (defn emit-jcall
   [ctx {:keys [classname target interface? method-name args method-type dynamic?]}]
@@ -482,16 +544,7 @@ JLS:
   (let [aryt (type/classname->type
                (spec/get-exact-class
                  (spec/get-array-element (:node/spec target))))
-        insn (condp = (.getClassName aryt)
-               "int" :iastore
-               "long" :lastore
-               "double" :dastore
-               "float" :fastore
-               "byte" :bastore
-               "boolean" :bastore
-               "char" :castore
-               "short" :sastore
-               :aastore)]
+        insn (classname->ary-store-insn (.getClassName aryt))]
     (emit-ast-node ctx target)
     (emit-ast-node ctx index)
     (emit-ast-node ctx val)
@@ -513,6 +566,10 @@ JLS:
     (emit-ast-node ctx target)
     (emit-ast-node ctx index)
     (-emitInsn ctx insn)))
+
+(defn emit-array-length [ctx {:keys [target]}]
+  (emit-ast-node ctx target)
+  (-emitInsn ctx :arraylength))
 
 (defn emit-keyword [ctx {:keys [string]}]
   (-emitLdcInsn ctx
@@ -632,6 +689,11 @@ JLS:
   (-emitFieldInsn [_ op owner-type field type]
     (.visitFieldInsn mv (op/kw->opcode op) (.getInternalName ^Type owner-type)
       field (.getDescriptor ^Type type)))
+  (-emitTableSwitch [_ imin imax fb-label case-labels]
+    (.visitTableSwitchInsn mv imin imax fb-label (into-array Label case-labels)))
+  (-emitLookupSwitch [_ fb-label keys case-labels]
+    (.visitLookupSwitchInsn mv fb-label (int-array keys) (into-array Label case-labels)))
+  
   (-selfType [_] self-type)
   (-regJumpTarget [_ id label]
     (.put jump-targets id label))
@@ -694,10 +756,17 @@ JLS:
      :self-field-get emit-self-get-field
      :keyword emit-keyword
      :jcall-super emit-jcall-super
-     (throw (RuntimeException. (str "No handler for bytecode node "
-                                 (pr-str (select-keys node [:node/kind]))))))
+     :case emit-case
+     :array-length emit-array-length
+     (throw (ex-info
+              "No handler for bytecode node"
+              {:node (when node
+                       (if (map? node)
+                         (assoc (select-keys node [:node/kind])
+                           :keys (keys node))
+                         node))
+               :type (class node)})))
    ctx node))
-
 
 ;; Note: theoretically possible to init object without ctor by inlining the bytecode
 (defn visit-positional-ctor
@@ -839,7 +908,7 @@ JLS:
          lkc (.lookupClass lk)
          classname (str (if classloader
                           (or package-name "jl.run")
-                          (.getPackageName lkc)) (gensym ".Eval_"))
+                          (.getPackageName lkc)) ".Eval" #_(gensym ".Eval_"))
          clsiname (.replace classname \. \/)
          cv (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
               (.visit Opcodes/V19 Opcodes/ACC_PUBLIC clsiname
@@ -869,35 +938,35 @@ JLS:
        ; (.visitFrame Opcodes/F_SAME1 0 (object-array 0) 1 (object-array [Opcodes/NULL]))
        (.visitInsn Opcodes/ARETURN))
     
-     (let [e (try
-               (.visitMaxs mv -1 -1)
-               (.visitEnd mv) nil
-               (catch Exception e e))
-           writeout
+     (let [writeout
            (fn [fn ba]
              (java.nio.file.Files/write
                (java.nio.file.Path/of (str "tmp/" fn ".class") (make-array String 0))
                ba
                (make-array java.nio.file.OpenOption 0)))
-           ; _ (assert (.hasFullPrivilegeAccess lk))
-           eval-ba (.toByteArray cv)
-           eval-class
-           (try (if classloader
-                  (do (.defineClass classloader classname
-                        eval-ba nil)
-                    (Class/forName classname true classloader)
-                    )
-                  (.lookupClass
-                    (.defineHiddenClass lk eval-ba
-                      true (make-array MethodHandles$Lookup$ClassOption 0))))
-             (catch java.lang.ClassFormatError e
-               (writeout "eval" eval-ba) (throw e))
-             (catch java.lang.VerifyError e
-               (writeout "eval" eval-ba) (throw e)))]
+           e (try
+               (.visitMaxs mv -1 -1)
+               (.visitEnd mv) nil
+               (catch Exception e (writeout "eval" (.toByteArray cv)) e)) ]
        (if e (throw e)
-         (do
+         (let [eval-ba (.toByteArray cv)
+               eval-class
+               (try (if classloader
+                      (do (.defineClass classloader classname
+                            eval-ba nil)
+                        (Class/forName classname true classloader))
+                      (.lookupClass
+                        (.defineHiddenClass lk eval-ba
+                          true (make-array MethodHandles$Lookup$ClassOption 0))))
+                 (catch java.lang.ClassFormatError e
+                   (writeout "eval" eval-ba) (throw e))
+                 (catch java.lang.VerifyError e
+                   (writeout "eval" eval-ba) (throw e)))]
+(writeout "eval" eval-ba)
            (doseq [[name bytes] new-compiled-classes]
-             (let [cl (or classloader (clojure.lang.RT/makeClassLoader))]
+             (let [cl (or classloader #_(clojure.lang.RT/makeClassLoader)
+                        (clojure.lang.DynamicClassLoader.
+                          (ClassLoader/getSystemClassLoader)))]
                (writeout name bytes)
                (.defineClass cl name bytes nil)
                ;; Force initialise the class with the defining loader

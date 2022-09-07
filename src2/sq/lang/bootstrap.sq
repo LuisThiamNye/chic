@@ -2,11 +2,13 @@
 (Alias-Classes
   ConcurrentHashMap java.util.concurrent.ConcurrentHashMap
   MHLookup java.lang.invoke.MethodHandles$Lookup
+  MethodHandle java.lang.invoke.MethodHandle
   MethodHandles java.lang.invoke.MethodHandles
   MethodType java.lang.invoke.MethodType
   CallSite java.lang.invoke.CallSite
   SwitchPoint java.lang.invoke.SwitchPoint
-  MutableCallSite java.lang.invoke.MutableCallSite)
+  MutableCallSite java.lang.invoke.MutableCallSite
+  ConstantCallSite java.lang.invoke.ConstantCallSite)
 
 (defclass sq.lang.BootstrapInfoProvider
   (def ^:pub-pkg map (nw ConcurrentHashMap))
@@ -18,10 +20,13 @@
 
 (defclass sq.lang.DynClassMethodCallSite
   :super MutableCallSite
-  [^MHLookup lk ^String method-name ^MethodType type ^String target-classname]
+  [^MHLookup lk ^String method-name ^String target-classname]
   
-  (init-auto [self]
-    (init-super type))
+  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc]
+    (init-super type)
+    (set! lk lk')
+    (set! method-name mn)
+    (set! target-classname tc))
   
   (defi ^:priv reset ^void [self]
     (l= map (jf sq.lang.InternalDataContainer :map))
@@ -34,7 +39,7 @@
     (when (nil? target-class)
       (set! target-class (jc Class forName target-classname false
                            (.getClassLoader (.lookupClass lk)))))
-
+    (l= type (.type self))
     (l= method (ji target-class getMethod method-name (.parameterArray type)))
     (l= target-mh (.unreflect lk method))
     (l= fallback-mh
@@ -62,3 +67,51 @@
     (.reset cs)
     cs)
   )
+
+(Alias-Classes
+  Enum java.lang.Enum)
+
+(defclass sq.lang.EnumSwitchMapCallSite
+  ;; enum->idx
+  ; :super MutableCallSite
+  ; [^MHLookup lk ^String enum-classname ^"[Ljava.lang.String;" enums]
+  
+  ; (defn ^:priv make-mh ^MethodHandle
+  ;   [^MHLookup lk ^String method-name ^MethodType type
+  ;    ^String enum-classname ^"[Ljava.lang.String;" enums]
+  ;   )
+  
+  (defn bsm ^CallSite
+    [^MHLookup lk ^String method-name ^MethodType type
+     ^String enum-classname ^"[Ljava.lang.Object;" enum-names]
+    (l= cs-enum-class (.parameterType type 0))
+    (if (.isInterface cs-enum-class)
+      nil ;; TODO use dynamic impl
+      ;; callsite coupled to runtime enum class
+      (do
+        (l= enum-class (jc Class forName enum-classname false
+                         (.getClassLoader (.lookupClass lk))))
+        (l= switchmap (na int (alength (.getEnumConstants enum-class))))
+        (loop [i (- (alength enum-names) 1)]
+          (when (<= 0 i)
+            (l= name (ct String (aa enum-names i)))
+            ;; case indexes from 1->n, considering uninitialised 0s in array
+            (sa switchmap (.ordinal (jc Enum valueOf enum-class name))
+              (+ i 1))
+            (recur (- i 1))))
+        ;; TODO optimise if ordinals = case indexes
+        (nw ConstantCallSite
+          (jc MethodHandles collectArguments
+            (.bindTo (jc MethodHandles arrayElementGetter (.getClass switchmap))
+              switchmap)
+            0
+            (.findVirtual lk enum-class "ordinal"
+              (jc MethodType methodType (jf Integer TYPE)))))))))
+
+
+
+
+
+
+
+

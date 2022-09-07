@@ -55,7 +55,9 @@
     
     ;; members only
     :static Opcodes/ACC_STATIC
-    :private Opcodes/ACC_PRIVATE))
+    :private Opcodes/ACC_PRIVATE
+    
+    :varargs Opcodes/ACC_VARARGS))
 
 (defn acc-flags->kws [flags]
   (reduce (fn [acc kw]
@@ -64,6 +66,6 @@
                 (conj acc kw) acc)))
     #{} #{:public :final :super :interface :abstract
           :synthetic :annotation :enum :module :static
-          :private}))
+          :private :varargs}))
 
-(comment (acc-flags->kws 1))
+(comment (acc-flags->kws 137))

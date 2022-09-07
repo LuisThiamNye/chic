@@ -7,7 +7,9 @@
     [jl.compiler.spec :as spec]
     [jl.reader :as reader :refer [PFormVisitor]]
     [chic.debug :as debug]
-    [jl.interop :as interop]))
+    [jl.interop :as interop])
+  (:import
+    (org.objectweb.asm Type)))
 
 (defn new-void-node []
   {:node/kind :void
@@ -179,7 +181,8 @@
             (assoc node :special-form
               (requiring-resolve 'jl.compiler.sforms/anasf-prefix-jcall)))))
     (condp = string
-      "nil" (transfer-branch-env node {:node/kind :nil})
+      "nil" (transfer-branch-env node {:node/kind :nil
+                                       :node/spec {:spec/kind :nil}})
       "true" (new-const-prim-node node true)
       "false" (new-const-prim-node node false)
       nil)
@@ -211,11 +214,66 @@
         (sf node)
         (throw (RuntimeException. "cannot invoke"))))))
 
-(defn analyse-vector [node])
+(defn analyse-vector [{:keys [children] :as node}]
+  (if (= 0 (count children))
+    (transfer-branch-env node
+      {:node/kind :get-field
+       :classname "io.lacuna.bifurcan.List"
+       :field-name "EMPTY"
+       :type (type/obj-classname->type "io.lacuna.bifurcan.List")})
+    (let [args (analyse-args node children)
+          final (peek args)]
+      (transfer-branch-env final
+        {:node/kind :jcall
+         :classname "io.lacuna.bifurcan.List"
+         :method-name "of"
+         :method-type (Type/getMethodType "([Ljava/lang/Object;)Lio/lacuna/bifurcan/List;")
+         :args [{:node/kind :new-array
+                 :classname "java.lang.Object"
+                 :ndims 1
+                 :dims [(new-const-prim-node final (count children))]
+                 :items args}]}))))
 
-(defn analyse-set [node])
+(defn analyse-set [{:keys [children] :as node}]
+  ;; FIXME too similar to vector
+  (let [children (vec children)]
+    (if (= 0 (count children))
+      (transfer-branch-env node
+        {:node/kind :get-field
+         :classname "io.lacuna.bifurcan.Set"
+         :field-name "EMPTY"
+         :type (type/obj-classname->type "io.lacuna.bifurcan.Set")})
+      (let [args (analyse-args node children)
+            final (peek args)]
+        (transfer-branch-env final
+          {:node/kind :jcall
+           :classname "io.lacuna.bifurcan.Set"
+           :method-name "of"
+           :method-type (Type/getMethodType "([Ljava/lang/Object;)Lio/lacuna/bifurcan/Set;")
+           :args [{:node/kind :new-array
+                   :classname "java.lang.Object"
+                   :ndims 1
+                   :dims [(new-const-prim-node final (count children))]
+                   :items args}]})))))
 
-(defn analyse-map [node])
+(defn analyse-map [{:keys [children] :as node}]
+  (-> (reduce (fn [target [k v]]
+                (let [k' (analyse-after target k)
+                      v' (analyse-after k' v)]
+                  {:node/kind :jcall
+                   :classname "io.lacuna.bifurcan.IMap"
+                   :interface? true
+                   :method-name "put"
+                   :method-type (Type/getMethodType "(Ljava/lang/Object;Ljava/lang/Object;)Lio/lacuna/bifurcan/IMap;")
+                   :target target
+                   :args [k' v']}))
+        (transfer-branch-env node
+          {:node/kind :get-field
+           :classname "io.lacuna.bifurcan.Map"
+           :field-name "EMPTY"
+           :type (type/obj-classname->type "io.lacuna.bifurcan.Map")})
+        children)
+    (assoc :node/spec (spec/of-class "io.lacuna.bifurcan.Map"))))
 
 (defn -analyse-node [node]
   (let [f (condp = (:node/kind node)

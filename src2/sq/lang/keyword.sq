@@ -98,6 +98,8 @@
   ;; A static target for bootstrap methods
   ;; perhaps move keywordmgr into keywordfactory
   ;; then auto generate named class that dynamically calls hidden impl
+  ;; perhaps hidden impl is unnecessary as constantdynamic only calls 'from' once?
+  ;; but maybe a problem if condy links the class but lazily calls 'from' later
   (defn from [^String string]
     (^:dynamic jc sq.lang.KeywordMgr from string)))
 

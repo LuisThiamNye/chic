@@ -3,7 +3,8 @@
     [jl.compiler.core :as compiler]
     [jl.interop :refer [find-class]]
     [jl.reader :as reader]
-    [jl.compiler.analyser :as ana]))
+    [jl.compiler.analyser :as ana]
+    [io.github.humbleui.core :as hui]))
 
 (defn reflect-find-field* [fld flds]
   (reduce (fn [_ ^java.lang.reflect.Field f]
@@ -56,7 +57,10 @@
     "sq.lang.KeywordFactory"]
    "src2/sq/lang/bootstrap.sq"
    ["sq.lang.InternalDataContainer"
-    "sq.lang.DynClassMethodCallSite"]})
+    "sq.lang.DynClassMethodCallSite"
+    "sq.lang.EnumSwitchMapCallSite"]
+   "src2/sq/lang/globals.sq"
+   ["sq.lang.GlobalCHM"]})
 
 (def classname->file
   (reduce (fn [acc [f cns]]
@@ -164,22 +168,38 @@
     (java.lang.invoke.SwitchPoint/invalidateAll
       (into-array java.lang.invoke.SwitchPoint [sw]))))
 
+(defn get-globalchm []
+  (rfield (find-class "sq.lang.GlobalCHM") 'map))
+
 (comment
   (load-class "sq.lang.InternalDataContainer")
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "hclassLookups" *hidden-class-lookups)
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
+  (load-class "sq.lang.GlobalCHM")
   
   (load-class "sq.lang.DynClassMethodCallSite")
+  (load-class "sq.lang.EnumSwitchMapCallSite")
+  
+  (.getMethod sq.lang.EnumSwitchMapCallSite "bsm"
+    (into-array Class [java.lang.invoke.MethodHandles$Lookup
+                       String java.lang.invoke.MethodType
+                       String (class (object-array 0))]))
   
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
   
   (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
   (load-class "sq.lang.KeywordFactory")
+  
+  (.put (get-globalchm) "chic.window"
+    (new java.util.concurrent.ConcurrentHashMap))
+  
+  (.put (.get (get-globalchm) "chic.window") "windows"
+    (new io.lacuna.bifurcan.Set))
  
-(.getModifiers sq.lang.KeywordFactory)
+
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e
      (.printStackTrace e)))
@@ -206,8 +226,10 @@
   (println (chic.decompiler/decompile
              "tmp/sq.lang.KeywordFactory.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.util.SilentThreadUncaughtExceptionHandler.class" :bytecode))
+             "tmp/Tmp$1.class" :bytecode))
   
+  ;; TODO mechanism for safely redefining class, preserving static fields
+  (io.github.humbleui.jwm.Key/values)
   
   )
 

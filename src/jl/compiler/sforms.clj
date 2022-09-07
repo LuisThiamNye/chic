@@ -68,18 +68,10 @@
   (let [test (ana/analyse-after node (nth children 1))
         then (ana/analyse-after test (nth children 2))
         else (ana/analyse-after test (nth children 3))
-        sthen (:node/spec then)
-        selse (:node/spec else)
-        s (cond
-            (= :jump (:spec/kind sthen))
-            selse
-            (= :jump (:spec/kind selse))
-            sthen
-            (= selse sthen)
-            sthen
-            :else
-            (throw (RuntimeException.
-                     (str "Unmatching if specs: " sthen "\n" selse))))]
+        s (join-branch-specs [then else])]
+    ; (throw (RuntimeException.
+    ;          (str "Unmatching if specs:\nif: "
+    ;            (pr-str sthen) "\nelse: " (pr-str selse))))
     {:node/kind :if-true
      :node/spec s
      :test test
@@ -87,6 +79,31 @@
      :else else
      :node/env (:node/env test)
      :node/locals (:node/locals test)}))
+
+(defn anasf-case-enum [{:keys [children] :as node}]
+  (assert (<= 2 (count children)))
+  (let [test (ana/analyse-after node (nth children 1))
+        cases
+        (reduce (fn [acc [enum then]]
+                  ;; TODO in future support multiple cases for enum, as vector
+                  (let [_ (assert (#{:symbol :keyword} (:node/kind enum)))
+                        enum (:string enum)
+                        prev (or (peek (peek acc)) test)]
+                    (conj acc [enum (ana/analyse-after prev then)])))
+          [] (partitionv 2 (subvec children 2)))
+        fallback (when (odd? (count children))
+                   (ana/analyse-after test (peek children)))
+        enum-cls (spec/get-exact-class (:node/spec test))]
+    (assert (some? enum-cls))
+    (ana/transfer-branch-env test
+      {:node/kind :case
+       :mode :enum
+       :classname enum-cls
+       :test test
+       :cases cases
+       :fallback fallback
+       :node/spec (join-branch-specs (cond-> (mapv peek cases)
+                                       fallback (conj fallback)))})))
 
 (defn anasf-when [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
@@ -151,6 +168,14 @@
        :target target
        :index index
        :node/spec (spec/get-array-element (:node/spec target))})))
+
+(defn anasf-array-length [{:keys [children] :as node}]
+  (assert (= 2 (count children)))
+  (let [target (ana/analyse-after node (nth children 1))]
+    (ana/transfer-branch-env target
+      {:node/kind :array-length
+       :target target
+       :node/spec (spec/of-class "int")})))
 
 (defn anasf-throw [{:keys [children] :as node}]
   (assert (= 2 (count children)))
@@ -503,6 +528,7 @@
 (swap! ana/*sf-analysers assoc "na" #'anasf-new-array)
 (swap! ana/*sf-analysers assoc "aa" #'anasf-array-get)
 (swap! ana/*sf-analysers assoc "sa" #'anasf-array-set)
+(swap! ana/*sf-analysers assoc "alength" #'anasf-array-length)
 (swap! ana/*sf-analysers assoc "throw" #'anasf-throw)
 (swap! ana/*sf-analysers assoc "locking" #'anasf-locking)
 (swap! ana/*sf-analysers assoc "ji" #'anasf-jcall)
@@ -515,6 +541,7 @@
 (swap! ana/*sf-analysers assoc "ct" #'anasf-cast)
 (swap! ana/*sf-analysers assoc "try" #'anasf-try)
 (swap! ana/*sf-analysers assoc "defclass" #'anasf-defclass)
+(swap! ana/*sf-analysers assoc "case-enum" #'anasf-case-enum)
 
 ;; TODO use comptime info to skip conditional jumps
 '(loop [x y]

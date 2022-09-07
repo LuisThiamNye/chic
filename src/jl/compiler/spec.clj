@@ -114,9 +114,19 @@
       {:spec/kind :exact-class
        :classname (:classname spec)}
       (update spec :ndims dec))
-    (throw (RuntimeException. "spec not an array"))))
+    (throw (ex-info "spec not an array"
+             {:spec spec}))))
 
-
+(defn of-class [classname]
+  (let [bks (re-find #"^\[+" classname)
+        ndims (count bks)]
+    (if (= 0 ndims)
+      {:spec/kind :exact-class
+       :classname classname}
+      (let [c (subs classname ndims)]
+        {:spec/kind :exact-array
+         :classname (or (second (re-matches #"L(.+);" c)) c)
+         :ndims ndims}))))
 
 
 

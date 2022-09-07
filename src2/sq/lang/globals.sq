@@ -1,0 +1,8 @@
+
+(defclass sq.lang.GlobalCHM
+  #_"A primitive/foundational utility that
+stores a shared, globally accessible map of arbitrary data.
+Keys should be equivalent to namespaces - unique to the consumer(s)
+and not at risk of collisions. Each value could be,
+for example, a collection of vars (as in Clojure)."
+  (def ^:pub map (nw java.util.concurrent.ConcurrentHashMap)))

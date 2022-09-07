@@ -104,6 +104,46 @@
 (= "sq.lang.Keyword"
   (.getName (class (eval-str ":x"))))
 
+(identical? io.lacuna.bifurcan.Map/EMPTY
+  (eval-str "{}"))
+
+(= "{:x v}" (str (eval-str "{:x \"v\"}")))
+
+(identical? io.lacuna.bifurcan.List/EMPTY
+  (eval-str "[]"))
+
+(= "[:x, v]" (str (eval-str "[:x \"v\"]")))
+
+(identical? io.lacuna.bifurcan.Set/EMPTY
+  (eval-str "#{}"))
+
+(= "{:x, v}" (str (eval-str "#{:x \"v\"}")))
+
+;; tableswitch
+(= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
+ARABIC 1
+GREEK 2
+LATIN 3
+4)"))
+
+;; tableswitch fail
+(= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
+ARABIC 1
+GREEK 2
+LATIN 3
+4)"))
+
+;; lookupswitch
+(= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
+GREEK 2
+4)"))
+
+;; lookupswitch fail
+(= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
+GREEK 2
+4)"))
+
+
 (comment
   (defn --cleanast [ast]
     (clojure.walk/prewalk

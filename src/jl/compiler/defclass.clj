@@ -156,31 +156,31 @@
      (fn [prev-node clsinfo static? mn paramdecl bodydecl retc]
        (let [params (:children paramdecl)
              tagged-ret (class-tag paramdecl)
+             param-pairs (into []
+                           (map-indexed
+                             (fn [i {:keys [string] :as arg-node}]
+                               (assert (= :symbol (:node/kind arg-node)))
+                               [string {:arg-idx i
+                                        :spec (if (and (not static?) (= 0 i))
+                                                (spec/of-class clsname)
+                                                (when-some [cn (class-tag arg-node)]
+                                                  (spec/of-class cn)))}]))
+                           params)
              body (ana/analyse-body
                     {:node/env (adapt-env clsinfo (:node/env prev-node))
-                     :node/locals
-                     (into {}
-                       (map-indexed
-                         (fn [i {:keys [string] :as arg-node}]
-                           (assert (= :symbol (:node/kind arg-node)))
-                           [string {:arg-idx i
-                                    :spec (if (and (not static?) (= 0 i))
-                                            {:spec/kind :exact-class
-                                             :classname clsname}
-                                            (when-some [cn (class-tag arg-node)]
-                                              {:spec/kind :exact-class
-                                               :classname cn}))}]))
-                       params)}
+                     :node/locals (into {} param-pairs)}
                     bodydecl)
              _ (when (and retc tagged-ret)
                  (println "WARNING - ineffective return type tag " tagged-ret
                    ", predetermined " retc))
              ret-classname (or retc tagged-ret
                              (spec/get-exact-class (:node/spec body))
-                             "void")]
+                             "void")
+             varargs? (= :exact-array
+                        (:spec/kind (:spec (peek (last param-pairs)))))]
          {:name mn
           :body body
-          :flags #{:public}
+          :flags (cond-> #{:public} varargs? (conj :varargs))
           :ret-classname ret-classname
           :param-names (mapv :string params)
           :param-classnames
