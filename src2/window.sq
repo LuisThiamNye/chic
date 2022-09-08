@@ -1,13 +1,42 @@
 
 (Refer-Classes
+  (io.lacuna.bifurcan Set Map List)
+  (java.util.function
+    UnaryOperator)
+  (java.util.concurrent.atomic
+    AtomicReference)
+  (java.util.concurrent
+    ConcurrentHashMap)
   (io.github.humbleui.jwm
     EventMouseButton EventMouseMove EventMouseScroll
     EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
     EventFrame Platform Event EventWindowClose EventWindowCloseRequest)
   (io.github.humbleui.jwm.skija
-    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija))
+    Canvas EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija))
+
+(defclass chic.window.i.PaintAndEventHandler
+  :tag [:interface]
+  (defabstract paint ^void [^Canvas cnv])
+  (defabstract notifyEvent ^void [^Event evt]))
+
+(defclass chic.window.StdWinEventListener
+  :interfaces java.util.function.Consumer
+  [^chic.window.i.PaintAndEventHandler handler]
+  (defi accept [_ evt]
+    (if (instance? EventFrameSkija evt)
+      (let
+        cnv (.getCanvas (.getSurface evt))
+        n (.save cnv)
+        (try (.paint handler cnv)
+          (catch Throwable e
+            (.printStackTrace e))
+          (finally
+            (.restoreToCount cnv n))))
+      (.notifyEvent handler evt))))
 
 (defclass chic.window.Main
+  
+  (def pkgmap (ct ConcurrentHashMap (.get (jf sq.lang.GlobalCHM map) "chic.window")))
   
   (defn new-jwm-window []
     (.setLayer (jc App makeWindow)
@@ -15,7 +44,20 @@
         WINDOWS (nw LayerD3D12Skija)
         MACOS (nw LayerMetalSkija)
         X11 (nw LayerGLSkija)
-        (throw (nw RuntimeException "Unsupported platform"))))))
+        (throw (nw RuntimeException "Unsupported platform")))))
+  
+  (defn reg-window! ^void [win]
+    (.updateAndGet (ct AtomicReference (.get pkgmap "windows"))
+      (reify UnaryOperator
+        (apply [_ set]
+          (.add (ct Set set) win)))))
+  
+  (defn unreg-window! ^void [win]
+    (.updateAndGet (ct AtomicReference (.get pkgmap "windows"))
+      (reify UnaryOperator
+        (apply [_ set]
+          (.remove (ct Set set) win)))))
+  )
 
 "Switching on Enum
 java creates synthetic class for enum to contain array mapping ordinal->case-idx

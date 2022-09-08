@@ -157,6 +157,35 @@
      :node/locals (assoc-in (:node/locals init) [nam :spec]
                     (:node/spec init))}))
 
+(defn anasf-let [{:keys [children] :as node}]
+  (if (= 1 (count children))
+    (transfer-branch-env node (new-void-node))
+    (let [pairs (vec (partitionv 2 (subvec children 1)))
+          tail (when (even? (count children))
+                 (peek children))
+          [pairs tail] (if tail [pairs tail]
+                         [(pop pairs) (peek (peek pairs))])
+          assigns (reduce
+                    (fn [acc [sym val]]
+                      (assert (= :symbol (:node/kind sym)))
+                      (let [prev (or (peek acc) node)
+                            aval (analyse-after prev val)
+                            nam (:string sym)]
+                        (conj acc
+                          (transfer-branch-env aval
+                            {:node/kind :assign-local
+                             :local-name nam
+                             :val aval
+                             :node/spec {:spec/kind :exact-class :classname "void"}
+                             :node/locals (assoc-in (:node/locals aval) [nam :spec]
+                                            (:node/spec aval))}))))
+                    [] pairs)
+          tail (analyse-after (or (peek assigns) node) tail)]
+      (transfer-branch-env tail
+        {:node/kind :do
+         :children (conj assigns tail)
+         :node/spec (:node/spec tail)}))))
+
 (defn anasf-do [{:keys [children] :as node}]
   (analyse-body node (subvec children 1)))
 
@@ -165,8 +194,10 @@
          ; "with-locals" #'anasf-with-locals
          "set!" #'anasf-assign
          "do" #'anasf-do
-         "l=" #'anasf-introduce-local}))
-(comment (swap! *sf-analysers assoc "l=" #'anasf-introduce-local)
+         "l=" #'anasf-introduce-local
+         "=:" #'anasf-introduce-local
+         "let" #'anasf-let}))
+(comment (swap! *sf-analysers assoc "let" #'anasf-let)
   (swap! *sf-analysers dissoc "jfi'"))
 
 (defn resolve-sf [nam]
@@ -191,6 +222,12 @@
         {:node/kind :local-use
          :node/spec (:spec local)
          :local-name string}))
+    (when-some [local (get (:external-locals (:node/env node)) string)]
+      (transfer-branch-env (update-in node [:node/env :captured-locals]
+                             (fnil conj #{}) string)
+        {:node/kind :self-field-get
+         :field-name (str "%" string)
+         :node/spec (:spec local)}))
     (when-some [field (get-in node [:node/env :fields string])]
       (transfer-branch-env node
         {:node/kind :self-field-get
@@ -294,9 +331,11 @@
 
 (defn inject-default-env [node]
   (assoc node :node/env {:class-aliases interop/base-class-aliases
-                         :class-resolver interop/find-class}))
+                         :class-resolver interop/find-class
+                         :self-classname "_.(Eval)"}))
 
 (defn expand-classname [env s]
+  (assert (string? s))
   (or (get (:class-aliases env) s) s))
 
 #_(deftype+ BaseAnaMetaRdrVisitor [parent ^:mut meta]

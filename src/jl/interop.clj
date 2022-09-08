@@ -3,7 +3,7 @@
     [chic.util :as util]
     [jl.compiler.type :as type])
   (:import
-    (org.objectweb.asm Type)
+    (org.objectweb.asm Type Opcodes)
     (java.lang.reflect Method Field Modifier Constructor Executable)))
 
 "Accessible https://docs.oracle.com/javase/specs/jls/se18/html/jls-6.html#jls-6.6
@@ -17,11 +17,13 @@
     (Class/forName name true (.getClassLoader c))))
 
 (defprotocol PClassNode
+  (-interface? [_])
   (-satisfies? [_ super])
   (-getInterfaces [_])
   (-getSuperclass [_]))
 
 (extend-type Class PClassNode
+  (-interface? [self] (.isInterface self))
   (-getInterfaces [self]
     (.getInterfaces self))
   (-getSuperclass [self]
@@ -31,8 +33,9 @@
     (when (class? sup)
       (.isAssignableFrom ^Class sup self))))
 
-(defrecord UnrealClass [super interfaces flags fields methods]
+(defrecord UnrealClass [super interfaces ^int flags fields methods]
   PClassNode
+  (-interface? [_] (< 0 (bit-and flags Opcodes/ACC_INTERFACE)))
   (-getInterfaces [_] interfaces)
   (-getSuperclass [_] super)
   (-satisfies? [self other]
@@ -86,17 +89,22 @@
                 :else (reduced nil))))
     (first methods) (next methods)))
 
+(defn resolve-class [{:keys [new-classes]} classname]
+  (or
+    (get-in new-classes [classname :class])
+    (try (util/primitive-name->class classname)
+      (catch Exception _))
+    (try (find-class classname)
+      (catch ClassNotFoundException _ Object)
+      (catch ExceptionInInitializerError _ Object))))
+
 (defn match-method-type ^Type
-  [{:keys [class-resolver]}classname static? method-name arg-types ret-type]
+  [{:keys [class-resolver] :as env} classname static? method-name arg-types ret-type]
   (assert (every? some? arg-types)
     (pr-str classname static? method-name arg-types))
   (let [c (class-resolver classname)
-        ->c (fn [c] (or (when (satisfies? PClassNode c) c)
-                      (try (util/primitive-name->class c)
-                          (catch Exception _))
-                      (try (find-class c)
-                        (catch ClassNotFoundException _ Object)
-                        (catch ExceptionInInitializerError _ Object))))
+        ->c (fn [c] (if (satisfies? PClassNode c)
+                      c (resolve-class env c)))
         arg-cs (mapv #(->c %) arg-types)
         ret-c (when ret-type (->c ret-type))
         matches (into [] (comp
@@ -111,7 +119,7 @@
     (case (count matches)
       0 (throw (RuntimeException.
                  (str "No method matches: " classname (if static? "/" ".") method-name
-                   " " (pr-str arg-types) " => " (pr-str ret-type))))
+                   " " (pr-str arg-types) (pr-str arg-cs) " => " (pr-str ret-type))))
       (or (when-some [m (most-specific-method matches)]
             (Type/getType ^Method m))
         (throw (RuntimeException.

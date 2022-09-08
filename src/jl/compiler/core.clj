@@ -305,22 +305,26 @@ JLS:
 (defn emit-case [ctx {:keys [mode classname test cases fallback]}]
   (assert (= :enum mode))
   (emit-ast-node ctx test)
-  (-emitInvokeDynamic ctx "idx"
-    (Type/getMethodType Type/INT_TYPE
-      (into-array Type [(type/obj-classname->type classname)]))
-    (Handle. Opcodes/H_INVOKESTATIC
-      "sq/lang/EnumSwitchMapCallSite" "bsm"
-      (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
-        "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;"
-        "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;")
-      false)
-    (into [classname] (map first cases)))
   (let [case-labels (mapv (fn [_] (Label.)) cases)
         fb-label (Label.)
         end-label (Label.)
         tableswitch-min-cases 3 ;; same as java (for enums)
-        ncases (count cases)]
-    (if (<= tableswitch-min-cases ncases)
+        ncases (count cases)
+        table-switch? (<= tableswitch-min-cases ncases)]
+    (-emitInvokeDynamic ctx "idx"
+      (Type/getMethodType Type/INT_TYPE
+        (into-array Type [(type/obj-classname->type classname)]))
+      (Handle. Opcodes/H_INVOKESTATIC
+        "sq/lang/EnumSwitchMapCallSite" "bsm"
+        (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
+          "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;"
+          "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;")
+        false)
+      ;; if table switch, sort alphabetically to increase chance of table
+      ;; offsets matching ordinals
+      (into [classname] (cond-> (map first cases)
+                          table-switch sort)))
+    (if table-switch?
       (-emitTableSwitch ctx 1 ncases fb-label case-labels)
       (-emitLookupSwitch ctx fb-label (range 1 (inc ncases)) case-labels))
     (doseq [[label c] (map vector case-labels (map peek cases))]
@@ -820,6 +824,7 @@ JLS:
 (defn classinfo->bytes
   [{:keys [^String classname ^String super instance-methods
            class-methods interfaces flags class-fields constructors] :as classinfo}]
+  (assert (string? classname) classinfo)
   (let [ciname (.replace classname \. \/)
         class-type (Type/getObjectType ciname)
         super-in (if super (.replace super \. \/) "java/lang/Object")  
@@ -898,8 +903,6 @@ JLS:
                       (make-array MethodHandles$Lookup$ClassOption 0))
                  #_(catch Verify))])))
       new-compiled-classes)))
-
-
 
 (defn eval-ast
   ([node] (eval-ast {} node))

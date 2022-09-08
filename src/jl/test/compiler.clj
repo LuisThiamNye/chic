@@ -147,6 +147,21 @@ GREEK 2
 (true? (eval-str "(try (case-enum (jf java.lang.Character$UnicodeScript HEBREW))
 (catch java.lang.Error _ true))"))
 
+(= 3 (eval-str "(let x 1 y 2 (+ x y))"))
+(nil? (eval-str "(let)"))
+(= 3 (eval-str "(let x 1 y (+ x 2))"))
+
+(= Object (.getSuperclass (class (eval-str "(reify Object)"))))
+(= "string" (str (eval-str "(reify (toString [_] \"string\"))")))
+(let [o (eval-str "(reify java.util.function.Supplier (get ^Object [_] :x))")]
+  (and (instance? java.util.function.Supplier o)
+    (= ":x" (str (.get o)))))
+
+(= ":x" (str (.get
+  (eval-str "
+(let x :x
+(reify java.util.function.Supplier
+(get ^Object [_] x)))"))))
 
 (comment
   (defn --cleanast [ast]
@@ -162,9 +177,9 @@ GREEK 2
         ; --s #_
         "
 
-
 ")
     first
+    (ana/inject-default-env)
     (ana/-analyse-node)
     --cleanast chic.debug/puget-prn #_
     compiler/eval-ast

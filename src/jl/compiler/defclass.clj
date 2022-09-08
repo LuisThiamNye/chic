@@ -4,7 +4,9 @@
     [jl.compiler.spec :as spec]
     [jl.compiler.core :as comp]
     [jl.compiler.analyser :as ana :refer [-analyse-node]]
-    [jl.compiler.type :as type]))
+    [jl.compiler.type :as type])
+  (:import
+    (org.objectweb.asm Type)))
 
 (defn anasf-init-super [{:keys [children] :as node}]
   (let [args (ana/analyse-args node (subvec children 1))
@@ -21,7 +23,65 @@
        :node/spec {:spec/kind :exact-class
                    :classname "void"}})))
 
-(swap! ana/*sf-analysers assoc "init-super" #'anasf-init-super)
+(defn class-tag [{:keys [node/env] :as node}]
+  (let [tag (:tag (:node/meta node))]
+    (when (= :vector (:node/kind tag))
+      (let [s (some #(cond
+                       (= :symbol (:node/kind %)) (:string %)
+                       (= :string (:node/kind %)) (:value %))
+                (:children tag))]
+        (if (= "Self" s) (:self-classname env)
+          (ana/expand-classname env s))))))
+
+(defn adapt-method-env [{:keys [classname super] :as clsinfo} env]
+  (-> env
+    (assoc :self-classname classname)
+    (assoc :super-classname (or super "java.lang.Object"))
+    (assoc-in [:new-classes classname] clsinfo)
+    (assoc-in [:class-aliases "Self"] classname)))
+
+(defn analyse-method-body
+  [prev-node clsinfo static? mn paramdecl bodydecl retc]
+  (let [env (:node/env prev-node)
+        params (:children paramdecl)
+        tagged-ret (class-tag (assoc paramdecl :node/env env))
+        param-pairs
+        (into []
+          (map-indexed
+            (fn [i {:keys [string] :as arg-node}]
+              (assert (= :symbol (:node/kind arg-node)))
+              [string {:arg-idx i
+                       :spec (if (and (not static?) (= 0 i))
+                               ;; first arg is self
+                               (spec/of-class (:classname clsinfo))
+                               (if-some [cn (class-tag (assoc arg-node :node/env env))]
+                                 (spec/of-class cn)
+                                 (spec/of-class "java.lang.Object")))}]))
+          params)
+        body (ana/analyse-body
+               {:node/env (assoc (adapt-method-env clsinfo (:node/env prev-node))
+                            :external-locals (:node/locals prev-node))
+                :node/locals (into {} param-pairs)}
+               bodydecl)
+        _ (when (and retc tagged-ret)
+            (println "WARNING - ineffective return type tag " tagged-ret
+              ", predetermined " retc))
+        ret-classname (or retc tagged-ret
+                        (spec/get-exact-class (:node/spec body))
+                        "void")
+        varargs? (= :exact-array
+                   (:spec/kind (:spec (peek (last param-pairs)))))]
+    {:name mn
+     :body body
+     :flags (cond-> #{:public} varargs? (conj :varargs))
+     :ret-classname ret-classname
+     :param-names (mapv :string params)
+     :param-classnames
+     (mapv (fn [p]
+             (let [c (class-tag p)]
+               ;(assert (some? c) (str "no tag for " p))
+               (or c "java.lang.Object")))
+       (if static? params (drop 1 params)))}))
 
 (defn anasf-defclass [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
@@ -64,14 +124,7 @@
      get-tags (fn [n]
                 (ana/get-meta-tags (:node/meta n)))
      class-tag (fn [n]
-                 (let [tag (:tag (:node/meta n))]
-                   (when (= :vector (:node/kind tag))
-                     (let [s(some #(cond
-                                     (= :symbol (:node/kind %)) (:string %)
-                                     (= :string (:node/kind %)) (:value %))
-                              (:children tag))]
-                       (if (= "Self" s) clsname
-                         (ana/expand-classname env s))))))
+                 (class-tag n))
      parse-fieldvec (fn [opts x]
                       (let [flds (reduce (fn [fields f]
                                            (if (= :symbol (:node/kind f))
@@ -88,11 +141,7 @@
                             {:param-classnames (mapv :classname flds)
                              :auto true}))))
      adapt-env (fn [clsinfo env1]
-                 (-> env1
-                   (assoc :self-classname clsname)
-                   (assoc :super-classname (or (:super clsinfo) "java.lang.Object"))
-                   (assoc-in [:new-classes clsname] clsinfo)
-                   (assoc-in [:class-aliases "Self"] clsname)))
+                 (adapt-method-env clsinfo env1))
      parse-cfield
      (fn [opts {:keys [children]}]
        (assert (<= 3 (count children)))
@@ -157,43 +206,6 @@
             (mapv (fn [p]
                     (class-tag p))
               (drop 1 params))})))
-     analyse-method-body
-     (fn [prev-node clsinfo static? mn paramdecl bodydecl retc]
-       (let [params (:children paramdecl)
-             tagged-ret (class-tag paramdecl)
-             param-pairs (into []
-                           (map-indexed
-                             (fn [i {:keys [string] :as arg-node}]
-                               (assert (= :symbol (:node/kind arg-node)))
-                               [string {:arg-idx i
-                                        :spec (if (and (not static?) (= 0 i))
-                                                (spec/of-class clsname)
-                                                (when-some [cn (class-tag arg-node)]
-                                                  (spec/of-class cn)))}]))
-                           params)
-             body (ana/analyse-body
-                    {:node/env (adapt-env clsinfo (:node/env prev-node))
-                     :node/locals (into {} param-pairs)}
-                    bodydecl)
-             _ (when (and retc tagged-ret)
-                 (println "WARNING - ineffective return type tag " tagged-ret
-                   ", predetermined " retc))
-             ret-classname (or retc tagged-ret
-                             (spec/get-exact-class (:node/spec body))
-                             "void")
-             varargs? (= :exact-array
-                        (:spec/kind (:spec (peek (last param-pairs)))))]
-         {:name mn
-          :body body
-          :flags (cond-> #{:public} varargs? (conj :varargs))
-          :ret-classname ret-classname
-          :param-names (mapv :string params)
-          :param-classnames
-          (mapv (fn [p]
-                  (let [c (class-tag p)]
-                    (assert (some? c))
-                    c))
-            (if static? params (drop 1 params)))}))
      parse-named-cmethod
      (fn [opts mn paramdecl bodydecl retc]
        (update opts :class-methods conj
@@ -298,3 +310,78 @@
     (assoc (ana/new-void-node)
       :node/locals (:node/locals node)
       :node/env (assoc-in (:node/env node) [:new-classes clsname] opts))))
+
+(defn anasf-reify [{:keys [children node/env] :as node}]
+  ;; TODO - match methods with interfaces; allow extra methods if marked private
+  ;; also allow overrides
+  ;; enforce implementing all interface methods?
+  ;; TODO locals capturing
+  #_"(reify ?super <iface|method>*)"
+  (assert (<= 2 (count children)))
+  (let
+    [parse-method
+     (fn [{:keys [prev-node] :as info} {:keys [children] :as node}]
+       (assert (<= 2 (count children))
+         (str "Method decl must specify name+params\n" node))
+       (let [method-name (:string (first children))
+             _ (assert (string? method-name))
+             method (analyse-method-body prev-node info false method-name
+                      (nth children 1) (subvec children 2) nil)
+             captured-locals (:captured-locals (:node/env (:body method)))]
+         (-> (update info :captured-locals (fnil into #{}) captured-locals)
+           (update :instance-methods conj method))))
+     parse-interface
+     (fn [info {:keys [string]}]
+       (let [classname (ana/expand-classname env string)
+             cls ((:class-resolver env) classname)
+             info (if (interop/-interface? cls)
+                    (cond-> (update info :interfaces (fnil conj []) classname)
+                      (not (:super info))
+                      (assoc :super "java.lang.Object"))
+                    (if (:super info)
+                      (throw (ex-info "Can't have multiple supers" {}))
+                      (assoc info :super classname)))]
+         (assoc info :class (interop/new-unreal-class
+                              (interop/resolve-class env (:super info))
+                              (mapv (partial interop/resolve-class env)
+                                (:interfaces info))))))
+     reify-classname (str (:self-classname env) (gensym "$reify"))
+     info
+     (reduce (fn [info {:keys [node/kind] :as node}]
+               (condp = kind
+                 :list (parse-method info node)
+                 :symbol (parse-interface info node)))
+       {:prev-node node
+        :classname reify-classname} (subvec children 1))
+     final-node (:prev-node info)
+     locals (:node/locals node)
+     captured-local-names (:captured-locals info)
+     captured-locals (mapv #(get locals %) captured-local-names)
+     captured-local-classnames (mapv (comp spec/get-exact-class :spec) captured-locals)
+     info (assoc info
+            :fields (mapv (fn [name  classname]
+                            {:name (str "%" name)
+                             :flags #{:private :final}
+                             :classname classname})
+                      captured-local-names
+                      captured-local-classnames)
+            :constructors
+            [{:param-classnames captured-local-classnames
+              :auto true}])
+     info (dissoc info :prev-node :captured-locals)]
+    {:node/kind :new-obj
+     :node/spec (spec/of-class reify-classname)
+     :classname reify-classname
+     :method-type (Type/getMethodType Type/VOID_TYPE
+                    (into-array Type (mapv type/classname->type captured-local-classnames)))
+     :args (mapv (fn [name {:keys [spec]}]
+                   {:node/kind :local-use
+                    :node/spec spec
+                    :local-name name})
+             captured-local-names captured-locals)
+     :node/locals (:node/locals node)
+     :node/env (assoc-in (:node/env final-node)
+                 [:new-classes reify-classname] info)}))
+
+(swap! ana/*sf-analysers assoc "reify" #'anasf-reify)
+(swap! ana/*sf-analysers assoc "init-super" #'anasf-init-super)
