@@ -1,0 +1,197 @@
+
+(Refer-Classes
+  (io.lacuna.bifurcan Set Map List)
+  (java.util ArrayList)
+  (java.util.function
+    UnaryOperator)
+  (java.util.concurrent.atomic
+    AtomicReference)
+  (java.util.concurrent
+    ConcurrentHashMap)
+  (io.github.humbleui.types Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor))
+
+(defclass chic.sqeditor.RectTools
+  
+  (defn contains-point? ^boolean [^Rect rect ^int ix ^int iy]
+    (=: x (+ (ct float ix) 0.5f))
+    (=: y (+ (ct float iy) 0.5f))
+    (and (<= (.getLeft rect) x)
+      (<= (.getTop rect) y)
+      (< x (.getRight rect))
+      (< y (.getBottom rect))))
+  )
+
+(defclass chic.sqeditor.IntrMgr
+  [^ArrayList intrs]
+  
+  (defi handle-mousescroll ^boolean [_ ^EventMouseScroll evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (.next it)
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (.handle-mousescroll intr evt))
+          (recur))))
+    true)
+  
+  (defi handle-mousedown ^boolean [_ ^EventMouseDown evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (.next it)
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (.handle-mousedown intr evt))
+          (recur))))
+    true)
+  
+  (defi handle-mouseup ^boolean [_ ^EventMouseUp evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (.next it)
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (.handle-mouseup intr evt))
+          (recur))))
+    true)
+  )
+
+(defclass chic.sqeditor.TextEditor
+  [^RRect border-rrect
+   ^Paint border-paint-focused]
+  
+  (init [self]
+    (set! border-paint-focused
+      (let p (nw Paint)
+        (do (.setColor p 0x5f000000)
+          (.setMode p (jf PaintMode STROKE))
+          (.setStrokeWidth p 2f)
+          p))))
+  
+  (defi draw [self ^Rect rect ^Canvas cnv]
+    (.drawRRect cnv border-rrect border-paint-focused))
+  )
+
+(defclass chic.sqeditor.UiRoot
+  [^TextEditor texteditor]
+  
+  (def _ (do 
+           (.println (jf System out) "Has been init'd")
+           (.println (jf System out)
+             (.getContextClassLoader (jc Thread currentThread)))
+           (.println (jf System out)
+             (.hashCode (jc Class forName "sq.lang.DynConstructorCallSite")))
+           (.printStackTrace (nw Exception "PROBE"))
+           0))
+  
+  (init [self]
+    (set! texteditor (nw TextEditor)))
+  #_
+  (defi draw [self ^Canvas cnv]
+    ;; TODO 5 padding
+    (=: texteditor-rect (nw Rect 5f 5f 400f 400f))
+    (.draw texteditor texteditor-rect cnv))
+  ;; 200-wide sidebar
+  ;; address bar
+  ;; text box
+  )
+
+(defclass chic.sqeditor.Window
+  :interfaces chic.window.i.PaintAndEventHandler AutoCloseable
+  [^Window jwm-window
+   content-rect
+   ^float scale
+   ^int mouse-x
+   ^int mouse-y
+   intrmgr
+   ^UiRoot root]
+  
+  (init []
+    (set! root (nw UiRoot)))
+  
+  (defi set-window [_ ^Window jwin]
+    (set! jwm-window jwin)
+    (.setTitle jwin "Squark")
+    (set! scale (.getScale (.getScreen jwin)))
+    ; (.setWindowSize - - -)
+    ; (.setWindowPosition - - -)
+    )
+  
+  (defi paint ^void [_ ^Canvas cnv]
+    (.clear cnv 0xFFffffff)
+    (.draw root cnv))
+  
+  (defi notifyEvent ^void [self ^Event evt]
+    (when
+      (<-
+        (if (instance? EventMouseMove evt)
+          (do (set! mouse-x (.getX (ct EventMouseMove evt)))
+            (set! mouse-y (.getY evt))
+            true))
+        (if (instance? EventWindowResize evt)
+          (let cr (.getContentRect jwm-window)
+            (set! content-rect (jc Rect makeLTRB 0 0 (.getRight cr) (.getBottom cr)))
+            true))
+        (if (instance? EventMouseScroll evt)
+          (.handle-mousescroll intrmgr evt))
+        (if (instance? EventMouseDown evt)
+          (.handle-mousedown intrmgr evt))
+        (if (instance? EventMouseUp evt)
+          (.handle-mouseup intrmgr evt))
+        (if (instance? EventWindowScreenChange evt)
+          (do (set! scale (.getScale (.getScreen jwm-window)))
+            true))
+        (if (instance? EventWindowCloseRequest evt)
+          (do (.close jwm-window)
+            false))
+        (if (instance? EventWindowClose evt)
+          (do (.close self)
+            false)))
+      (.requestFrame jwm-window)))
+  
+  (defi close [self]
+    (jc chic.window.Main unreg-window! self)
+    (.close root))
+  
+  (defn spawn []
+    (let jwin (jc chic.window.Main new-jwm-window)
+      (try
+        (let
+          self (nw Self)
+          _ (.set-window self jwin)
+          _ (.setEventListener jwin self)
+          ; scale (.getScale (.getScreen jwin))
+          _ (.setVisible jwin true)
+          _ (.focus jwin)
+          (jc chic.window.Main reg-window! self))
+        (catch Throwable e
+          (.close jwin)
+          (throw e)))))
+  )
+
+
+
+
+
+"
+UI Components: ideally one component per potentially unique lifetime
+"

@@ -1,7 +1,9 @@
 (ns jl.compiler.spec
   (:require
     [jl.interop :as interop]
-    [jl.compiler.type :as type]))
+    [jl.compiler.type :as type])
+  (:import
+    (org.objectweb.asm Type)))
 
 (defn with-cast [ctor spec])
 
@@ -132,8 +134,10 @@
        :classname classname}
       (let [c (subs classname ndims)]
         {:spec/kind :exact-array
-         :classname (or (second (re-matches #"L(.+);" c)) c)
+         :classname (or (second (re-matches #"L(.+);" c))
+                      (.getClassName (Type/getType c)))
          :ndims ndims}))))
+
 
 
 

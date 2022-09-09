@@ -29,7 +29,6 @@
       (do (load-samples) (get samples n))
       (throw (ex-info "Sample not found" {:name n})))))
 
-
 (= [] (ana/str->ast "#_#_(+) (-)"))
 (= [] (ana/str->ast "#_(+ 1 #_2)"))
 
@@ -162,6 +161,14 @@ GREEK 2
 (let x :x
 (reify java.util.function.Supplier
 (get ^Object [_] x)))"))))
+
+(true? (eval-str "(<- (if false false) (if true true) (if false false false))"))
+
+(true? (eval-str "(and true)"))
+(false? (eval-str "(and true false)"))
+(true? (eval-str "(and true true)"))
+
+(= 3 (eval-str "(do (=: x :x) (=: x 2) (+ x 1))"))
 
 (comment
   (defn --cleanast [ast]

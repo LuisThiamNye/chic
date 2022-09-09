@@ -52,7 +52,7 @@
      [:? [:capture' :sign [:class \+ \-]]]
      [:alt
       [:capture' :number
-       [:cat [:+ :digit] \. [:? [:* :digit]]]]
+       [:cat [:+ :digit] [:? [:cat \. [:* :digit]]]]]
       [:cat
        [:capture' :percentage
         [:cat [:+ :digit] [:? [:cat \. [:* :digit]]]]]
@@ -115,6 +115,8 @@
   (parse-number "1.0%")
   (parse-number "1.%d")
   (parse-number "-1%f")
+  (parse-number "2f")
+  (parse-number "2%")
   )
 
 (defn parsed-number-value [{:keys [kind neg number] :as m}]

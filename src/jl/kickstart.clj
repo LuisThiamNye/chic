@@ -6,6 +6,7 @@
     [jl.compiler.analyser :as ana]
     [io.github.humbleui.core :as hui])
   (:import
+    (java.util.concurrent ConcurrentHashMap)
     (org.objectweb.asm ClassWriter Opcodes)
     (java.lang.invoke MethodHandles MethodHandle MethodHandles$Lookup)))
 
@@ -54,18 +55,36 @@
    ["sq.lang.util.TrimRefValueMapLoopRunner"
     "sq.lang.util.SilentThreadUncaughtExceptionHandler"]
    "src2/sq/lang/keyword.sq"
+   
    ["sq.lang.i.Named"
     "sq.lang.Keyword"
     "sq.lang.KeywordMgr"
     "sq.lang.KeywordFactory"]
+   
    "src2/sq/lang/bootstrap.sq"
    ["sq.lang.InternalDataContainer"
     "sq.lang.DynClassMethodCallSite"
+    "sq.lang.DynConstructorCallSite"
     "sq.lang.EnumSwitchMapCallSite"]
+   
+   "src2/sq/lang/classloader.sq"
+   ["sq.lang.DynamicClassLoader"
+    "sq.lang.OnceInitialisingClassLoader"
+    "sq.lang.LoadedClassLookup"]
+   
    "src2/sq/lang/globals.sq"
    ["sq.lang.GlobalCHM"]
    "src2/window.sq"
-   ["chic.window.Main"]})
+   ["chic.window.Main"
+    "chic.window.i.PaintAndEventHandler"
+    "chic.window.StdWinEventListener"]
+   
+   "src2/sqeditor.sq"
+   ["chic.sqeditor.RectTools"
+    "chic.sqeditor.IntrMgr"
+    "chic.sqeditor.TextEditor"
+    "chic.sqeditor.Window"
+    "chic.sqeditor.UiRoot"]})
 
 (def classname->file
   (reduce (fn [acc [f cns]]
@@ -75,10 +94,16 @@
     {} file->classnames)))
 
 (defn uninstall-class [c]
-  (some-> (first
-            (filter #(= "\udb80\udc00uninstall" (.getName %))
-              (.getMethods c)))
-    (.invoke c (object-array 0))))
+  (when-some
+    [m (first
+         (filter #(= "\udb80\udc00uninstall" (.getName %))
+           (try (.getMethods c)
+             (catch Throwable e
+               (println "INFO: broken class, not uninstallable: " c)
+               (println (.toString e))
+               (println)))))]
+    (println "Uninstalling old class: " c)
+    (.invoke m c (object-array 0))))
 
 (def ^java.util.concurrent.ConcurrentHashMap
   *hidden-class-lookups
@@ -100,7 +125,7 @@
         [dc-node class-aliases]
         (reduce (fn [[_ class-aliases :as acc] node]
                   (let [[sym & args]
-                        (and (= :list (:node/kind node))
+                        (when (= :list (:node/kind node))
                           (let [{[c1 :as children] :children} node]
                             (when (= :symbol (:node/kind c1))
                               children)))]
@@ -133,12 +158,12 @@
             (assoc :class-resolver
               (fn [classname]
                 (or (find-hidden-class classname)
-                  (find-class classname))))))))))
+                  (try (find-class classname)
+                    (catch ClassNotFoundException _)))))))))))
 
 (defn load-class [clsname]
   (try (when-some [cold (try (find-class clsname)
                               (catch Throwable _))]
-             (println "Uninstalling old class: " clsname)
              (uninstall-class cold))
       (let [ret (compiler/eval-ast
                   (analyse-defclass-node {} clsname))]
@@ -157,9 +182,10 @@
                   :classname classname}
                  (ana/-analyse-node
                    (ana/inject-default-env
-                     (first
-                       (ana/str->ast "
-(jc java.lang.invoke.MethodHandles lookup)")))))]
+                      (first
+                        (ana/str->ast "
+(jc java.lang.invoke.MethodHandles lookup)")))
+                   ))]
         (.put classloader-lookups cl lk)
         lk))))
 
@@ -168,14 +194,30 @@
     (get-classloader-lookup (.getClassLoader cls)
       (str (.getName (.getPackage cls)) ".(LookupInit)"))))
 
+(load-class "sq.lang.OnceInitialisingClassLoader")
+
 (def hidden-class-host-lookup
-  (get-classloader-lookup (clojure.lang.RT/makeClassLoader)
-    "_.LookupInit"))
+  (let [classname "_.LookupInit"
+        ba (compiler/ir->eval-bytes
+             {:classname classname}
+             (ana/-analyse-node
+               (update
+               (ana/inject-default-env
+                 (first
+                   (ana/str->ast "
+(jc java.lang.invoke.MethodHandles lookup)")))      
+                 :node/env assoc
+                 :self-classname classname)))
+        cl (sq.lang.OnceInitialisingClassLoader.
+             (clojure.lang.RT/makeClassLoader)
+             "_.LookupInit" ba)
+        lk (rcall (Class/forName "_.LookupInit" false cl) 'run)]
+    (.put classloader-lookups cl lk)
+    lk))
 
 (defn load-hidden-as [host clsname]
   (try (when-some [lk (try (get @*hidden-class-lookups clsname)
                               (catch Exception _))]
-         (println "Uninstalling old class: " clsname)
          (uninstall-class (.lookupClass lk))
          (swap! *hidden-class-lookups dissoc lk))
       (let [lookup (if host
@@ -184,9 +226,9 @@
             ret (compiler/load-ast-classes-hidden
                   {:lookup lookup}
                   (analyse-defclass-node
-                    {:hidden? true}
+                    {:hidden? (not host)}
                     clsname))
-            hclsname (str "_." (.replace clsname \. \,))]
+            hclsname (or host (str "_." (.replace clsname \. \,)))]
         (doseq [[c lk] ret]
           (.put *hidden-class-lookups
             (if (= hclsname c) clsname c) lk))
@@ -213,10 +255,25 @@
     "hclassLookups" *hidden-class-lookups)
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
+  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+    "clsCache" (ConcurrentHashMap.))
   (load-class "sq.lang.GlobalCHM")
+  (load-class "sq.lang.LoadedClassLookup")
+  
+  
+  #_(let [cl (.getContextClassLoader (Thread/currentThread))]
+    (try
+      (.setContextClassLoader (Thread/currentThread)
+        (sq.lang.NonInitialisingClassLoader. (clojure.lang.RT/makeClassLoader)))
+      (Class/forName "x")
+      (finally
+        (.setContextClassLoader (Thread/currentThread) cl))))
   
   (load-class "sq.lang.DynClassMethodCallSite")
+  (load-class "sq.lang.DynConstructorCallSite")
   (load-class "sq.lang.EnumSwitchMapCallSite")
+  
+  ; (sq.lang.DynConstructorCallSite. nil nil nil)
   
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
@@ -228,9 +285,37 @@
     (new java.util.concurrent.ConcurrentHashMap))
   (.put (.get (get-globalchm) "chic.window") "windows"
     (new io.lacuna.bifurcan.Set))
+  (load-class "chic.window.i.PaintAndEventHandler")
+  (load-hidden "chic.window.StdWinEventListener")
   (load-hidden "chic.window.Main")
   
+  (load-hidden "chic.sqeditor.RectTools")
+  (load-hidden "chic.sqeditor.TextEditor")
+  (do (load-hidden "chic.sqeditor.UiRoot")
+    (prn (.getContextClassLoader (Thread/currentThread))))
+  
+  (cof "chic.sqeditor.TextEditor")
+  (cof "chic.sqeditor.UiRoot")
+  
+  
+  (.hashCode sq.lang.DynConstructorCallSite)
+  (.hashCode (Class/forName "sq.lang.DynConstructorCallSite" true
+               (.getClassLoader (.lookupClass hidden-class-host-lookup))))
+  
+  (.hashCode (.findLoadedKlass (.getClassLoader 
+                                 (.lookupClass hidden-class-host-lookup))
+      "sq.lang.DynConstructorCallSite"))
+  
+  (= (.getClassLoader (.lookupClass hidden-class-host-lookup))
+    (.getClassLoader (cof "chic.sqeditor.UiRoot")))
+  
+  
+  (.newInstance (first (.getConstructors (cof "chic.sqeditor.UiRoot")))
+    nil)
+
   (rcall (cof "chic.window.Main") 'new-jwm-window)
+  
+  (>= 1. 1)
 
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e
@@ -256,9 +341,11 @@
   (println (chic.decompiler/decompile
              "tmp/eval.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.KeywordFactory.class" :bytecode))
+             "tmp/chic.sqeditor.UiRoot.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/Tmp$1.class" :bytecode))
+             "tmp/sq.lang.NonInitialisingClassLoader.class" :bytecode))
+  
+
   
   ;; TODO mechanism for safely redefining class, preserving static fields
   (io.github.humbleui.jwm.Key/values)

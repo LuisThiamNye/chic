@@ -8,7 +8,7 @@
   (:import
     (org.objectweb.asm Type)))
 
-(defn anasf-init-super [{:keys [children] :as node}]
+(defn anasf-init-super [{:keys [children node/env] :as node}]
   (let [args (ana/analyse-args node (subvec children 1))
         prev-node (or (peek args) node)
         classname (:super-classname (:node/env node))]
@@ -17,7 +17,7 @@
        :classname classname
        :method-name "<init>"
        :method-type
-       (interop/match-ctor-type classname
+       (interop/match-ctor-type env classname
          (mapv (comp spec/get-exact-class :node/spec) args))
        :args args
        :node/spec {:spec/kind :exact-class
@@ -29,16 +29,27 @@
       (let [s (some #(cond
                        (= :symbol (:node/kind %)) (:string %)
                        (= :string (:node/kind %)) (:value %))
-                (:children tag))]
-        (if (= "Self" s) (:self-classname env)
-          (ana/expand-classname env s))))))
+                (:children tag))
+            ret (if (= "Self" s) (:self-classname env)
+                  (ana/expand-classname env s))]
+        ;; note: could be primitive
+        ; (assert (some #{\.} ret)
+        ;   (pr-str ret " env: " (keys env)))
+        ret))))
 
 (defn adapt-method-env [{:keys [classname super] :as clsinfo} env]
-  (-> env
-    (assoc :self-classname classname)
-    (assoc :super-classname (or super "java.lang.Object"))
-    (assoc-in [:new-classes classname] clsinfo)
-    (assoc-in [:class-aliases "Self"] classname)))
+  (let [super (or super "java.lang.Object")]
+    (-> env
+      (assoc :fields (into {}
+                       (map (fn [{:keys [name classname]}]
+                              [name {:spec {:spec/kind :exact-class
+                                            :classname classname}}]))
+                       (:fields clsinfo)))
+      (assoc :self-classname classname)
+      (assoc :super-classname super)
+      (assoc-in [:new-classes classname] clsinfo)
+      (assoc-in [:class-aliases "Self"] classname)
+      (assoc-in [:class-aliases "Super"] super))))
 
 (defn analyse-method-body
   [prev-node clsinfo static? mn paramdecl bodydecl retc]
@@ -77,11 +88,9 @@
      :ret-classname ret-classname
      :param-names (mapv :string params)
      :param-classnames
-     (mapv (fn [p]
-             (let [c (class-tag p)]
-               ;(assert (some? c) (str "no tag for " p))
-               (or c "java.lang.Object")))
-       (if static? params (drop 1 params)))}))
+     (mapv (fn [[_ {:keys [spec]}]]
+             (spec/get-exact-class spec))
+       (if static? param-pairs (drop 1 param-pairs)))}))
 
 (defn anasf-defclass [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
@@ -125,21 +134,24 @@
                 (ana/get-meta-tags (:node/meta n)))
      class-tag (fn [n]
                  (class-tag n))
-     parse-fieldvec (fn [opts x]
-                      (let [flds (reduce (fn [fields f]
-                                           (if (= :symbol (:node/kind f))
-                                             (conj fields
-                                               {:name (:string f)
-                                                :flags #{:private :final}
-                                                :classname
-                                                (or (class-tag f)
-                                                  "java.lang.Object")})
-                                             (throw (UnsupportedOperationException.))))
-                                   [] (:children x))]
-                        (-> opts (assoc :fields flds)
-                          (update :constructors (fnil conj [])
-                            {:param-classnames (mapv :classname flds)
-                             :auto true}))))
+     parse-fieldvec
+     (fn [opts x]
+       (let [flds (reduce (fn [fields f]
+                            (if (= :symbol (:node/kind f))
+                              (let [cn (or (class-tag (assoc f :node/env env))
+                                         "java.lang.Object")]
+                                (conj fields
+                                 {:name (:string f)
+                                  :flags #{:private :final}
+                                  :dynamic (interop/dynamic-class?
+                                              env (interop/resolve-class env cn))
+                                  :classname cn}))
+                              (throw (UnsupportedOperationException.))))
+                    [] (:children x))]
+         (-> opts (assoc :fields flds)
+           (update :constructors (fnil conj [])
+             {:param-classnames (mapv :classname flds)
+              :auto true}))))
      adapt-env (fn [clsinfo env1]
                  (adapt-method-env clsinfo env1))
      parse-cfield
@@ -201,11 +213,11 @@
            {:name mn
             :flags #{:abstract :public} ;; either pub or priv must be set
             :ret-classname ret-classname
-            :param-names (mapv :string params)
+            :param-names (into [""] (map :string) params)
             :param-classnames
             (mapv (fn [p]
-                    (class-tag p))
-              (drop 1 params))})))
+                    (class-tag (assoc p :node/env (:node/env (:prev-node opts)))))
+              params)})))
      parse-named-cmethod
      (fn [opts mn paramdecl bodydecl retc]
        (update opts :class-methods conj
@@ -220,14 +232,9 @@
          (parse-named-cmethod opts mn paramdecl (subvec children 3) nil)))
      parse-named-imethod
      (fn [opts mn paramdecl bodydecl retc]
-       (let [fieldmap (into {}
-                        (map (fn [{:keys [name classname]}]
-                               [name {:spec {:spec/kind :exact-class
-                                             :classname classname}}]))
-                        (:fields opts))]
+       (let []
          (update opts :instance-methods conj
-           (analyse-method-body
-             (assoc-in (:prev-node opts) [:node/env :fields] fieldmap)
+           (analyse-method-body (:prev-node opts)
              opts false mn paramdecl bodydecl retc))))
      parse-imethod
      (fn [opts {:keys [children]}]
@@ -248,6 +255,15 @@
            params (subvec children 2) "void")))
      ;; must call direct superclass (or via other self-ctor) before accessing instance members
      ;; but self class fields may be set first
+     parse-init
+     (fn [clsinfo {:keys [children]}]
+       (assert (<= 2 (count children)))
+       (let [paramsdecl (nth children 1)
+             bodydecl (subvec children 2)]
+         (assert (<= 1 (count (:children paramsdecl))) "Must specify 'self' parameter")
+         (update clsinfo :constructors
+           conj (analyse-method-body (:prev-node clsinfo)
+                  clsinfo false "<init>" paramsdecl bodydecl "void"))))
      parse-init-auto
      (fn [clsinfo {:keys [children]}]
        (assert (<= 2 (count children)))
@@ -286,6 +302,7 @@
                       "defabstract" (parse-amethod opts dnode)
                       "def" (parse-cfield opts dnode)
                       "init-auto" (parse-init-auto opts dnode)
+                      "init" (parse-init opts dnode)
                       "uninstall" (parse-uninstall-method opts dnode))))
      opts
      (reduce
@@ -306,6 +323,14 @@
        {:classname clsname
         :prev-node node} (subvec children 2))
      ; {:keys [prev-node]} opts
+     ctors (:constructors opts)
+     auto-ctor-idx (first (keep-indexed #(when (:auto %2) %)
+                            ctors))
+     opts (if (and auto-ctor-idx (< 1 (count ctors)))
+            (assoc opts :constructors
+              (into (subvec ctors 0 auto-ctor-idx)
+                (subvec ctors (inc auto-ctor-idx))))
+            opts)
      opts (dissoc opts :prev-node)]
     (assoc (ana/new-void-node)
       :node/locals (:node/locals node)

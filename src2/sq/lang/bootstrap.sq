@@ -68,6 +68,57 @@
     cs)
   )
 
+;; FIXME too similar to above
+(defclass sq.lang.DynConstructorCallSite
+  :super MutableCallSite
+  [^MHLookup lk ^String target-classname]
+  
+  (init [_ ^MHLookup lk' ^MethodType type ^String tc]
+    (init-super type)
+    (set! lk lk')
+    (set! target-classname tc))
+  
+  (defi ^:priv reset ^void [self]
+    (l= map (jf sq.lang.InternalDataContainer :map))
+    (l= target-class
+      (.lookupClass
+        (ct MHLookup
+          (.get (ct ConcurrentHashMap
+                  (.get map "hclassLookups"))
+            target-classname))))
+    (when (nil? target-class)
+      (set! target-class (jc Class forName target-classname false
+                           (.getClassLoader (.lookupClass lk)))))
+    (l= type (.type self))
+    (l= method (.getConstructor target-class (.parameterArray type)))
+    (.println (jf System out) "WOODOSODOO")
+    (l= target-mh (.asType (.unreflectConstructor lk method) type))
+    (l= fallback-mh
+      (do (l= lk' (jc MethodHandles lookup))
+        (.asType
+          (.asCollector
+           (.bind lk' self "fallback"
+             (jc MethodType methodType
+               (jc Class forName "java.lang.Object")
+               (jc Class forName "[Ljava.lang.Object;")))
+           (jc Class forName "[Ljava.lang.Object;")
+           (.parameterCount type))
+          type)))
+    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+  
+  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+    (.reset self)
+    (.invokeWithArguments (.getTarget self) args))
+  
+  (defn ^:pub bsm
+    ^CallSite [^MHLookup lk ^String method-name ^MethodType type
+               ^String target-classname]
+    (=: cs (nw Self lk type target-classname))
+    (.reset cs)
+    cs)
+  )
+
 (Alias-Classes
   Enum java.lang.Enum)
 

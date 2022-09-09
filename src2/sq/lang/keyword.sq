@@ -47,8 +47,6 @@
 (defclass sq.lang.KeywordMgr
   ;; static component of Keyword; could be merged into Keyword to save bytes
   
-  (def ^:pub-pkg __switchpoint (nw java.lang.invoke.SwitchPoint))
-  
   (def ^:priv refqueue (nw java.lang.ref.ReferenceQueue))
   (def ^:priv rqthread
     (ji (ji (jc java.lang.Thread ofVirtual)

@@ -12,7 +12,9 @@
     EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
     EventFrame Platform Event EventWindowClose EventWindowCloseRequest)
   (io.github.humbleui.jwm.skija
-    Canvas EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija))
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas))
 
 (defclass chic.window.i.PaintAndEventHandler
   :tag [:interface]
@@ -22,17 +24,17 @@
 (defclass chic.window.StdWinEventListener
   :interfaces java.util.function.Consumer
   [^chic.window.i.PaintAndEventHandler handler]
-  (defi accept [_ evt]
+  (defi accept ^void [_ evt]
     (if (instance? EventFrameSkija evt)
       (let
-        cnv (.getCanvas (.getSurface evt))
+        cnv (.getCanvas (.getSurface (ct EventFrameSkija evt)))
         n (.save cnv)
         (try (.paint handler cnv)
           (catch Throwable e
             (.printStackTrace e))
           (finally
             (.restoreToCount cnv n))))
-      (.notifyEvent handler evt))))
+      (.notifyEvent handler (ct Event evt)))))
 
 (defclass chic.window.Main
   

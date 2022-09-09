@@ -20,7 +20,7 @@
           "Short" Type/SHORT_TYPE))
       (throw (UnsupportedOperationException.)))))
 
-(defn prim-classname->type [n]
+(defn prim-classname->type ^Type [n]
   (condp = n
     "int" Type/INT_TYPE
     "boolean" Type/BOOLEAN_TYPE
@@ -74,3 +74,4 @@
     (.getClassName type)
     ;; because getClassName returns java.lang.Object[], but want [Ljava.lang.Object;
     (.replace (.getInternalName type) \/ \.)))
+

@@ -14,7 +14,8 @@
   ;; Otherwise, if using callers' CL, it won't see updated classes
   ;; of the same name
   (let [c (Class/forName name false (clojure.lang.RT/baseLoader))]
-    (Class/forName name true (.getClassLoader c))))
+    (try (Class/forName name true (.getClassLoader c))
+      (catch VerifyError _))))
 
 (defprotocol PClassNode
   (-interface? [_])
@@ -48,13 +49,17 @@
 (defn new-unreal-class [super interfaces]
   (->UnrealClass super interfaces 0 nil nil))
 
+(defn dynamic-class? [env cls]
+  (when (and (class? cls) (.isHidden ^Class cls))
+    true))
+
 (defn member-accessible? [^Class c1 ^Class target mods]
   (or (Modifier/isPublic mods)
     (let [pack2 (.getPackage target)
           pack1 (.getPackage c1)]
       ;; Note: packages are specific to a classloader.
       ;; this is too generous
-      (or (= (.getName pack2) (.getName pack1))
+      (or true ;(= (.getName pack2) (.getName pack1))
         (when (Modifier/isProtected mods)
           (.isAssignableFrom target c1))))))
 
@@ -89,43 +94,117 @@
                 :else (reduced nil))))
     (first methods) (next methods)))
 
-(defn resolve-class [{:keys [new-classes]} classname]
+(defn resolve-class [{:keys [new-classes class-resolver]} classname]
   (or
     (get-in new-classes [classname :class])
+    
     (try (util/primitive-name->class classname)
       (catch Exception _))
-    (try (find-class classname)
+    (try(or (when class-resolver (class-resolver classname))
+          (find-class classname))
       (catch ClassNotFoundException _ Object)
       (catch ExceptionInInitializerError _ Object))))
 
+(defn get-all-instance-methods [cls]
+  (reify clojure.lang.IReduceInit
+    (reduce [_ rf acc]
+      (let
+        [seen (java.util.HashSet.)
+         rim (fn [acc cls]
+              (let [ms (.getDeclaredMethods cls)]
+                (loop [acc acc
+                       i (dec (alength ms))]
+                  (if (<= 0 i)
+                    (let [iface (aget ms i)]
+                      (if (.contains seen iface)
+                        (recur acc (dec i))
+                        (let [acc (rf acc iface)]
+                          (if (reduced? acc)
+                            acc
+                            (recur acc (dec i))))))
+                    acc))))
+         rii (fn [ri acc cls]
+               (let [ifaces (.getInterfaces cls)
+                     nifaces (alength ifaces)]
+                 (loop [acc acc
+                        j 0]
+                   (if (< j nifaces)
+                     (let [acc (ri acc (aget ifaces j))]
+                       (if (reduced? acc)
+                         acc
+                         (recur acc (inc j))))
+                     acc))))
+         ri (fn ri [acc cls]
+              (let [acc (rim acc cls)]
+                (if (reduced? acc)
+                  acc
+                  (rii ri acc cls))))
+         rc (fn rc [acc cls]
+              (let [ms (.getDeclaredMethods cls)
+                    acc (loop [acc acc
+                               i (dec (alength ms))]
+                          (if (<= 0 i)
+                            (let [acc (rf acc (aget ms i))]
+                              (if (reduced? acc)
+                                acc
+                                (recur acc (dec i))))
+                            acc))]
+                (if (reduced? acc)
+                  acc
+                  (let [acc (rii rc acc cls)]
+                    (if (reduced? acc)
+                      acc
+                      (if-some [s (.getSuperclass cls)]
+                        (recur acc s)
+                        acc))))))
+         acc (if (.isInterface cls)
+               (ri acc cls)
+               (rc acc cls))]
+        (if (reduced? acc) @acc acc)))))
+
 (defn match-method-type ^Type
-  [{:keys [class-resolver] :as env} classname static? method-name arg-types ret-type]
+  [{:keys [self-classname] :as env}
+   classname static? method-name arg-types ret-type]
   (assert (every? some? arg-types)
     (pr-str classname static? method-name arg-types))
-  (let [c (class-resolver classname)
+  (let [c (resolve-class env classname)
+        self-class (resolve-class env self-classname)
         ->c (fn [c] (if (satisfies? PClassNode c)
                       c (resolve-class env c)))
         arg-cs (mapv #(->c %) arg-types)
         ret-c (when ret-type (->c ret-type))
-        matches (into [] (comp
-                           (filter #(= (.getName ^Method %) method-name))
-                           (filter #(= static?
-                                     (Modifier/isStatic (.getModifiers %))))
-                           (filter #(member-accessible? Object c (.getModifiers ^Method %)))
-                           (filter #(method-applicable? arg-cs ret-c % (.getReturnType ^Method %)))
-                           )
-                  (.getMethods c)
-                  #_(.getDeclaredMethods c))]
+        matches
+        (into [] (comp
+                   (filter #(= (.getName ^Method %) method-name))
+                   (filter #(= static?
+                              (Modifier/isStatic (.getModifiers %))))
+                   (filter #(= 0 (bit-and Opcodes/ACC_SYNTHETIC (.getModifiers %))))
+                   (filter #(member-accessible? self-class c (.getModifiers ^Method %)))
+                   (filter #(method-applicable? arg-cs ret-c % (.getReturnType ^Method %)))
+                   )
+          (if static? (.getDeclaredMethods c)
+            (get-all-instance-methods c)))]
     (case (count matches)
       0 (throw (RuntimeException.
                  (str "No method matches: " classname (if static? "/" ".") method-name
-                   " " (pr-str arg-types) (pr-str arg-cs) " => " (pr-str ret-type))))
+                   " " (pr-str (partition 2 (interleave arg-types arg-cs))) " => " (pr-str ret-type))))
       (or (when-some [m (most-specific-method matches)]
             (Type/getType ^Method m))
         (throw (RuntimeException.
                  (str "Method ambiguous: " classname (if static? "/" ".") method-name
                    " " (pr-str arg-types) " => " (pr-str ret-type)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
+
+(comment
+  (match-method-type
+  {:self-classname "java.lang.Object"}
+  "java.lang.Thread$Builder$OfVirtual" false "start"
+  ["sq.lang.util.TrimRefValueMapLoopRunner"] nil)
+
+(first
+  (filter #(= "start" (.getName %))
+    (vec (get-all-instance-methods java.lang.Thread$Builder$OfVirtual)))))
+
 
 (defn lookup-method-type
   ^Type [{:keys [new-classes] :as env} classname static? method-name arg-types ret-type]
@@ -137,9 +216,9 @@
         (into-array Type (map type/classname->type (:param-classnames mthd))))
       (match-method-type env classname static? method-name arg-types ret-type))))
 
-(defn match-ctor-type ^Type [classname arg-types]
+(defn match-ctor-type ^Type [env classname arg-types]
   (assert (every? some? arg-types))
-  (let [c (find-class classname)
+  (let [c (resolve-class env classname)
         ->c (fn [c] (or (try (util/primitive-name->class c)
                           (catch Exception _))
                       (try (find-class c)
@@ -150,8 +229,7 @@
                            (filter #(member-accessible? Object c (.getModifiers ^Constructor %)))
                            (filter #(method-applicable? arg-cs nil % nil))
                            )
-                  (.getConstructors c)
-                  #_(.getDeclaredConstructors c))]
+                  (.getDeclaredConstructors c))]
     (case (count matches)
       0 (throw (RuntimeException.
                  (str "No ctor matches: " classname " " (pr-str arg-types))))

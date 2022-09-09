@@ -80,6 +80,21 @@
      :node/env (:node/env test)
      :node/locals (:node/locals test)}))
 
+(defn anasf-and [{:keys [children] :as node}]
+  ;; TODO better impl
+  ((fn self- [prev children]
+     (if children
+       (let [test (ana/analyse-after prev (first children))]
+         {:node/kind :if-true
+          :node/spec (spec/of-class "boolean")
+          :test test
+          :then (self- test (next children))
+          :else (ana/new-const-prim-node test false)
+          :node/env (:node/env node)
+          :node/locals (:node/locals node)})
+       (ana/new-const-prim-node prev true)))
+   node (next children)))
+
 (defn anasf-case-enum [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
   (let [test (ana/analyse-after node (nth children 1))
@@ -129,6 +144,7 @@
      :node/locals (:node/locals test)}))
 
 (defn anasf-not [{:keys [children] :as node}]
+  ;; TODO could use bit-xor with ..00001
   (assert (= 2 (count children)))
   (let [child (ana/analyse-after node (nth children 1))]
     (ana/transfer-branch-env child
@@ -147,6 +163,18 @@
        :test child
        :then (ana/new-const-prim-node child true)
        :else (ana/new-const-prim-node child false)})))
+
+(defn anasf-instance? [{:keys [children node/env] :as node}]
+  ;; java does not auto-cast in case of 'if (o instanceof T) {...}'
+  ;; so neither will I
+  (assert (= 3 (count children)))
+  (let [classname (ana/expand-classname env (:string (nth children 1)))
+        child (ana/analyse-after node (nth children 2))]
+    (ana/transfer-branch-env child
+      {:node/kind :instance-of
+       :node/spec {:spec/kind :exact-class :classname "boolean"}
+       :classname classname
+       :arg child})))
 
 (defn anasf-array-set [{:keys [children] :as node}]
   (assert (<= 4 (count children)))
@@ -195,7 +223,7 @@
      :lock lock
      :body body}))
 
-(defn anasf-try [{:keys [children] :as node}]
+(defn anasf-try [{:keys [children node/env] :as node}]
   (if (= 1 (count children))
     (ana/new-void-node)
     (let [list-of? (fn [s child]
@@ -226,7 +254,9 @@
                                  :vector (mapv (fn [x]
                                                  (assert (= :symbol (:node/kind x))
                                                    "Invalid catch union")
-                                                 (:string x)) (:children cs)))]
+                                                 (:string x))
+                                           (:children cs)))
+                                classnames (mapv (partial ana/expand-classname env) classnames)]
                             (conj acc
                               {:classnames classnames
                                :local-name symname
@@ -356,7 +386,7 @@
                    {:node/kind :jump
                     :id jump-id})})))
 
-(defn anasf-new-obj [{:keys [children] :as node}]
+(defn anasf-new-obj [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
   (let [classname (:string (nth children 1))
         _ (assert (string? classname))
@@ -369,7 +399,7 @@
         ctype (if new-ctor
                 (Type/getMethodType Type/VOID_TYPE
                   (into-array Type (map type/classname->type (:param-classnames new-ctor))))
-                (interop/match-ctor-type classname
+                (interop/match-ctor-type env classname
                   (mapv (comp spec/get-exact-class :node/spec) args)))]
     (ana/transfer-branch-env final
       {:node/kind :new-obj
@@ -394,45 +424,53 @@
        :ndims ndims ;; TODO allow override with keyword option :dims n
        :dims dims})))
 
-(defn anasf-jcall* [node target-ast method-name args-ast]
+(defn anasf-jcall* [{:keys [node/env] :as node}
+                    target-ast method-classname method-name args-ast]
   (let [target (ana/analyse-after node target-ast)
-        c (spec/get-exact-class (:node/spec target))
+        c (or method-classname (spec/get-exact-class (:node/spec target)))
         args (ana/analyse-args target args-ast)
         ; nargs (count args)
         ; new-method (first (filter #(= nargs (count (:param-classnames %)))
         ;                     (get-in node [:node/env :new-classes classname :instance-methods])))
         new-class (get-in node [:node/env :new-classes c])
+        target-class (interop/resolve-class (:node/env node) c)
         final (or (last args) target)
         mt (interop/lookup-method-type (:node/env final) c false method-name
              (mapv (comp spec/get-duck-class :node/spec) args) nil)
         tags (ana/get-meta-tags (:node/meta node))]
     (ana/transfer-branch-env final
-      {:node/kind :jcall
-       :target target
-       :interface? (if new-class
-                     (contains? (:flags c) :interface)
-                     (.isInterface (Class/forName c)))
-       :method-name method-name
-       :method-type mt
-       :dynamic? (some #{:dynamic} tags)
-       :node/spec {:spec/kind :exact-class
-                   :classname (type/get-classname (.getReturnType mt))}
-       ; :desc (interop/match-method-desc c m
-       ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
-       :args args})))
+      (cond->
+        {:target target
+         :method-name method-name
+         :method-type mt
+         :args args
+         :dynamic? (some #{:dynamic} tags)
+         :node/spec {:spec/kind :exact-class
+                     :classname (type/get-classname (.getReturnType mt))}
+         ; :desc (interop/match-method-desc c m
+         ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
+         }
+        method-classname
+        (assoc :node/kind :jcall-specific
+          :classname method-classname)
+        (not method-classname)
+        (assoc :node/kind :jcall
+          :interface? (interop/-interface? target-class))))))
 
 (defn anasf-jcall [{:keys [children] :as node}]
   (assert (<= 3 (count children)))
   (let [m (:string (nth children 2))
         _ (assert (string? m))]
-    (anasf-jcall* node (nth children 1) m (subvec children 3))))
+    (anasf-jcall* node (nth children 1) nil m (subvec children 3))))
 
-(defn anasf-prefix-jcall [{:keys [children] :as node}]
+(defn anasf-prefix-jcall [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
-  (let [m (:string (nth children 0))
+  (let [mast (nth children 0)
+        m (:string mast)
         _ (assert (string? m))
-        m (subs m 1)]
-    (anasf-jcall* node (nth children 1) m (subvec children 2))))
+        m (subs m 1)
+        mc (defclass/class-tag (assoc mast :node/env env))]
+    (anasf-jcall* node (nth children 1) mc m (subvec children 2))))
 
 (defn anasf-jscall [{:keys [children] :as node}]
   (assert (<= 3 (count children)))
@@ -517,6 +555,14 @@
        :node/spec {:spec/kind :exact-class
                    :classname classname}})))
 
+(defn anasf-<- [{:keys [children] :as node}]
+  (assert (<= 2 (count children)))
+  (ana/analyse-after node
+    (reduce (fn [acc node]
+              (assert (#{:vector :list}(:node/kind node)))
+              (update node :children conj acc))
+      (reverse (next children)))))
+
 ; (swap! ana/*sf-analysers assoc "not" #'anasf-not)
 (swap! ana/*sf-analysers assoc "=" #'anasf-eq)
 (swap! ana/*sf-analysers assoc "==" #'anasf-identical?)
@@ -525,8 +571,10 @@
 (swap! ana/*sf-analysers assoc "<=" #'anasf-lte)
 (swap! ana/*sf-analysers assoc "<" #'anasf-lt)
 (swap! ana/*sf-analysers assoc "if" #'anasf-if)
+(swap! ana/*sf-analysers assoc "and" #'anasf-and)
 (swap! ana/*sf-analysers assoc "not" #'anasf-not)
 (swap! ana/*sf-analysers assoc "nil?" #'anasf-nil?)
+(swap! ana/*sf-analysers assoc "instance?" #'anasf-instance?)
 (swap! ana/*sf-analysers assoc "nw" #'anasf-new-obj)
 (swap! ana/*sf-analysers assoc "na" #'anasf-new-array)
 (swap! ana/*sf-analysers assoc "aa" #'anasf-array-get)
@@ -545,6 +593,7 @@
 (swap! ana/*sf-analysers assoc "try" #'anasf-try)
 (swap! ana/*sf-analysers assoc "defclass" #'anasf-defclass)
 (swap! ana/*sf-analysers assoc "case-enum" #'anasf-case-enum)
+(swap! ana/*sf-analysers assoc "<-" #'anasf-<-)
 
 ;; TODO use comptime info to skip conditional jumps
 '(loop [x y]

@@ -8,3 +8,114 @@ For initialising classes:
 - Public: Class/forName(3)
 - Protected: resolveClass (or loadClass(2))
 "
+
+(Refer-Classes
+  (java.net URLClassLoader)
+  (java.util.concurrent
+    ConcurrentHashMap)
+  (sq.lang
+    InternalDataContainer LoadedClassLookup))
+
+(defclass sq.lang.LoadedClassLookup
+  ;; string->weakref<class>
+  (def ^:priv class-cache
+    (ct ConcurrentHashMap
+      (.get (jf InternalDataContainer map) "clsCache")))
+  (def ^:priv refqueue (nw java.lang.ref.ReferenceQueue))
+  (def ^:priv rqthread
+    (ji (ji (jc java.lang.Thread ofVirtual)
+          uncaughtExceptionHandler
+          (jf sq.lang.util.SilentThreadUncaughtExceptionHandler :instance))
+      start
+      (nw sq.lang.util.TrimRefValueMapLoopRunner
+        refqueue class-cache)))
+
+  (uninstall []
+    (ji rqthread interrupt))
+  
+  (defn find ^Class [^String name]
+    (ct Class (.get (ct java.lang.ref.WeakReference
+                      (.get class-cache name)))))
+  
+  (defn add ^void [^String name ^Class class]
+    (.put class-cache name class))
+  )
+
+(defclass sq.lang.OnceInitialisingClassLoader
+  :super ClassLoader
+  ;; throws if used to potentially initialise a class other than first
+  
+  (init [self ^ClassLoader parent ^String classname ^"[B" bytes]
+    (init-super parent)
+    (.resolveClass self
+      (.defineClass self classname bytes 0 (alength bytes))))
+  
+  (defi findLoadedKlass ^Class [self ^String name]
+    (^Super .findLoadedClass self name))
+  
+  (defi loadClass ^Class [self ^String name ^boolean resolve]
+    (.println (jf System out) "loadClass")
+    (.println (jf System out) name)
+    (when resolve
+      (throw (nw Error "Attempted to potentially initialise a class")))
+    (^Super .loadClass self name false))
+  )
+
+(defclass sq.lang.DynamicClassLoader
+  :super ClassLoader
+  
+  (init [_ ^ClassLoader parent]
+    (init-super parent))
+  
+  (defi findClass ^Class [self ^String name]
+    (let c (jc LoadedClassLookup find name)
+      (if (nil? c)
+        (.findClass ^Super self name)
+        c)))
+  
+  (defi loadClass ^Class [self ^String name ^boolean resolve]
+    ;; do not permit initialisation of classes in this loader
+    (let c (jc LoadedClassLookup find name)
+      (if (nil? c)
+        (.loadClass (.getParent self) name resolve)
+        (do (when resolve
+              (.resolveClass (.getParent self) c))
+          c))))
+  )
+
+  "
+classloaders & linking/initialisation
+Problem: loading new hidden classes under the same classloader means classes
+redefined with the same name are not recognised during linking.
+
+Experiments with classloader subclass
+- JVM calls loadClass(1) once per class name
+- loadClass can be called with classes like System, Thread (presumably already initialised)
+- JVMS§5.3.2 - if loadClass returns a class, the classloader is recorded as an initialiser
+  - I confirmed by calling findLoadedClass
+- a 'good class loader' is expected to return the same class per class name
+- the defining loader is also considered an initialiser
+- default findClass impl throws exception, so presumably not relevant here
+Also see JLS §12.2
+This is why a new CL per eval is important: not just to allow redefs with same name,
+ but to have visibility of updated classes.
+
+I can think of two workarounds:
+1) One classloader, use randomly generated names for everything
+- I am concerned about possible memory leaks; can classloaders forget
+  (and allow gc for) classes that they have loaded but not defined?
+   JLS§12.7 
+    'A class or interface may be unloaded if and only if its defining
+   class loader may be reclaimed by the garbage collector as discussed in §12.6. '
+  Although JLS does not mention initiating loaders, it explicitly mentions
+  'defining loaders', and JVMS makes the distinction between the two. Defining
+  loader loads the class directly, but initiating loader does so indirectly.
+  As said earlier, Defining loader is also considered an initiating loader.
+
+2) Separate classloader, give up module encapsulation / extending modules
+- Known to work well
+- Results in a lot of classloaders
+- Could possibly use intelligent logic to only create new classloader
+  if new class links to a class since updated (a combindation with (1))
+
+"

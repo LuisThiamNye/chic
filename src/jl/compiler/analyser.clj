@@ -108,26 +108,37 @@
     (throw (RuntimeException. "quote only supports one child"))
     (/ 0)))
 
-(defn anasf-assign [{:keys [children]:as node}]
+(defn anasf-assign [{:keys [children node/env]:as node}]
   (when-not (= 3 (count children))
     (throw (RuntimeException. "set! must have two args")))
-  (let [target (nth children 1)]
-    (or (when (= :symbol (:node/kind target))
-          (let [sym (:string target)]
+  (let [target (nth children 1)
+        valdecl (nth children 2)]
+    (or
+      (when (= :symbol (:node/kind target))
+        (let [sym (:string target)]
+          (or
             (when-some [local (get (:node/locals node) sym)]
-              (let [v (analyse-after node (nth children 2))
+              (let [v (analyse-after node valdecl)
                     s (:node/spec v)]
-                  {:node/kind :assign-local
-                   :node/spec {:spec/kind :exact-class :classname "void"}
-                   :local-name sym
-                   :val v
-                   :node/env (:node/env v)
-                   :node/locals
-                   (cond-> (:node/locals v)
-                     (nil? (:spec local))
-                     (assoc :node/locals
-                       (assoc-in (:node/locals node) [sym :spec] s)))}))))
-      (throw (RuntimeException. "Could not resolve set! target")))))
+                {:node/kind :assign-local
+                 :node/spec {:spec/kind :exact-class :classname "void"}
+                 :local-name sym
+                 :val v
+                 :node/env (:node/env v)
+                 :node/locals
+                 (cond-> (:node/locals v)
+                   (nil? (:spec local))
+                   (assoc :node/locals
+                     (assoc-in (:node/locals node) [sym :spec] s)))}))
+            (when-some [field (get-in env [:fields sym])]
+              (transfer-branch-env node
+                {:node/kind :self-set-field
+                 :field-name sym
+                 :type (type/classname->type (spec/get-exact-class (:spec field)))
+                 :val (analyse-after node valdecl)
+                 :node/spec {:spec/kind :exact-class :classname "void"}})))))
+      (throw (ex-info "Could not resolve set! target"
+               {:target target})))))
 #_
 (defn anasf-with-locals [{:keys [children]:as node}]
   (case (count children)
