@@ -349,6 +349,8 @@
   
   ;; TODO mechanism for safely redefining class, preserving static fields
   (io.github.humbleui.jwm.Key/values)
+
+  
   
   )
 
@@ -402,4 +404,65 @@ ConstantBootstraps::invoke intended for adapting existing MHs
 Note: problem with converting Keywords to a unique int is that the keyword might
 get GC'd at some point and the int loses its mapping + risks collisions
 "
-
+(comment
+  ;;
+  ;; Class garbage collection example
+  ;;
+  (let [cn (str (gensym "test.Tmp"))
+        _ (do (compiler/create-stub-class {:classname cn}) nil)
+        dcl (clojure.lang.RT/baseLoader)
+        exists? (fn []
+                  (let [cc (rfield dcl 'classCache)
+                        rq (rfield dcl 'rq)]
+                    (clojure.lang.Util/clearCache rq cc)
+                    (.containsKey cc cn)))]
+    (assert (exists?))
+    (System/gc)
+    (exists?))
+  
+  (let [cn (str (gensym "test.Tmp"))
+        ; c 
+        c (do (compiler/create-stub-class {:classname cn}) nil)
+        dcl (clojure.lang.RT/makeClassLoader)
+        cl (sq.lang.OnceInitialisingClassLoader. dcl)
+        exists? (fn []
+                  (let [cc (rfield dcl 'classCache)
+                        rq (rfield dcl 'rq)]
+                    (clojure.lang.Util/clearCache rq cc)
+                    (.containsKey cc cn)))]
+    ;; c is definitely initialised
+    (Class/forName cn true (clojure.lang.RT/makeClassLoader))
+    (assert (exists?))
+    ;; load class: must use this, not directly loadClass
+    (Class/forName cn false cl)
+    ;; cl is now an initiating loader
+    (assert (some? (.findLoadedKlass cl cn)))
+    (assert (exists?))
+    ;; cl still alive, so c cannot be collected
+    (System/gc)
+    (assert (exists?))
+    (assert (some? cl))
+    ;; cl can be collected, c gets collected, dcl still alive
+    (System/gc)
+    (assert (not (exists?)))
+    (assert (some? dcl)))
+  ;; Conclusion: class can only be unloaded if all its initiating loaders are
+  ;; unreachable. Makes sense when considering first rule of good classloader:
+  ;; must always return same class given the same name.
+  
+  ;; No limit to how many classes the Cl can initiate and no gc happens
+  ;; (verified via visualvm)
+  (def --cl (sq.lang.OnceInitialisingClassLoader. (clojure.lang.RT/makeClassLoader)))
+  (dotimes [_ 1000]
+    (let [cn (str (gensym "test.Tmp"))]
+      (compiler/create-stub-class {:classname cn})
+      (Class/forName cn false --cl)
+      nil))
+  (let [dcl (clojure.lang.DynamicClassLoader.)
+        cc (rfield dcl 'classCache)
+        rq (rfield dcl 'rq)]
+    (clojure.lang.Util/clearCache rq cc)
+    (System/gc))
+  ;; all classes can be reclaimed after running this
+  (def --cl nil)
+)

@@ -45,13 +45,16 @@ For initialising classes:
   :super ClassLoader
   ;; throws if used to potentially initialise a class other than first
   
+  (init [self ^ClassLoader parent]
+    (init-super parent))
+  
   (init [self ^ClassLoader parent ^String classname ^"[B" bytes]
     (init-super parent)
     (.resolveClass self
       (.defineClass self classname bytes 0 (alength bytes))))
   
   (defi findLoadedKlass ^Class [self ^String name]
-    (^Super .findLoadedClass self name))
+    (.findLoadedClass self name))
   
   (defi loadClass ^Class [self ^String name ^boolean resolve]
     (.println (jf System out) "loadClass")
@@ -111,11 +114,31 @@ I can think of two workarounds:
   'defining loaders', and JVMS makes the distinction between the two. Defining
   loader loads the class directly, but initiating loader does so indirectly.
   As said earlier, Defining loader is also considered an initiating loader.
+  - Confirmed via experiments that all initiating loaders keep the class alive.
+    So this option can lead to memory leaks
 
 2) Separate classloader, give up module encapsulation / extending modules
 - Known to work well
 - Results in a lot of classloaders
 - Could possibly use intelligent logic to only create new classloader
   if new class links to a class since updated (a combindation with (1))
+
+3) Nuclear option: re-evaluate all hidden classes under a new classloader
+- Requires storing the original source/bytecode
+- Note: could change the behaviour of these hidden classes if they link
+  against the named ones (eg by inheritance) and thus may not compile.
+- This could be in combination with (2) so that the aggressive optimisation
+  does not happen with each new named class definition.
+- If no named classes redefined, no need for a new loader.
+- Could have generations of class loaders, with hidden classes gradually migrating to newer ones
+  where migration of certain generations can be forced to free up classes, when memory is needed.
+- Could extend modules of named classes with hidden classes with minimal dependencies
+  and that delegate their behaviour to a dynamically obtained object that can be set
+  by a method of a one-off hidden class loaded in that module, which obtains the object
+  from a temporary source since it also needs minimal dependencies. However, this is still
+  very limited and a lot of effectiveness of modules lost, so probably best to make
+  everything accessible in the unnamed module unless the program is being compiled statically
+  as a library, for example.
+- I like this approach and think there is a lot of potential here
 
 "
