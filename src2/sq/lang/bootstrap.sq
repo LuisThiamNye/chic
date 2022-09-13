@@ -10,6 +10,10 @@
   MutableCallSite java.lang.invoke.MutableCallSite
   ConstantCallSite java.lang.invoke.ConstantCallSite)
 
+(Refer-Classes
+  (java.lang.reflect
+    Field Method Modifier))
+
 (defclass sq.lang.BootstrapInfoProvider
   (def ^:pub-pkg map (nw ConcurrentHashMap))
   (defn ^:pub get [^Object key]
@@ -68,14 +72,14 @@
     cs)
   )
 
-;; FIXME too similar to above
-(defclass sq.lang.DynConstructorCallSite
+(defclass sq.lang.DynInstanceMethodCallSite
   :super MutableCallSite
-  [^MHLookup lk ^String target-classname]
+  [^MHLookup lk ^String method-name ^String target-classname]
   
-  (init [_ ^MHLookup lk' ^MethodType type ^String tc]
+  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc]
     (init-super type)
     (set! lk lk')
+    (set! method-name mn)
     (set! target-classname tc))
   
   (defi ^:priv reset ^void [self]
@@ -90,8 +94,62 @@
       (set! target-class (jc Class forName target-classname false
                            (.getClassLoader (.lookupClass lk)))))
     (l= type (.type self))
+    (=: param-types (.parameterArray type))
+    (l= method (ji target-class getMethod method-name
+                 (ct "[Ljava.lang.Class;"
+                   (jc java.util.Arrays copyOfRange
+                    param-types 1 (alength param-types)))))
+    (l= target-mh (.asType (.unreflect lk method) type))
+    (l= fallback-mh
+      (do (l= lk' (jc MethodHandles lookup))
+        (.asType
+          (.asCollector
+           (.bind lk' self "fallback"
+             (jc MethodType methodType
+               (jc Class forName "java.lang.Object")
+               (jc Class forName "[Ljava.lang.Object;")))
+           (jc Class forName "[Ljava.lang.Object;")
+           (.parameterCount type))
+          type)))
+    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+  
+  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+    (.reset self)
+    (.invokeWithArguments (.getTarget self) args))
+  
+  (defn ^:pub bootstrap
+    ^CallSite [^MHLookup lk ^String method-name ^MethodType type
+               ^String target-classname]
+    (l= cs (nw Self lk method-name type target-classname))
+    (.reset cs)
+    cs)
+  )
+
+;; FIXME too similar to above
+(defclass sq.lang.DynConstructorCallSite
+  :super MutableCallSite
+  [^MHLookup lk ^String target-classname]
+  
+  (init [_ ^MHLookup lk' ^MethodType type ^String tc]
+    (init-super type)
+    (set! lk lk')
+    (set! target-classname tc))
+  
+  (defi ^:priv reset ^void [self]
+    (l= map (jf sq.lang.InternalDataContainer :map))
+    (l= tlk (.get (ct ConcurrentHashMap
+                    (.get map "hclassLookups"))
+              target-classname))
+    (when (nil? tlk)
+      (throw (nw IllegalStateException (.concat "Target class not found: " target-classname))))
+    (l= target-class
+      (.lookupClass (ct MHLookup tlk)))
+    (when (nil? target-class)
+      (set! target-class (jc Class forName target-classname false
+                           (.getClassLoader (.lookupClass lk)))))
+    (l= type (.type self))
     (l= method (.getConstructor target-class (.parameterArray type)))
-    (.println (jf System out) "WOODOSODOO")
     (l= target-mh (.asType (.unreflectConstructor lk method) type))
     (l= fallback-mh
       (do (l= lk' (jc MethodHandles lookup))
@@ -115,6 +173,117 @@
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
                ^String target-classname]
     (=: cs (nw Self lk type target-classname))
+    (.reset cs)
+    cs)
+  )
+
+(defclass sq.lang.DynGetFieldCallSite
+  :super MutableCallSite
+  [^MHLookup lk ^String field-name ^String field-classname ^String target-classname]
+  
+  (init [_ ^MHLookup lk' ^MethodType type ^String name ^String tc ^String fc]
+    (init-super type)
+    (set! lk lk')
+    (set! field-name name)
+    (set! target-classname tc)
+    (set! field-classname fc))
+  
+  (defn resolve-class [^MHLookup lk ^String name]
+    (=: map (jf sq.lang.InternalDataContainer :map))
+    (=: clk (.get (ct ConcurrentHashMap
+                    (.get map "hclassLookups"))
+              name))
+    (if (nil? clk)
+      (jc Class forName name false
+        (.getClassLoader (.lookupClass lk)))
+      (.lookupClass (ct MHLookup clk))))
+  
+  (defi ^:priv reset ^void [self]
+    (=: map (jf sq.lang.InternalDataContainer :map))
+    (=: target-class (jc Self resolve-class lk target-classname))
+    (=: field-class (jc Self resolve-class lk field-classname))
+    (=: type (.type self))
+    (=: field (jc sq.lang.util.ClassReflect find-field target-class false field-name))
+    (=: target-mh (.asType (.unreflectGetter lk field) type))
+    (=: fallback-mh
+      (do (l= lk' (jc MethodHandles lookup))
+        (.asType
+          (.asCollector
+           (.bind lk' self "fallback"
+             (jc MethodType methodType
+               (jc Class forName "java.lang.Object")
+               (jc Class forName "[Ljava.lang.Object;")))
+           (jc Class forName "[Ljava.lang.Object;")
+           (.parameterCount type))
+          type)))
+    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+  
+  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+    (.reset self)
+    (.invokeWithArguments (.getTarget self) args))
+  
+  (defn ^:pub bsm
+    ^CallSite [^MHLookup lk ^String method-name ^MethodType type
+               ^String target-classname ^String field-classname]
+    (=: cs (nw Self lk type method-name target-classname field-classname))
+    (.reset cs)
+    cs)
+  )
+
+(defclass sq.lang.DynSetFieldCallSite
+  :super MutableCallSite
+  [^MHLookup lk ^String field-name ^String field-classname ^String target-classname]
+  
+  (init [_ ^MHLookup lk' ^MethodType type ^String name ^String tc ^String fc]
+    (init-super type)
+    (set! lk lk')
+    (set! field-name name)
+    (set! target-classname tc)
+    (set! field-classname fc))
+  
+  (defn resolve-class [^MHLookup lk ^String name]
+    (=: map (jf sq.lang.InternalDataContainer :map))
+    (=: clk (.get (ct ConcurrentHashMap
+                    (.get map "hclassLookups"))
+              name))
+    (when (nil? clk)
+      (throw (nw IllegalStateException (.concat "Class not found: " name))))
+    (=: cls (.lookupClass (ct MHLookup clk)))
+    (when (nil? cls)
+      (set! cls (jc Class forName name false
+                  (.getClassLoader (.lookupClass lk)))))
+    cls)
+  
+  (defi ^:priv reset ^void [self]
+    (=: map (jf sq.lang.InternalDataContainer :map))
+    (=: target-class (jc Self resolve-class lk target-classname))
+    (=: field-class (jc Self resolve-class lk field-classname))
+    (=: type (.type self))
+    (=: field (jc sq.lang.util.ClassReflect find-field target-class false field-name))
+    (=: target-mh (.asType (.unreflectSetter lk field) type))
+    (=: fallback-mh
+      (do (l= lk' (jc MethodHandles lookup))
+        (.asType
+          (.asCollector
+           (.bind lk' self "fallback"
+             (jc MethodType methodType
+               (jc Class forName "java.lang.Object")
+               (jc Class forName "[Ljava.lang.Object;")))
+           (jc Class forName "[Ljava.lang.Object;")
+           (.parameterCount type))
+          type)))
+    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+  
+  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+    (.reset self)
+    (.invokeWithArguments (.getTarget self) args))
+  
+  (defn ^:pub bsm
+    ^CallSite [^MHLookup lk ^String method-name ^MethodType type
+               ^String target-classname ^String field-classname]
+    (=: cs (nw Self lk type method-name target-classname field-classname))
     (.reset cs)
     cs)
   )
@@ -150,6 +319,7 @@
             (sa switchmap (.ordinal (jc Enum valueOf enum-class name))
               (+ i 1))
             (recur (- i 1))))
+        
         ;; TODO optimise if ordinals = case indexes,
         ;; or constant offset eg 0,1,2 -> 1,2,3
         ;; if in reverse order, negate and offset: 2,1,0->-2,-1,0->1,2,3

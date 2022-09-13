@@ -20,17 +20,18 @@
       (if (= "eval" op)
         (do 
           (try
-                  (listen-eval-msg msg)
-                  (swap! session
-                    (fn [ses]
-                      (-> ses
-                        (assoc #'*last-eval* (-> session meta ::last-eval))
-                        ((partial merge-with (fn [a b]
-                                               (if a a b)))
-                         @*root-session-bindings))))
-                  (alter-meta! session assoc ::last-eval
-                    {:code code :ns (symbol ns)})
-                  (catch Throwable e (.printStackTrace e)))
+            (listen-eval-msg msg)
+            (swap! session
+              (fn [ses]
+                (-> ses
+                  (assoc #'*last-eval* (-> session meta ::last-eval))
+                  ((partial merge-with (fn [a b]
+                                         (if a a b)))
+                   @*root-session-bindings))))
+            (when ns
+              (alter-meta! session assoc ::last-eval
+                {:code code :ns (symbol ns)}))
+            (catch Throwable e (.printStackTrace e)))
           (h (assoc msg :line (when line (inc line)))))
         (h msg))))
 

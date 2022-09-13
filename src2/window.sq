@@ -24,17 +24,20 @@
 (defclass chic.window.StdWinEventListener
   :interfaces java.util.function.Consumer
   [^chic.window.i.PaintAndEventHandler handler]
+  
   (defi accept ^void [_ evt]
-    (if (instance? EventFrameSkija evt)
-      (let
-        cnv (.getCanvas (.getSurface (ct EventFrameSkija evt)))
-        n (.save cnv)
-        (try (.paint handler cnv)
-          (catch Throwable e
-            (.printStackTrace e))
-          (finally
-            (.restoreToCount cnv n))))
-      (.notifyEvent handler (ct Event evt)))))
+    (try
+      (if (instance? EventFrameSkija evt)
+        (let
+          cnv (.getCanvas (.getSurface (ct EventFrameSkija evt)))
+          n (.save cnv)
+          (try (.paint handler cnv)
+            (finally
+              (.restoreToCount cnv n))))
+        (.notifyEvent handler (ct Event evt)))
+      (catch Throwable e
+        (.printStackTrace e))))
+  )
 
 (defclass chic.window.Main
   
@@ -51,13 +54,13 @@
   (defn reg-window! ^void [win]
     (.updateAndGet (ct AtomicReference (.get pkgmap "windows"))
       (reify UnaryOperator
-        (apply [_ set]
+        (apply ^Object [_ set]
           (.add (ct Set set) win)))))
   
   (defn unreg-window! ^void [win]
     (.updateAndGet (ct AtomicReference (.get pkgmap "windows"))
       (reify UnaryOperator
-        (apply [_ set]
+        (apply ^Object [_ set]
           (.remove (ct Set set) win)))))
   )
 

@@ -99,6 +99,8 @@ Experiments with classloader subclass
 - a 'good class loader' is expected to return the same class per class name
 - the defining loader is also considered an initialiser
 - default findClass impl throws exception, so presumably not relevant here
+- even when deferring initialisation of a hidden class, using the class later (eg by
+  reflection) causes classes to be resolved using the original defining classloader
 Also see JLS §12.2
 This is why a new CL per eval is important: not just to allow redefs with same name,
  but to have visibility of updated classes.

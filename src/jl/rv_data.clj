@@ -5,9 +5,6 @@
     [lambdaisland.regal :as regal]
     [jl.reader :as reader :refer [PFormVisitor]]))
 
-(defprotocol PParsedNumberCtor
-  (-makeDec..))
-
 (defn re-group [re ^java.util.regex.MatchResult match group]
   (let [idx (get (:groups re) group)]
     (.group match idx)))
@@ -38,7 +35,8 @@
      [:alt
       [:cat [:alt
              [:cat [:capture' :leading-zero "0"]
-              [:? [:capture' :radix-letter [:class \x \b]]]]
+              [:alt [:capture' :radix-letter [:class \x \b]]
+               [:lookahead :digit]]]
              [:cat [:capture' :radix [:+ :digit]]
               "r"]]
        [:capture' :number-radix [:+ [:class [\A \Z] [\a \z] [\0 \9]]]]]
@@ -75,6 +73,7 @@
                         (= r "x") 16
                         (= r "b") 2)
                       8))
+            unsigned? (not (or (= 10 radix) sign))
             number (or (re-group int-re m :number)
                      (re-group int-re m :number-radix))
             typ (re-group int-re m :type)
@@ -84,7 +83,8 @@
                   (= "L" typ) :long
                   (= "N" typ) :bigint
                   :else :none)]
-        {:neg neg :type typ :number number :kind :int :radix radix}))
+        {:neg neg :type typ :number number :kind :int :radix radix
+         :unsigned? unsigned?}))
     (let [m (.matcher (:regex float-re) num)])
     (if (.matches m)
       (let [sign (re-group float-re m :sign)
@@ -117,17 +117,26 @@
   (parse-number "-1%f")
   (parse-number "2f")
   (parse-number "2%")
+  (parse-number "0xFFffffff")
+  (parse-number "0f")
+  
   )
 
 (defn parsed-number-value [{:keys [kind neg number] :as m}]
   (condp = kind
-    :int (let [{:keys [radix]} m
+    :int (let [{:keys [radix unsigned?]} m
                number (if neg (str "-" number) number)
                n (condp = (:type m)
-                   :none (Integer/parseInt number radix)
-                   :long (Long/parseLong number radix)
+                   :none (if unsigned?
+                          (Integer/parseUnsignedInt number radix)
+                          (Integer/parseInt number radix))
+                   :long (if unsigned?
+                           (Long/parseUnsignedLong number radix)
+                           (Long/parseLong number radix))
                    :bigint (BigInteger. number radix)
-                   :int (Integer/parseInt number radix)
+                   :int (if unsigned?
+                          (Integer/parseUnsignedInt number radix)
+                          (Integer/parseInt number radix))
                    :byte (Byte/parseByte number radix))]
            n)
     :float (let [{:keys [percent?]} m

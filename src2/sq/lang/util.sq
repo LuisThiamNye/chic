@@ -1,3 +1,8 @@
+(defclass sq.lang.util.Ints2
+  [^:pub ^int x1 ^:pub ^int x2])
+(defclass sq.lang.util.Ints3
+  [^:pub ^int x1 ^:pub ^int x2 ^:pub ^int x3])
+
 (defclass sq.lang.util.TrimRefValueMapLoopRunner
   :interfaces java.lang.Runnable
   #_"A procedure that can be run on a virtual thread
@@ -30,6 +35,36 @@ Uses a blocking infinte loop."
           (recur)))
       (recur))))
 
+(Refer-Classes
+  (java.lang.reflect
+    Field Method Modifier))
+
+(defclass sq.lang.util.ClassReflect
+  
+  (defn find-field ^Field [^Class class ^boolean static? ^String field-name]
+    (=: fields (.getDeclaredFields class))
+    (loop [i (alength fields)]
+      (set! i (- i 1))
+      (if (<= 0 i)
+        (if (do (=: f (aa fields i))
+              (and (.equals field-name (.getName f))
+                (= static? (jc Modifier isStatic (.getModifiers f)))))
+          f
+          (recur i))
+        ;; check interfaces
+        (do
+          (=: interfaces (.getInterfaces class))
+          (=: n (alength interfaces))
+          (loop [i 0]
+            (if (< i n)
+              (if (nil? (=: f (jc Self find-field (aa interfaces i)
+                                static? field-name)))
+                (recur (inc i))
+                f)
+              ;; check super
+              (when (not (.isInterface class))
+                (when (not (nil? (=: super (.getSuperclass class))))
+                 (jc Self find-field super static? field-name))))))))))
 
 (defclass sq.lang.util.SilentThreadUncaughtExceptionHandler
   :interfaces java.lang.Thread$UncaughtExceptionHandler

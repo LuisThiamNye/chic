@@ -59,6 +59,11 @@
     
     :varargs Opcodes/ACC_VARARGS))
 
+(defn kws->acc-mask [kws]
+  (int (reduce (fn [acc kw]
+                 (bit-or acc (kw->acc-opcode kw)))
+         0 kws)))
+
 (defn acc-flags->kws [flags]
   (reduce (fn [acc kw]
             (let [op (kw->acc-opcode kw)]

@@ -54,6 +54,9 @@
 (defn prim? [spec]
   (#{"boolean" "byte" "short" "char" "int" "long" "float" "double" "void"}
     (get-exact-class spec)))
+
+(defn void? [spec]
+  (= "void" (get-exact-class spec)))
 #_#_#_
 (defn biginteger-coerce [spec]
   (let [clsname (get-exact-class spec)]

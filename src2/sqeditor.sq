@@ -1,6 +1,7 @@
 
 (Refer-Classes
-  (io.lacuna.bifurcan Set Map List)
+  (sq.lang.util Ints2)
+  (io.lacuna.bifurcan Set Map List LinearList Rope)
   (java.util ArrayList)
   (java.util.function
     UnaryOperator)
@@ -17,9 +18,9 @@
   (io.github.humbleui.jwm.skija
     EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
   (io.github.humbleui.skija
-    Canvas Paint PaintMode)
+    Canvas Paint PaintMode Font TextLine Typeface)
   (chic.sqeditor
-    RectTools UiRoot TextEditor))
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection))
 
 (defclass chic.sqeditor.RectTools
   
@@ -32,6 +33,14 @@
       (< y (.getBottom rect))))
   )
 
+(defclass chic.sqeditor.Interactor
+  [^Rect rect]
+  (defi getRect [_] rect)
+  (defi handle-mousescroll ^void [_ ^EventMouseScroll evt])
+  (defi handle-mousedown ^void [_ ^EventMouseButton evt])
+  (defi handle-mouseup ^void [_ ^EventMouseButton evt])
+  )
+
 (defclass chic.sqeditor.IntrMgr
   [^ArrayList intrs]
   
@@ -40,44 +49,90 @@
     (loop []
       (when (.hasNext it)
         (let
-          intr (.next it)
+          intr (ct Interactor (.next it))
           rect (.getRect intr)
           _handled? (when (jc RectTools contains-point?
                             rect (.getX evt) (.getY evt))
-                      (.handle-mousescroll intr evt))
+                      (do (.handle-mousescroll intr evt) nil))
           (recur))))
     true)
   
-  (defi handle-mousedown ^boolean [_ ^EventMouseDown evt]
+  (defi handle-mousedown ^boolean [_ ^EventMouseButton evt]
     (=: it (.iterator intrs))
     (loop []
       (when (.hasNext it)
         (let
-          intr (.next it)
+          intr (ct Interactor (.next it))
           rect (.getRect intr)
           _handled? (when (jc RectTools contains-point?
                             rect (.getX evt) (.getY evt))
-                      (.handle-mousedown intr evt))
+                      (do (.handle-mousedown intr evt) nil))
           (recur))))
     true)
   
-  (defi handle-mouseup ^boolean [_ ^EventMouseUp evt]
+  (defi handle-mouseup ^boolean [_ ^EventMouseButton evt]
     (=: it (.iterator intrs))
     (loop []
       (when (.hasNext it)
         (let
-          intr (.next it)
+          intr (ct Interactor (.next it))
           rect (.getRect intr)
           _handled? (when (jc RectTools contains-point?
                             rect (.getX evt) (.getY evt))
-                      (.handle-mouseup intr evt))
+                      (do (.handle-mouseup intr evt) nil))
           (recur))))
     true)
   )
 
+(defclass chic.sqeditor.Buffer
+  [^:pub ^:mut ^Rope rope
+   ^:pub ^LinearList newline-idxs]
+  (init [_ ^Rope r]
+    (set! rope r)
+
+    (=: nli (nw LinearList))
+    (=: it (.codePoints rope))
+    (loop [i 0]
+      (when (.hasNext it)
+        (=: ich (.nextInt it))
+        (when (= 10 ich)
+          (.addLast nli (jc Integer valueOf i)))
+        (recur (inc i))))
+    (set! newline-idxs nli)))
+
+(defclass chic.sqeditor.Selection
+  [^:pub ^LinearList regions]
+  (init [_]
+    (set! regions (nw LinearList)))
+  (defi add ^void [_ ^Ints2 region]
+    (.addLast regions region))
+  (defi clear ^void [_]
+    (.clear regions))
+  )
+
+(defclass chic.sqeditor.View
+  :interfaces AutoCloseable
+  [^:pub ^Buffer buffer
+   ^:pub ^Selection selection]
+  
+  (init [_ ^Buffer b]
+    (set! buffer b)
+    (set! selection (nw Selection)))
+  
+  ; (defi retarget [_])
+  ; (defi dirty? [_])
+  
+  (defi close ^void [_]))
+
 (defclass chic.sqeditor.TextEditor
+  :interfaces AutoCloseable
   [^RRect border-rrect
-   ^Paint border-paint-focused]
+   ^Paint border-paint-focused
+   ^View view
+   ^LinearList textlines
+   ^:mut ^int line-height
+   ^:mut ^int plane-origin-x
+   ^:mut ^int plane-origin-y]
   
   (init [self]
     (set! border-paint-focused
@@ -85,52 +140,101 @@
         (do (.setColor p 0x5f000000)
           (.setMode p (jf PaintMode STROKE))
           (.setStrokeWidth p 2f)
-          p))))
+          p)))
+    (=: rope (jc Rope from "Hello world\nMy name is\nThomas the tank\n"))
+    (=: buffer (nw Buffer rope))
+    (=: view' (nw View buffer))
+    (set! view view')
+    (.add (jfi view' :selection) (nw Ints2 0 0))
+    
+    (=: font (nw Font (jc Typeface makeFromFile "/Volumes/Carbonator/csync/fonts/Input-Font/Input_Fonts/InputSans/InputSansCondensed/InputSansCondensed-Regular.ttf")
+               20f))
+    (set! line-height (jc Math round (.getSpacing font)))
+    (=: newline-idxs (jfi buffer :newline-idxs))
+    (=: textlines' (nw LinearList (inc (ct int (.size newline-idxs)))))
+    (=: it (.iterator newline-idxs))
+    (loop [prev-i 0]
+      (when (.hasNext it)
+        (=: i (.intValue (ct Integer (.next it))))
+        (.addLast textlines'
+          (jc TextLine make
+            (.toString (.slice rope prev-i i)) font))
+        (recur (inc i))))
+    (set! textlines textlines'))
   
-  (defi draw [self ^Rect rect ^Canvas cnv]
+  (defi draw-text [self ^Rect rect ^Canvas cnv]
+    (=: text-paint (nw Paint))
+    (.setColor text-paint 0xFF000000)
+    (=: it (.iterator textlines))
+    (loop [y (+ line-height plane-origin-y)]
+      (when (.hasNext it)
+        (.drawTextLine cnv (ct TextLine (.next it))
+          (ct float plane-origin-x) (ct float y) text-paint)
+        (recur (+ y line-height)))))
+  
+  (defi draw-selection-region [self ^Ints2 region ^Canvas cnv]
+    (=: extra-v (jc Math round (* 0.12f (ct float line-height))))
+    (=: line-idx 0)
+    (=: line-top (+ (* line-idx line-height) plane-origin-y))
+    (=: cursor-paint (nw Paint))
+    (.setColor cursor-paint 0xE0007ACC)
+    (.drawRect cnv (jc Rect makeLTRB
+                     0f (- line-top extra-v)
+                     2f (+ line-top extra-v))
+      cursor-paint))
+  
+  (defi draw ^void [self ^Rect rect ^Canvas cnv]
+    (set! plane-origin-x (+ 5 (jc Math round (.getLeft rect))))
+    (set! plane-origin-y (+ 2 (jc Math round (.getTop rect))))
+    (.draw-text self rect cnv)
+    
+    (=: it (.iterator (jfi (jfi view :selection) :regions)))
+    (loop []
+      (when (.hasNext it)
+        (=: region (ct Ints2 (.next it)))
+        (.draw-selection-region self region cnv)
+        (recur)))
+    (=: border-rrect (.withRadii rect 2f))
     (.drawRRect cnv border-rrect border-paint-focused))
+  
+  (defi close ^void [_])
   )
 
 (defclass chic.sqeditor.UiRoot
+  :interfaces AutoCloseable
   [^TextEditor texteditor]
-  
-  (def _ (do 
-           (.println (jf System out) "Has been init'd")
-           (.println (jf System out)
-             (.getContextClassLoader (jc Thread currentThread)))
-           (.println (jf System out)
-             (.hashCode (jc Class forName "sq.lang.DynConstructorCallSite")))
-           (.printStackTrace (nw Exception "PROBE"))
-           0))
   
   (init [self]
     (set! texteditor (nw TextEditor)))
-  #_
+  
   (defi draw [self ^Canvas cnv]
     ;; TODO 5 padding
-    (=: texteditor-rect (nw Rect 5f 5f 400f 400f))
+    (=: texteditor-rect (nw Rect 5f 5f 400f 250f))
     (.draw texteditor texteditor-rect cnv))
   ;; 200-wide sidebar
   ;; address bar
   ;; text box
+  
+  (defi close ^void [_]
+    (.close texteditor))
   )
 
 (defclass chic.sqeditor.Window
   :interfaces chic.window.i.PaintAndEventHandler AutoCloseable
-  [^Window jwm-window
-   content-rect
-   ^float scale
-   ^int mouse-x
-   ^int mouse-y
-   intrmgr
+  [^:mut ^Window jwm-window
+   ^:mut ^Rect content-rect
+   ^:mut ^float scale
+   ^:mut ^int mouse-x
+   ^:mut ^int mouse-y
+   ^IntrMgr intrmgr
    ^UiRoot root]
   
-  (init []
+  (init [_]
     (set! root (nw UiRoot)))
   
   (defi set-window [_ ^Window jwin]
     (set! jwm-window jwin)
-    (.setTitle jwin "Squark")
+    (.setTitle jwin "Squawk")
     (set! scale (.getScale (.getScreen jwin)))
     ; (.setWindowSize - - -)
     ; (.setWindowPosition - - -)
@@ -145,18 +249,19 @@
       (<-
         (if (instance? EventMouseMove evt)
           (do (set! mouse-x (.getX (ct EventMouseMove evt)))
-            (set! mouse-y (.getY evt))
+            (set! mouse-y (.getY (ct EventMouseMove evt)))
             true))
         (if (instance? EventWindowResize evt)
           (let cr (.getContentRect jwm-window)
             (set! content-rect (jc Rect makeLTRB 0 0 (.getRight cr) (.getBottom cr)))
             true))
         (if (instance? EventMouseScroll evt)
-          (.handle-mousescroll intrmgr evt))
-        (if (instance? EventMouseDown evt)
-          (.handle-mousedown intrmgr evt))
-        (if (instance? EventMouseUp evt)
-          (.handle-mouseup intrmgr evt))
+          (.handle-mousescroll intrmgr (ct EventMouseScroll evt)))
+        (if (instance? EventMouseButton evt)
+          (let evt (ct EventMouseButton evt)
+            (if (.isPressed evt)
+              (.handle-mousedown intrmgr evt)
+              (.handle-mouseup intrmgr (ct EventMouseButton evt)))))
         (if (instance? EventWindowScreenChange evt)
           (do (set! scale (.getScale (.getScreen jwm-window)))
             true))
@@ -165,26 +270,27 @@
             false))
         (if (instance? EventWindowClose evt)
           (do (.close self)
-            false)))
+            false))
+        false)
       (.requestFrame jwm-window)))
   
-  (defi close [self]
+  (defi close ^void [self]
     (jc chic.window.Main unreg-window! self)
     (.close root))
   
   (defn spawn []
+    (=: self (nw Self))
     (let jwin (jc chic.window.Main new-jwm-window)
       (try
-        (let
-          self (nw Self)
-          _ (.set-window self jwin)
-          _ (.setEventListener jwin self)
-          ; scale (.getScale (.getScreen jwin))
-          _ (.setVisible jwin true)
-          _ (.focus jwin)
-          (jc chic.window.Main reg-window! self))
+        (.set-window self jwin)
+        (.setEventListener jwin (nw chic.window.StdWinEventListener self))
+        (.setWindowPosition jwin -1800 50)
+        (.setVisible jwin true)
+        (.focus jwin)
+        (jc chic.window.Main reg-window! self)
         (catch Throwable e
           (.close jwin)
+          (jc chic.window.Main unreg-window! self)
           (throw e)))))
   )
 

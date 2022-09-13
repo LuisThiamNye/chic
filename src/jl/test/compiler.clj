@@ -32,11 +32,15 @@
 (= [] (ana/str->ast "#_#_(+) (-)"))
 (= [] (ana/str->ast "#_(+ 1 #_2)"))
 
+(= 2 (count (:children(:tag(:node/meta (first (ana/str->ast "^a ^b x")))))))
+
 (= 3 (eval-str "(+ 1 2)"))
 (= 7 (eval-str "(do (l= x 4) (+ x 3))"))
 
 (= 568995840 (eval-sample "euler-8"))
 
+(= 1 (eval-str "(loop [i 1] i)"))
+(= 6 (eval-str "(loop [i 0] (if (<= i 5) (recur (inc i)) i))"))
 (true? (eval-sample "adjacent-loop-recur"))
 (true? (eval-sample "closest-loop-recur"))
 
@@ -151,7 +155,7 @@ GREEK 2
 (= 3 (eval-str "(let x 1 y (+ x 2))"))
 
 (= Object (.getSuperclass (class (eval-str "(reify Object)"))))
-(= "string" (str (eval-str "(reify (toString [_] \"string\"))")))
+(= "string" (str (eval-str "(reify Object (toString [_] \"string\"))")))
 (let [o (eval-str "(reify java.util.function.Supplier (get ^Object [_] :x))")]
   (and (instance? java.util.function.Supplier o)
     (= ":x" (str (.get o)))))
@@ -162,6 +166,9 @@ GREEK 2
 (reify java.util.function.Supplier
 (get ^Object [_] x)))"))))
 
+(= :ERROR (eval-str "
+(reify Object (egg [_]))"))
+
 (true? (eval-str "(<- (if false false) (if true true) (if false false false))"))
 
 (true? (eval-str "(and true)"))
@@ -169,6 +176,12 @@ GREEK 2
 (true? (eval-str "(and true true)"))
 
 (= 3 (eval-str "(do (=: x :x) (=: x 2) (+ x 1))"))
+
+(= 1 (eval-str "(=: x 1)"))
+(eval-str "(and (=: x true) x)")
+;; TODO
+; (eval-str "(when (not (or false (=: x true))) x)")
+; (eval-str "(when (and (=: x true)) x)")
 
 (comment
   (defn --cleanast [ast]

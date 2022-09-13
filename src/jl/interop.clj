@@ -17,16 +17,41 @@
     (try (Class/forName name true (.getClassLoader c))
       (catch VerifyError _))))
 
+(defprotocol PNamed
+  (-getName [_]))
+
+(defprotocol PClassMember
+  (-getModifiers [_]))
+
+(defprotocol PTyped
+  (-getType [_]))
+
 (defprotocol PClassNode
+  (-hiddenClass? [_])
   (-interface? [_])
   (-satisfies? [_ super])
+  (-getDeclaredMethods [_])
+  (-getDeclaredFields [_])
+  (-getDeclaredConstructors [_])
   (-getInterfaces [_])
   (-getSuperclass [_]))
 
-(extend-type Class PClassNode
+(extend-type Class
+  PNamed
+  (-getName [self] (.getName self))
+  PClassMember
+  (-getModifiers [self] (.getModifiers self))
+  PClassNode
+  (-hiddenClass? [self] (.isHidden self))
   (-interface? [self] (.isInterface self))
   (-getInterfaces [self]
     (.getInterfaces self))
+  (-getDeclaredMethods [self]
+    (.getDeclaredMethods self))
+  (-getDeclaredFields [self]
+    (.getDeclaredFields self))
+  (-getDeclaredConstructors [self]
+    (.getDeclaredConstructors self))
   (-getSuperclass [self]
     (.getSuperclass self))
   (-satisfies? [self sup]
@@ -34,34 +59,62 @@
     (when (class? sup)
       (.isAssignableFrom ^Class sup self))))
 
-(defrecord UnrealClass [super interfaces ^int flags fields methods]
+(defrecord UnrealClass [name super interfaces ^int flags
+                        fields methods])
+(extend-type UnrealClass
+  PNamed
+  (-getName [self] (:name self))
   PClassNode
-  (-interface? [_] (< 0 (bit-and flags Opcodes/ACC_INTERFACE)))
-  (-getInterfaces [_] interfaces)
-  (-getSuperclass [_] super)
+  (-hiddenClass? [self] (:hidden? self))
+  (-interface? [self] (< 0 (bit-and (:flags self) Opcodes/ACC_INTERFACE)))
+  (-getInterfaces [self] (:interfaces self))
+  (-getDeclaredMethods [self] (or (:methods self) (object-array 0)))
+  (-getDeclaredFields [self] (or (:fields self) (object-array 0)))
+  (-getDeclaredConstructors [self]
+    (:constructors self))
+  (-getSuperclass [self] (:super self))
   (-satisfies? [self other]
     ;; could also implement by keeping set of visited bases and only checking the unvisited
     (or (identical? self other)
-      (-satisfies? super other)
+      (-satisfies? (:super self) other)
       (some #(-satisfies? % other)
-        interfaces))))
+        (:interfaces self)))))
 
-(defn new-unreal-class [super interfaces]
-  (->UnrealClass super interfaces 0 nil nil))
+(defrecord UnrealField [name type ^int flags])
+(extend-type UnrealField
+  PNamed
+  (-getName [self] (:name self))
+  PClassMember
+  (-getModifiers [self] (:flags self))
+  PTyped
+  (-getType [self] (:type self)))
+
+(defrecord UnrealMethod [name param-classnames ret-classname ^int flags])
+
+(defn new-unreal-class
+  ([name super interfaces]
+   (->UnrealClass name super (object-array interfaces) 0 nil nil))
+  ([name super interfaces opts]
+   (into (->UnrealClass name super (object-array interfaces) 0
+           (object-array (mapv map->UnrealField (:fields opts)))
+           (object-array (mapv map->UnrealMethod (:methods opts))))
+     (dissoc opts :fields :methods))))
 
 (defn dynamic-class? [env cls]
-  (when (and (class? cls) (.isHidden ^Class cls))
-    true))
+  (-hiddenClass? cls))
 
-(defn member-accessible? [^Class c1 ^Class target mods]
+(defn member-accessible? [c1 target mods]
   (or (Modifier/isPublic mods)
-    (let [pack2 (.getPackage target)
-          pack1 (.getPackage c1)]
-      ;; Note: packages are specific to a classloader.
-      ;; this is too generous
-      (or true ;(= (.getName pack2) (.getName pack1))
-        (when (Modifier/isProtected mods)
-          (.isAssignableFrom target c1))))))
+    (if (and (class? c1) (class? target))
+      (let [pack2 (.getPackage target)
+            pack1 (.getPackage c1)]
+        ;; Note: packages are specific to a classloader.
+        ;; this is too generous
+        (or true ;(= (.getName pack2) (.getName pack1))
+          (when (Modifier/isProtected mods)
+            (.isAssignableFrom target c1))))
+      ;; FIXME
+      true)))
 
 (defn method-applicable? [arg-cs desired-ret-c ^Executable method method-ret-c]
   (and (or (nil? desired-ret-c)
@@ -97,13 +150,15 @@
 (defn resolve-class [{:keys [new-classes class-resolver]} classname]
   (or
     (get-in new-classes [classname :class])
-    
     (try (util/primitive-name->class classname)
       (catch Exception _))
-    (try(or (when class-resolver (class-resolver classname))
-          (find-class classname))
-      (catch ClassNotFoundException _ Object)
-      (catch ExceptionInInitializerError _ Object))))
+    (if-some [info (get new-classes classname)]
+      (or (:class info) (throw (ex-info "classinfo has no :class"
+                                 {:classname classname})))
+      (try(or (when class-resolver (class-resolver classname))
+            (find-class classname))
+        (catch ExceptionInInitializerError e
+          (throw (ClassNotFoundException. e)))))))
 
 (defn get-all-instance-methods [cls]
   (reify clojure.lang.IReduceInit
@@ -111,20 +166,20 @@
       (let
         [seen (java.util.HashSet.)
          rim (fn [acc cls]
-              (let [ms (.getDeclaredMethods cls)]
-                (loop [acc acc
-                       i (dec (alength ms))]
-                  (if (<= 0 i)
-                    (let [iface (aget ms i)]
-                      (if (.contains seen iface)
-                        (recur acc (dec i))
-                        (let [acc (rf acc iface)]
-                          (if (reduced? acc)
-                            acc
-                            (recur acc (dec i))))))
-                    acc))))
+               (let [ms (-getDeclaredMethods cls)]
+                 (loop [acc acc
+                        i (dec (alength ms))]
+                   (if (<= 0 i)
+                     (let [iface (aget ms i)]
+                       (if (.contains seen iface)
+                         (recur acc (dec i))
+                         (let [acc (rf acc iface)]
+                           (if (reduced? acc)
+                             acc
+                             (recur acc (dec i))))))
+                     acc))))
          rii (fn [ri acc cls]
-               (let [ifaces (.getInterfaces cls)
+               (let [ifaces (-getInterfaces cls)
                      nifaces (alength ifaces)]
                  (loop [acc acc
                         j 0]
@@ -140,7 +195,7 @@
                   acc
                   (rii ri acc cls))))
          rc (fn rc [acc cls]
-              (let [ms (.getDeclaredMethods cls)
+              (let [ms (-getDeclaredMethods cls)
                     acc (loop [acc acc
                                i (dec (alength ms))]
                           (if (<= 0 i)
@@ -154,10 +209,10 @@
                   (let [acc (rii rc acc cls)]
                     (if (reduced? acc)
                       acc
-                      (if-some [s (.getSuperclass cls)]
+                      (if-some [s (-getSuperclass cls)]
                         (recur acc s)
                         acc))))))
-         acc (if (.isInterface cls)
+         acc (if (-interface? cls)
                (ri acc cls)
                (rc acc cls))]
         (if (reduced? acc) @acc acc)))))
@@ -167,10 +222,14 @@
    classname static? method-name arg-types ret-type]
   (assert (every? some? arg-types)
     (pr-str classname static? method-name arg-types))
-  (let [c (resolve-class env classname)
-        self-class (resolve-class env self-classname)
+  (let [c (if (string? classname)
+            (resolve-class env classname)
+            classname)
+        self-class (try (resolve-class env self-classname)
+                     (catch ClassNotFoundException _ Object))
         ->c (fn [c] (if (satisfies? PClassNode c)
-                      c (resolve-class env c)))
+                      c (try (resolve-class env c)
+                          (catch ClassNotFoundException _ Object))))
         arg-cs (mapv #(->c %) arg-types)
         ret-c (when ret-type (->c ret-type))
         matches
@@ -182,7 +241,7 @@
                    (filter #(member-accessible? self-class c (.getModifiers ^Method %)))
                    (filter #(method-applicable? arg-cs ret-c % (.getReturnType ^Method %)))
                    )
-          (if static? (.getDeclaredMethods c)
+          (if static? (-getDeclaredMethods c)
             (get-all-instance-methods c)))]
     (case (count matches)
       0 (throw (RuntimeException.
@@ -197,9 +256,10 @@
 
 (comment
   (match-method-type
-  {:self-classname "java.lang.Object"}
-  "java.lang.Thread$Builder$OfVirtual" false "start"
-  ["sq.lang.util.TrimRefValueMapLoopRunner"] nil)
+  {:self-classname "java.lang.Object"
+   :class-resolver #'jl.kickstart/cof}
+  "chic.sqeditor.Interactor" false "handle-mouseup"
+  ["io.github.humbleui.jwm.EventMouseButton"] nil)
 
 (first
   (filter #(= "start" (.getName %))
@@ -229,7 +289,7 @@
                            (filter #(member-accessible? Object c (.getModifiers ^Constructor %)))
                            (filter #(method-applicable? arg-cs nil % nil))
                            )
-                  (.getDeclaredConstructors c))]
+                  (-getDeclaredConstructors c))]
     (case (count matches)
       0 (throw (RuntimeException.
                  (str "No ctor matches: " classname " " (pr-str arg-types))))
@@ -239,23 +299,25 @@
                  (str "Ctor ambiguous: " classname " " (pr-str arg-types)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
-(defn get-field-type ^Type [asking-classname classname static? field-name]
-  (let [cls (find-class classname)
-        askcls (if asking-classname (find-class asking-classname) Object)
+(defn get-field-type ^Type [env asking-classname classname static? field-name]
+  (let [cls (resolve-class env classname)
+        askcls (if asking-classname (try (resolve-class env asking-classname)
+                                      (catch ClassNotFoundException _ Object))
+                 Object)
         field (first (eduction
-                       (filter #(= field-name (.getName ^Field %)))
+                       (filter #(= field-name (-getName %)))
                        (filter #(= static?
-                                 (Modifier/isStatic (.getModifiers ^Field %))))
-                       (filter #(member-accessible? askcls cls (.getModifiers ^Field %)))
-                       (.getDeclaredFields cls)))]
+                                 (Modifier/isStatic (-getModifiers %))))
+                       (filter #(member-accessible? askcls cls (-getModifiers %)))
+                       (-getDeclaredFields cls)))]
     (if field
-      (Type/getType (.getType field))
+      (type/classname->type (-getName (-getType field)))
       (throw (ex-info "Could not find accessible field"
                {:classname classname :field-name field-name
                 :asking-class asking-classname})))))
 
 (defn lookup-field-type
-  ^Type [{:keys [new-classes self-classname]} classname static? field-name]
+  ^Type [{:keys [new-classes self-classname] :as env} classname static? field-name]
   (let [cls (get new-classes classname)
         field (first (eduction
                        (filter #(= field-name (:name %)))
@@ -270,7 +332,7 @@
                                                 :static? static?
                                                 :class classname})))
                       (type/classname->type cn)))
-                (get-field-type self-classname classname static? field-name))]
+                (get-field-type env self-classname classname static? field-name))]
     (if field
       field
       (throw (RuntimeException. "Could not find accessible field")))))

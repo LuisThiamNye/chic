@@ -149,7 +149,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
 
 '(+ 1N 1N)
 ;; get constructor from known type for ambiguous literal
-
+#_
 (defn -negotiate-add-subject-spec [trait spec r]
   (condp = (:implname trait)
     "java.lang.BigDecimal"
@@ -160,7 +160,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
     (when-some [s (spec/try-coerce-class "java.lang.BigInteger" spec)]
       (when-some [r' (spec/try-coerce-class "java.lang.BigInteger" r)]
         [s r' {:emitter '?}]))))
-
+#_
 (defn negotiate-addition-specs* [s1 s2 r]
   (or (when (spec/certain-trait? :primnum-like s1)
         (when-some [s2' (spec/try-coerce-trait :primnum-like s2)]
@@ -171,7 +171,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
       (when-some [[s2' r' info] (-negotiate-add-subject-spec t s2 r)]
         ;; a.add(b)
         [s1 s2' r' info]))))
-
+#_
 (defn negotiate-addition-specs [s1 s2 r]
   (or (negotiate-addition-specs* s1 s2 r)
     (let [ret (negotiate-addition-specs* s2 s1 r)]
@@ -237,7 +237,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
   (anasf-arith-2 :xor node))
 (defn anasf-inc [{:keys [children]:as node}]
   (assert (= 2 (count children)))
-  (let [[x] (ana/analyse-args node (subvec children 1))
+  (let [x (ana/analyse-after node (nth children 1))
         s (:node/spec x)
         p (spec/prim? s)]
     (when-not p
@@ -247,7 +247,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
       {:node/kind :arithmetic-2
        :op :add :type (keyword p)
        :node/spec (:node/spec x)
-       :arg1 x :arg2 (ana/new-const-prim-node nil (int 1))
+       :arg1 x :arg2 (ana/new-const-prim-node x (int 1))
        ; :args [x1 x2]
        })))
 (swap! ana/*sf-analysers assoc "+" #'anasf-add)
