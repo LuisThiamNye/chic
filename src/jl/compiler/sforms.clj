@@ -19,27 +19,23 @@
     {:node/kind :unary-cmp
      }))
 
-(defn anasf-eq [{:keys [children] :as node}]
-  (assert (= 3 (count children)))
-  (let [[x1 x2] (ana/analyse-args node (subvec children 1))]
-    (ana/transfer-branch-env x2
-      {:node/kind :num-cmp-2
-       :node/spec {:spec/kind :exact-class :classname "boolean"}
-       :op :=
-       :type :int
-       :arg1 x1 :arg2 x2})))
-
 ;; TODO integer optimisations eg (< -1 i) => (<= 0 i) - compare to zero
 (defn anasf-numcmp [op {:keys [children] :as node}]
   (assert (= 3 (count children)))
   (let [[x1 x2] (ana/analyse-args node (subvec children 1))
-        clsname (or (spec/get-exact-class (:node/spec x1))
-                  (spec/get-exact-class (:node/spec x2)))]
+        clsname1 (spec/get-exact-class (:node/spec x1))
+        clsname2 (spec/get-exact-class (:node/spec x2))
+        prim1? (type/prim-classname->type clsname1)
+        prim2? (type/prim-classname->type clsname2)
+        prim? prim1?
+        _ (assert (= prim1? prim2?)
+            (str "types " clsname1 " " clsname2 " not equal"))
+        clsname clsname1]
     (ana/transfer-branch-env x2
       {:node/kind :num-cmp-2
        :node/spec {:spec/kind :exact-class :classname "boolean"}
        :op op
-       :type (if (type/prim-classname->type clsname)
+       :type (if prim?
                (keyword clsname) :ref)
        :arg1 x1 :arg2 x2})))
 (defn anasf-gte [node] (anasf-numcmp :>= node))
@@ -47,6 +43,7 @@
 (defn anasf-lte [node] (anasf-numcmp :<= node))
 (defn anasf-lt [node] (anasf-numcmp :< node))
 (defn anasf-identical? [node] (anasf-numcmp := node))
+(defn anasf-eq [node] (anasf-numcmp := node))
 
 ;; TODO auto convert shortcutting 'and' to non-shortcutting bit-and if operands are cheap
 
@@ -66,7 +63,7 @@
 ;; TODO detect mergeable ifs (if (if t t (do 3 f)) 1 2) -> (if t 1 (do 3 2))
 (defn anasf-if [{:keys [children] :as node}]
   (assert (= 4 (count children)))
-  (let [test (ana/analyse-after node (nth children 1))
+  (let [test (ana/analyse-expr node (nth children 1))
         then (ana/analyse-after test (nth children 2))
         else (ana/analyse-after test (nth children 3))
         s (join-branch-specs [then else])]
@@ -85,7 +82,7 @@
   ;; TODO better impl
   ((fn self- [prev children]
      (if children
-       (let [test (ana/analyse-after prev (first children))]
+       (let [test (ana/analyse-expr prev (first children))]
          (ana/transfer-branch-env prev
            {:node/kind :if-true
             :node/spec (spec/of-class "boolean")
@@ -99,7 +96,7 @@
   ;; TODO better impl
   ((fn self- [prev children]
      (if children
-       (let [test (ana/analyse-after prev (first children))]
+       (let [test (ana/analyse-expr prev (first children))]
          (ana/transfer-branch-env prev
            {:node/kind :if-true
             :node/spec (spec/of-class "boolean")
@@ -111,7 +108,7 @@
 
 (defn anasf-case-enum [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
-  (let [test (ana/analyse-after node (nth children 1))
+  (let [test (ana/analyse-expr node (nth children 1))
         cases
         (reduce (fn [acc [enum then]]
                   ;; TODO in future support multiple cases for enum, as vector
@@ -137,7 +134,7 @@
 
 (defn anasf-when [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
-  (let [test (ana/analyse-after node (nth children 1))
+  (let [test (ana/analyse-expr node (nth children 1))
         body (ana/analyse-body test (subvec children 2))
         bspec (:node/spec body)
         bprim (spec/prim? bspec)]
@@ -160,7 +157,7 @@
 (defn anasf-not [{:keys [children] :as node}]
   ;; TODO could use bit-xor with ..00001
   (assert (= 2 (count children)))
-  (let [child (ana/analyse-after node (nth children 1))]
+  (let [child (ana/analyse-expr node (nth children 1))]
     (ana/transfer-branch-env child
       {:node/kind :if-true
        :node/spec {:spec/kind :exact-class :classname "boolean"}
@@ -170,7 +167,7 @@
 
 (defn anasf-nil? [{:keys [children] :as node}]
   (assert (= 2 (count children)))
-  (let [child (ana/analyse-after node (nth children 1))]
+  (let [child (ana/analyse-expr node (nth children 1))]
     (ana/transfer-branch-env child
       {:node/kind :if-nil
        :node/spec {:spec/kind :exact-class :classname "boolean"}
@@ -183,7 +180,7 @@
   ;; so neither will I
   (assert (= 3 (count children)))
   (let [classname (ana/expand-classname env (:string (nth children 1)))
-        child (ana/analyse-after node (nth children 2))]
+        child (ana/analyse-expr node (nth children 2))]
     (ana/transfer-branch-env child
       {:node/kind :instance-of
        :node/spec {:spec/kind :exact-class :classname "boolean"}
@@ -192,9 +189,9 @@
 
 (defn anasf-array-set [{:keys [children] :as node}]
   (assert (<= 4 (count children)))
-  (let [target (ana/analyse-after node (nth children 1))
-        index (ana/analyse-after target (nth children 2))
-        val (ana/analyse-after index (nth children 3))]
+  (let [target (ana/analyse-expr node (nth children 1))
+        index (ana/analyse-expr target (nth children 2))
+        val (ana/analyse-expr index (nth children 3))]
     (ana/transfer-branch-env val
       {:node/kind :array-set
        :target target
@@ -204,8 +201,8 @@
 
 (defn anasf-array-get [{:keys [children] :as node}]
   (assert (<= 3 (count children)))
-  (let [target (ana/analyse-after node (nth children 1))
-        index (ana/analyse-after target (nth children 2))]
+  (let [target (ana/analyse-expr node (nth children 1))
+        index (ana/analyse-expr target (nth children 2))]
     (ana/transfer-branch-env index
       {:node/kind :array-get
        :target target
@@ -214,7 +211,7 @@
 
 (defn anasf-array-length [{:keys [children] :as node}]
   (assert (= 2 (count children)))
-  (let [target (ana/analyse-after node (nth children 1))]
+  (let [target (ana/analyse-expr node (nth children 1))]
     (ana/transfer-branch-env target
       {:node/kind :array-length
        :target target
@@ -340,7 +337,7 @@
         pairs (partitionv 2 (:children bindvec))
         decls (reduce (fn [decls [sym vexpr]]
                         (let [prev (or (peek decls) node)
-                              init (ana/analyse-after prev vexpr)
+                              init (ana/analyse-expr prev vexpr)
                               nam (:string sym)]
                           (assert (string? nam))
                           (conj decls
@@ -381,7 +378,7 @@
         assigns
         (reduce (fn [assigns [local vexpr]]
                   (let [prev (or (peek assigns) node)
-                        init (ana/analyse-after prev vexpr)
+                        init (ana/analyse-expr prev vexpr)
                         nam (:name local)]
                     (assert (string? nam) (str "local: " (pr-str local)))
                     (conj assigns
@@ -442,7 +439,7 @@
 
 (defn anasf-jcall* [{:keys [node/env] :as node}
                     target-ast method-classname method-name args-ast]
-  (let [target (ana/analyse-after node target-ast)
+  (let [target (ana/analyse-expr node target-ast)
         c (or method-classname (spec/get-exact-class (:node/spec target)))
         args (ana/analyse-args target args-ast)
         ; nargs (count args)
@@ -452,7 +449,7 @@
         target-class (interop/resolve-class (:node/env node) c)
         final (or (last args) target)
         mt (interop/lookup-method-type (:node/env final) c false method-name
-             (mapv (comp spec/get-duck-class :node/spec) args) nil)
+             (mapv (comp (partial spec/get-duck-class env) :node/spec) args) nil)
         tags (ana/get-meta-tags (:node/meta node))]
     (ana/transfer-branch-env final
       (cond->
@@ -463,8 +460,6 @@
          :dynamic (or (some #{"dynamic"} tags)
                     (interop/dynamic-class? (:node/env node) target-class))
          :node/spec (spec/of-class (type/get-classname (.getReturnType mt)))
-         ; :desc (interop/match-method-desc c m
-         ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
          }
         method-classname
         (assoc :node/kind :jcall-specific
@@ -499,7 +494,7 @@
         args (ana/analyse-args node (subvec children 3))
         final (or (last args) node)
         mt (interop/lookup-method-type (:node/env final) c true m
-             (mapv (comp spec/get-duck-class :node/spec) args) nil)
+             (mapv (comp (partial spec/get-duck-class (:node/env node)) :node/spec) args) nil)
         tags (mapv :string (ana/get-meta-tags (:node/meta (nth children 0))))]
     (ana/transfer-branch-env final
       {:node/kind :jcall
@@ -509,8 +504,6 @@
        :dynamic (or (some #{"dynamic"} tags)
                   (interop/dynamic-class? (:node/env node) target-class))
        :node/spec (spec/of-class (type/get-classname (.getReturnType mt)))
-       ; :desc (interop/match-method-desc c m
-       ;         (mapv (comp spec/get-exact-class :node/spec) args) nil)
        :args args})))
 
 (defn anasf-jfield-get [{:keys [children] :as node}]
@@ -521,7 +514,7 @@
         _ (assert (or (= :symbol (:node/kind f))
                     (= :keyword (:node/kind f))))
         field (:string f)
-        ; target (ana/analyse-after node obj)
+        ; target (ana/analyse-expr node obj)
         ; c (spec/get-exact-class (:node/spec target))
         c (ana/expand-classname (:node/env node) (:string obj))
         ft (interop/lookup-field-type (:node/env node) c true field)]
@@ -539,7 +532,7 @@
         f (nth children 2)
         _ (assert (= :keyword (:node/kind f)))
         field (:string f)
-        target (ana/analyse-after node obj)
+        target (ana/analyse-expr node obj)
         c (spec/get-exact-class (:node/spec target))
         target-class (interop/resolve-class (:node/env node) c)
         _ (when (nil? c) (throw (RuntimeException. "Could not resolve type for jfi")))

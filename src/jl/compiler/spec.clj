@@ -29,7 +29,7 @@
 
 (defn get-exact-class [spec]
   (assert (or (nil? spec) (contains? spec :spec/kind))
-    (pr-str spec))
+    (pr-str {:keys (keys spec)}))
   (cond
     (= :exact-class (:spec/kind spec))
     (:classname spec)
@@ -45,10 +45,11 @@
           (.append sb ";")))
       (.toString sb))))
 
-(defn get-duck-class [spec] ;; returns a class of the intersection of behaviours
+(defn get-duck-class [env spec] ;; returns a class of the intersection of behaviours
   (if (= :union (:spec/kind spec))
     (interop/intersect-classes
-      (map (comp interop/find-class get-duck-class) (:specs spec)))
+      (mapv (comp (partial interop/resolve-class env)
+              (partial get-duck-class env)) (:specs spec)))
     (get-exact-class spec)))
 
 (defn prim? [spec]

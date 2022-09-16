@@ -64,6 +64,9 @@
                  (bit-or acc (kw->acc-opcode kw)))
          0 kws)))
 
+(defn acc-mask-contains? [mask kw]
+  (< 0 (bit-and mask (kw->acc-opcode kw))))
+
 (defn acc-flags->kws [flags]
   (reduce (fn [acc kw]
             (let [op (kw->acc-opcode kw)]

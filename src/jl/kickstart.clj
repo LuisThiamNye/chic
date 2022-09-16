@@ -3,7 +3,7 @@
     [jl.compiler.sforms]
     [jl.compiler.math]
     [jl.compiler.core :as compiler]
-    [jl.interop :refer [find-class]]
+    [jl.interop :as interop :refer [find-class]]
     [jl.reader :as reader]
     [jl.compiler.analyser :as ana]
     [io.github.humbleui.core :as hui])
@@ -58,7 +58,11 @@
     "sq.lang.util.SilentThreadUncaughtExceptionHandler"
     "sq.lang.util.ClassReflect"
     "sq.lang.util.Ints2"
-    "sq.lang.util.Ints3"]
+    "sq.lang.util.Ints3"
+    "sq.lang.util.RopeCharacterIterator"
+    "sq.lang.util.EmptyCharacterIterator"
+    "sq.lang.util.RopeUtil"
+    "sq.lang.util.Maths"]
    
    "src2/sq/lang/keyword.sq"
    ["sq.lang.i.Named"
@@ -92,8 +96,16 @@
     "chic.sqeditor.IntrMgr"
     "chic.sqeditor.Interactor"
     "chic.sqeditor.Buffer"
+    "chic.sqeditor.Misc"
+    "chic.sqeditor.BreakNav"
+    "chic.sqeditor.i.LineOffsetConverter"
+    "chic.sqeditor.Region"
+    "chic.sqeditor.RegionOps"
+    "chic.sqeditor.RegionPathOps"
     "chic.sqeditor.Selection"
+    "chic.sqeditor.SelectionOps"
     "chic.sqeditor.View"
+    "chic.sqeditor.EditorCommit"
     "chic.sqeditor.TextEditor"
     "chic.sqeditor.Window"
     "chic.sqeditor.UiRoot"]})
@@ -123,11 +135,20 @@
 
 
 (defn find-hidden-class [name]
-  (some-> ^java.lang.invoke.MethodHandles$Lookup
-    (:lookup (.get *meta-classes name)) .lookupClass))
+  (let [[ndims el-name] (interop/split-classname name)
+        el-mc (.get *meta-classes el-name)
+        el-cls
+        (or (:impl-class el-mc)
+          (some-> ^java.lang.invoke.MethodHandles$Lookup
+            (:lookup el-mc) .lookupClass))]
+    (when el-cls
+      (if (< 0 ndims)
+        (interop/array-class-of el-cls ndims)
+        el-cls))))
 
 (defn cof [classname]
-  (or (find-hidden-class (str "_." (.replace classname \. \,)))
+  (or (find-hidden-class classname)
+    (find-hidden-class (str "_." (.replace classname \. \,)))
     (find-class classname)))
 
 (defn analyse-defclass-node [opts clsname]
@@ -185,7 +206,6 @@
                     (catch ClassNotFoundException _)))))))))))
 
 (def ^java.util.WeakHashMap classloader-lookups (java.util.WeakHashMap.))
-(ns-unmap *ns* 'hidden-class-lo)
 
 (defn get-classloader-lookup [cl classname]
   ;; workaround to obtain full privilege access to unnamed module of cl
@@ -240,7 +260,7 @@
             mc (get-in ir [:node/env :new-classes clsname :class])]
         (assert (some? mc))
         (refresh-hidden-class-loader!)
-        (.put *meta-classes clsname mc)
+        (.put *meta-classes clsname (assoc mc :impl-class (find-class clsname)))
         ret)
       (catch Throwable e (.printStackTrace e) :error)))
 
@@ -253,9 +273,10 @@
       (into-array java.lang.invoke.SwitchPoint [sw]))))
 
 (defn load-hidden-as [host clsname]
-  (try (when-some [lk (try (:lookup (.get *meta-classes clsname))
-                              (catch Exception _))]
-         (uninstall-class (.lookupClass lk))
+  (try (when-some [c (try (or (find-hidden-class clsname)
+                             (find-class clsname))
+                        (catch Exception _))]
+         (uninstall-class c)
          (.remove *meta-classes clsname))
       (let [lookup (if host
                      (get-class-lookup (find-class host))
@@ -266,9 +287,9 @@
             ret (compiler/load-ast-classes-hidden
                   {:lookup lookup} ir)
             hclsname (or host (str "_." (.replace clsname \. \,)))
-            new-classes (get-in ir [:node/env :new-classes :class])]
+            new-classes (get-in ir [:node/env :new-classes])]
         (doseq [[c lk] ret]
-          (let [mc (get new-classes c)]
+          (let [mc (:class (get new-classes c))]
             (assert (some? mc))
             (.put *meta-classes c (assoc mc :lookup lk))))
         (swinvalidate-dyncls)
@@ -281,11 +302,32 @@
 (defn get-globalchm []
   (rfield (find-class "sq.lang.GlobalCHM") 'map))
 
+(defn find-class-lk [lk classname]
+  (or (find-hidden-class classname)
+    (try (find-class classname)
+      (catch ClassNotFoundException _))
+    (case classname
+      "int" Integer/TYPE
+      "long" Long/TYPE
+      "boolean" Boolean/TYPE
+      "short" Short/TYPE
+      "char" Character/TYPE
+      "void" Void/TYPE
+      "float" Float/TYPE
+      "double" Double/TYPE
+      "byte" Byte/TYPE
+      nil)
+    (throw (ex-info "No impl class" {:classname classname}))))
+
+(def classFinderLk
+  (reify java.util.function.BiFunction
+    (apply [_ lk classname]
+      (find-class-lk lk classname))))
+
 (comment
   (load-class "sq.lang.InternalDataContainer")
-  (.get *meta-classes "sq.lang.InternalDataContainer")
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
-    "metaClasses" *meta-classes)
+    "classFinderLk" classFinderLk)
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
@@ -296,8 +338,11 @@
   (load-class "sq.lang.util.Ints2")
   (load-class "sq.lang.util.Ints3")
   (load-class "sq.lang.GlobalCHM")
-  (load-class "sq.lang.LoadedClassLookup")
+  ; (load-class "sq.lang.LoadedClassLookup")
   (load-class "sq.lang.util.ClassReflect")
+  (load-hidden "sq.lang.util.RopeCharacterIterator")
+  (load-hidden "sq.lang.util.EmptyCharacterIterator")
+  (load-hidden "sq.lang.util.RopeUtil")
   
   (load-class "sq.lang.DynClassMethodCallSite")
   (load-class "sq.lang.DynInstanceMethodCallSite")
@@ -310,6 +355,7 @@
   
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
+  (load-hidden "sq.lang.util.Maths")
   
   (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
   (load-class "sq.lang.KeywordFactory")
@@ -328,31 +374,45 @@
   (load-hidden "chic.sqeditor.IntrMgr")
   
   (load-hidden "chic.sqeditor.Buffer")
+  (load-hidden "chic.sqeditor.Misc")
+  (load-hidden "chic.sqeditor.BreakNav")
+  (load-class "chic.sqeditor.i.LineOffsetConverter")
+  (load-hidden "chic.sqeditor.Region")
+  (load-hidden "chic.sqeditor.RegionOps")
+  (load-hidden "chic.sqeditor.RegionPathOps")
+  (load-hidden "chic.sqeditor.EditorCommit")
   (load-hidden "chic.sqeditor.Selection")
+  (load-hidden "chic.sqeditor.SelectionOps")
   (load-hidden "chic.sqeditor.View")
   (load-hidden "chic.sqeditor.TextEditor")
   
   (load-hidden "chic.sqeditor.UiRoot")
   (load-hidden "chic.sqeditor.Window")
   
+  (.getModifiers (.arrayType (cof "java.lang.Object")))
+
   (chic.windows/dosendui
     (try (rcall (cof "chic.sqeditor.Window") 'spawn)
       (catch Throwable e
         (.printStackTrace e))))
-  (System/gc)
-    
-  (io.github.humbleui.jwm.Platform/CURRENT)
+  
+  (instance? Cloneable (make-array java.lang.String 0))
+  
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]
-    (class w))
-  (cof "chic.sqeditor.UiRoot")
-  (.getDeclaredMethods (cof "chic.sqeditor.Interactor"))
-  
+    (chic.windows/safe-doui
+      (.close (rfield w 'jwm-window))))
+
+    ssd szz fss
   
   (.newInstance (first (.getConstructors (cof "chic.sqeditor.UiRoot")))
     nil)
-
+  (let [cn "sq.lang.DynInstanceMethodCallSite"]
+    (.put (rfield clojure.lang.DynamicClassLoader 'classCache)
+      cn (java.lang.ref.SoftReference. (cof cn))))
   
+
+  (abs 2.7)
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e
      (.printStackTrace e)))
@@ -365,9 +425,10 @@
   (println (chic.decompiler/decompile
              "tmp/eval.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/chic.sqeditor.UiRoot.class" :bytecode))
+             "tmp/chic.sqeditor.RegionPathOps.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.NonInitialisingClassLoader.class" :bytecode))
+             "tmp/sq.lang.DynGetFieldCallSite.class" :bytecode))
+  (import '(io.lacuna.bifurcan Rope))
   
 
   
@@ -490,3 +551,5 @@ get GC'd at some point and the int loses its mapping + risks collisions
   ;; all classes can be reclaimed after running this
   (def --cl nil)
 )
+
+

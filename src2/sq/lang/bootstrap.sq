@@ -12,7 +12,7 @@
 
 (Refer-Classes
   (java.lang.reflect
-    Field Method Modifier))
+    Field Method Modifier Constructor Executable))
 
 (defclass sq.lang.BootstrapInfoProvider
   (def ^:pub-pkg map (nw ConcurrentHashMap))
@@ -22,107 +22,117 @@
 (defclass sq.lang.InternalDataContainer
   (def map (nw ConcurrentHashMap)))
 
+(defclass sq.lang.DynCallSiteFallback)
+
 (defclass sq.lang.DynClassMethodCallSite
   :super MutableCallSite
-  [^MHLookup lk ^String method-name ^String target-classname]
+  [^MHLookup lk ^String method-name ^String target-classname ^"[LString;" arg-classnames]
   
-  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc]
+  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc ^"[LString;" arg-cns]
     (init-super type)
     (set! lk lk')
     (set! method-name mn)
-    (set! target-classname tc))
+    (set! target-classname tc)
+    (set! arg-classnames arg-cns))
+  
+  (def ^:priv class-finder
+    (ct java.util.function.BiFunction
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "classFinderLk")))
+  
+  (defi get-fallback [self ^MethodType type]
+    (=: lk' (jc MethodHandles lookup))
+    (.asType
+      (.asCollector
+        (.bind lk' self "fallback"
+          (jc MethodType methodType
+            (jc Class forName "java.lang.Object")
+            (jc Class forName "[Ljava.lang.Object;")))
+        (jc Class forName "[Ljava.lang.Object;")
+        (.parameterCount type))
+      type))
   
   (defi ^:priv reset ^void [self]
-    (l= map (jf sq.lang.InternalDataContainer :map))
-    (l= target-class
-      (.lookupClass
-        (ct MHLookup
-          (.get (ct ConcurrentHashMap
-                  (.get map "hclassLookups"))
-            target-classname))))
-    (when (nil? target-class)
-      (set! target-class (jc Class forName target-classname false
-                           (.getClassLoader (.lookupClass lk)))))
-    (l= type (.type self))
-    (l= method (ji target-class getMethod method-name (.parameterArray type)))
-    (l= target-mh (.unreflect lk method))
-    (l= fallback-mh
-      (do (l= lk' (jc MethodHandles lookup))
-        (.asType
-          (.asCollector
-           (.bind lk' self "fallback"
-             (jc MethodType methodType
-               (jc Class forName "java.lang.Object")
-               (jc Class forName "[Ljava.lang.Object;")))
-           (jc Class forName "[Ljava.lang.Object;")
-           (.parameterCount type))
-          type)))
-    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
+    (=: type (.type self))
+    (=: param-types (na Class (alength arg-classnames)))
+    (loop [i (dec (alength param-types))]
+      (when (<= 0 i)
+        (sa param-types i (ct Class (.apply class-finder lk (aa arg-classnames i))))))
+    (=: method (ji target-class getMethod method-name param-types))
+    (=: target-mh (.unreflect lk method))
+    (=: fallback-mh (.get-fallback self type))
+    (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
+                             "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
-  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+  (defi fallback ^Object [self ^"[LObject;" args]
     (.reset self)
     (.invokeWithArguments (.getTarget self) args))
   
   (defn ^:pub bootstrap
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
-               ^String target-classname]
-    (l= cs (nw Self lk method-name type target-classname))
-    (.reset cs)
+               ^String target-classname ^"[LString;" arg-classnames]
+    (=: cs (nw Self lk method-name type target-classname arg-classnames))
+    (try (.reset cs)
+      (catch Throwable e
+        (.setTarget cs (.get-fallback cs type))))
     cs)
   )
 
 (defclass sq.lang.DynInstanceMethodCallSite
   :super MutableCallSite
-  [^MHLookup lk ^String method-name ^String target-classname]
+  [^MHLookup lk ^String method-name ^String target-classname ^"[LString;" arg-classnames]
   
-  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc]
+  (init [_ ^MHLookup lk' ^String mn ^MethodType type ^String tc ^"[LString;" arg-cns]
     (init-super type)
     (set! lk lk')
     (set! method-name mn)
-    (set! target-classname tc))
+    (set! target-classname tc)
+    (set! arg-classnames arg-cns))
+  
+  (def ^:priv class-finder
+    (ct java.util.function.BiFunction
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "classFinderLk")))
+  
+  (defi get-fallback [self ^MethodType type]
+    (=: lk' (jc MethodHandles lookup))
+    (.asType
+      (.asCollector
+        (.bind lk' self "fallback"
+          (jc MethodType methodType
+            (jc Class forName "java.lang.Object")
+            (jc Class forName "[Ljava.lang.Object;")))
+        (jc Class forName "[Ljava.lang.Object;")
+        (.parameterCount type))
+      type))
   
   (defi ^:priv reset ^void [self]
-    (l= map (jf sq.lang.InternalDataContainer :map))
-    (l= target-class
-      (.lookupClass
-        (ct MHLookup
-          (.get (ct ConcurrentHashMap
-                  (.get map "hclassLookups"))
-            target-classname))))
-    (when (nil? target-class)
-      (set! target-class (jc Class forName target-classname false
-                           (.getClassLoader (.lookupClass lk)))))
-    (l= type (.type self))
-    (=: param-types (.parameterArray type))
-    (l= method (ji target-class getMethod method-name
-                 (ct "[Ljava.lang.Class;"
-                   (jc java.util.Arrays copyOfRange
-                    param-types 1 (alength param-types)))))
-    (l= target-mh (.asType (.unreflect lk method) type))
-    (l= fallback-mh
-      (do (l= lk' (jc MethodHandles lookup))
-        (.asType
-          (.asCollector
-           (.bind lk' self "fallback"
-             (jc MethodType methodType
-               (jc Class forName "java.lang.Object")
-               (jc Class forName "[Ljava.lang.Object;")))
-           (jc Class forName "[Ljava.lang.Object;")
-           (.parameterCount type))
-          type)))
-    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
+    (=: type (.type self))
+    (=: param-types (na Class (alength arg-classnames)))
+    (loop [i (dec (alength param-types))]
+      (when (<= 0 i)
+        (sa param-types i (ct Class (.apply class-finder lk (aa arg-classnames i))))))
+    (=: method (ji target-class getMethod method-name param-types))
+    (=: target-mh (.asType (.unreflect lk method) type))
+    (=: fallback-mh (.get-fallback self type))
+    (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
+                             "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
-  (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
+  (defi fallback ^Object [self ^"[LObject;" args]
     (.reset self)
     (.invokeWithArguments (.getTarget self) args))
   
-  (defn ^:pub bootstrap
+  (defn ^:pub bsm
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
-               ^String target-classname]
-    (l= cs (nw Self lk method-name type target-classname))
-    (.reset cs)
+               ^String target-classname ^"[LString;" arg-classnames]
+    (=: cs (nw Self lk method-name type target-classname arg-classnames))
+    (try (.reset cs)
+      (catch Throwable e
+        (.setTarget cs (.get-fallback cs type))))
     cs)
   )
 
@@ -136,33 +146,58 @@
     (set! lk lk')
     (set! target-classname tc))
   
+  (def ^:priv class-finder
+    (ct java.util.function.BiFunction
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "classFinderLk")))
+  
+  (defn method-applicable? ^boolean
+    [^"[Ljava.lang.Class;" param-types ^Executable method]
+    (=: method-param-types (.getParameterTypes method))
+    (and (= (alength method-param-types) (alength param-types))
+      (let i (alength param-types)
+        (loop []
+          (set! i (- i 1))
+          (if (<= 0 i)
+            (let
+              c1 (aa method-param-types i)
+              c2 (aa param-types i)
+              ;; generous applicability test, as casting may be used
+              (if (or (.isAssignableFrom c1 c2)
+                    (.isAssignableFrom c2 c1))
+                (recur)
+                false))
+            true)))))
+  
+  (defn match-ctor ^Constructor [^Class target-class ^"[Ljava.lang.Class;" param-types]
+    (=: ctors (.getDeclaredConstructors target-class))
+    (=: match (ct Constructor nil))
+    (loop [i (- (alength ctors) 1)] ;; TODO accessibility, most specific
+      (when (<= 0 i)
+        (=: ctor (aa ctors i))
+        (when (jc Self method-applicable? param-types ctor)
+          (set! match ctor))
+        (recur (- i 1))))
+    match)
+  
   (defi ^:priv reset ^void [self]
-    (l= map (jf sq.lang.InternalDataContainer :map))
-    (l= tlk (.get (ct ConcurrentHashMap
-                    (.get map "hclassLookups"))
-              target-classname))
-    (when (nil? tlk)
-      (throw (nw IllegalStateException (.concat "Target class not found: " target-classname))))
-    (l= target-class
-      (.lookupClass (ct MHLookup tlk)))
-    (when (nil? target-class)
-      (set! target-class (jc Class forName target-classname false
-                           (.getClassLoader (.lookupClass lk)))))
-    (l= type (.type self))
-    (l= method (.getConstructor target-class (.parameterArray type)))
-    (l= target-mh (.asType (.unreflectConstructor lk method) type))
-    (l= fallback-mh
-      (do (l= lk' (jc MethodHandles lookup))
-        (.asType
-          (.asCollector
-           (.bind lk' self "fallback"
-             (jc MethodType methodType
-               (jc Class forName "java.lang.Object")
-               (jc Class forName "[Ljava.lang.Object;")))
-           (jc Class forName "[Ljava.lang.Object;")
-           (.parameterCount type))
-          type)))
-    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
+    (=: type (.type self))
+    (=: method (jc Self match-ctor target-class (.parameterArray type)))
+    (=: target-mh (.asType (.unreflectConstructor lk method) type))
+    (=: lk' (jc MethodHandles lookup))
+    (=: fallback-mh
+      (.asType
+        (.asCollector
+          (.bind lk' self "fallback"
+            (jc MethodType methodType
+              (jc Class forName "java.lang.Object")
+              (jc Class forName "[Ljava.lang.Object;")))
+          (jc Class forName "[Ljava.lang.Object;")
+          (.parameterCount type))
+        type))
+    (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
+                             "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
   (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
@@ -188,35 +223,33 @@
     (set! target-classname tc)
     (set! field-classname fc))
   
-  (defn resolve-class [^MHLookup lk ^String name]
-    (=: map (jf sq.lang.InternalDataContainer :map))
-    (=: clk (.get (ct ConcurrentHashMap
-                    (.get map "hclassLookups"))
-              name))
-    (if (nil? clk)
-      (jc Class forName name false
-        (.getClassLoader (.lookupClass lk)))
-      (.lookupClass (ct MHLookup clk))))
+  (def ^:priv class-finder
+    (ct java.util.function.BiFunction
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "classFinderLk")))
+  
+  (defi get-fallback [self ^MethodType type]
+    (=: lk' (jc MethodHandles lookup))
+    (.asType
+      (.asCollector
+        (.bind lk' self "fallback"
+          (jc MethodType methodType
+            (jc Class forName "java.lang.Object")
+            (jc Class forName "[Ljava.lang.Object;")))
+        (jc Class forName "[Ljava.lang.Object;")
+        (.parameterCount type))
+      type))
   
   (defi ^:priv reset ^void [self]
     (=: map (jf sq.lang.InternalDataContainer :map))
-    (=: target-class (jc Self resolve-class lk target-classname))
-    (=: field-class (jc Self resolve-class lk field-classname))
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
+    (=: field-class (ct Class (.apply class-finder lk field-classname)))
     (=: type (.type self))
     (=: field (jc sq.lang.util.ClassReflect find-field target-class false field-name))
     (=: target-mh (.asType (.unreflectGetter lk field) type))
-    (=: fallback-mh
-      (do (l= lk' (jc MethodHandles lookup))
-        (.asType
-          (.asCollector
-           (.bind lk' self "fallback"
-             (jc MethodType methodType
-               (jc Class forName "java.lang.Object")
-               (jc Class forName "[Ljava.lang.Object;")))
-           (jc Class forName "[Ljava.lang.Object;")
-           (.parameterCount type))
-          type)))
-    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (=: fallback-mh (.get-fallback self type))
+    (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
+                             "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
   (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
@@ -227,7 +260,9 @@
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
                ^String target-classname ^String field-classname]
     (=: cs (nw Self lk type method-name target-classname field-classname))
-    (.reset cs)
+    (try (.reset cs)
+      (catch Throwable e
+        (.setTarget cs (.get-fallback cs type))))
     cs)
   )
 
@@ -242,28 +277,21 @@
     (set! target-classname tc)
     (set! field-classname fc))
   
-  (defn resolve-class [^MHLookup lk ^String name]
-    (=: map (jf sq.lang.InternalDataContainer :map))
-    (=: clk (.get (ct ConcurrentHashMap
-                    (.get map "hclassLookups"))
-              name))
-    (when (nil? clk)
-      (throw (nw IllegalStateException (.concat "Class not found: " name))))
-    (=: cls (.lookupClass (ct MHLookup clk)))
-    (when (nil? cls)
-      (set! cls (jc Class forName name false
-                  (.getClassLoader (.lookupClass lk)))))
-    cls)
+  (def ^:priv class-finder
+    (ct java.util.function.BiFunction
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "classFinderLk")))
   
   (defi ^:priv reset ^void [self]
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
     (=: map (jf sq.lang.InternalDataContainer :map))
-    (=: target-class (jc Self resolve-class lk target-classname))
-    (=: field-class (jc Self resolve-class lk field-classname))
+    (=: target-class (ct Class (.apply class-finder lk target-classname)))
+    (=: field-class (ct Class (.apply class-finder lk field-classname)))
     (=: type (.type self))
     (=: field (jc sq.lang.util.ClassReflect find-field target-class false field-name))
     (=: target-mh (.asType (.unreflectSetter lk field) type))
     (=: fallback-mh
-      (do (l= lk' (jc MethodHandles lookup))
+      (do (=: lk' (jc MethodHandles lookup))
         (.asType
           (.asCollector
            (.bind lk' self "fallback"
@@ -273,7 +301,7 @@
            (jc Class forName "[Ljava.lang.Object;")
            (.parameterCount type))
           type)))
-    (l= sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
+    (=: sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
   (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]

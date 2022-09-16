@@ -206,12 +206,10 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
         p2 (spec/prim? s2)]
     (when-not (and p1 p2)
       (throw (RuntimeException.
-               (str "arith-2 operands not prim: " s1 ", " s2 "\n "
-                 children))))
+               (str "arith-2 operands not prim: " s1 ", " s2 ))))
     (when-not (= p1 p2)
       (throw (RuntimeException.
-               (str "arith-2 operands not equal type: " p1 ", " p2 "\n "
-                 children))))
+               (str "arith-2 operands not equal type: " p1 ", " p2))))
     (ana/transfer-branch-env x2
       {:node/kind :arithmetic-2
        :op op :type (keyword p1)
@@ -219,36 +217,77 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
        :arg1 x1 :arg2 x2
        ; :args [x1 x2]
        })))
+(defn anasf-arith-2+ [op {:keys [children] :as node}]
+  (if (= 3 (count children))
+    (anasf-arith-2 op node)
+    (anasf-arith-2+ op
+      (assoc node :children
+        (into [(nth children 1)
+               (assoc node :children (subvec children 0 3))]
+          (subvec children 3))))))
 (defn anasf-add [node]
-  (anasf-arith-2 :add node))
+  (anasf-arith-2+ :add node))
 (defn anasf-subtract [node]
-  (anasf-arith-2 :subtract node))
+  (anasf-arith-2+ :subtract node))
 (defn anasf-multiply [node]
-  (anasf-arith-2 :multiply node))
+  (anasf-arith-2+ :multiply node))
 (defn anasf-divide [node]
-  (anasf-arith-2 :divide node))
+  (anasf-arith-2+ :divide node))
 (defn anasf-remainder [node]
   (anasf-arith-2 :remainder node))
 (defn anasf-bit-and [node]
-  (anasf-arith-2 :and node))
+  (anasf-arith-2+ :and node))
 (defn anasf-bit-or [node]
-  (anasf-arith-2 :or node))
+  (anasf-arith-2+ :or node))
 (defn anasf-bit-xor [node]
-  (anasf-arith-2 :xor node))
+  (anasf-arith-2+ :xor node))
+(defn anasf-bit-not [{:keys [children] :as node}]
+  (assert (= 2 (count children)))
+  (let [arg (ana/analyse-expr node (nth children 1))]
+    (ana/transfer-branch-env arg
+      {:node/kind :arithmetic-1
+       :op :not
+       :arg arg
+       :node/spec (:node/spec arg)})))
+(defn typed-number [typ num]
+  ((case typ
+     :int int
+     :float float
+     :double double
+     :long long
+     :short short
+     :byte byte)
+   num))
 (defn anasf-inc [{:keys [children]:as node}]
   (assert (= 2 (count children)))
-  (let [x (ana/analyse-after node (nth children 1))
+  (let [x (ana/analyse-expr node (nth children 1))
         s (:node/spec x)
-        p (spec/prim? s)]
+        p (spec/prim? s)
+        tk (keyword p)]
     (when-not p
       (throw (RuntimeException.
                (str "operand not prim: " p))))
     (ana/transfer-branch-env x
       {:node/kind :arithmetic-2
-       :op :add :type (keyword p)
+       :op :add :type tk
        :node/spec (:node/spec x)
-       :arg1 x :arg2 (ana/new-const-prim-node x (int 1))
+       :arg1 x :arg2 (ana/new-const-prim-node x (typed-number tk 1))
        ; :args [x1 x2]
+       })))
+(defn anasf-dec [{:keys [children]:as node}]
+  (assert (= 2 (count children)))
+  (let [x (ana/analyse-expr node (nth children 1))
+        s (:node/spec x)
+        p (spec/prim? s)
+        tk (keyword p)]
+    (when-not p
+      (throw (RuntimeException.
+               (str "operand not prim: " p))))
+    (ana/transfer-branch-env x
+      {:node/kind :arithmetic-2
+       :op :subtract :type tk
+       :node/spec (:node/spec x)
+       :arg1 x :arg2 (ana/new-const-prim-node x (typed-number tk 1))
        })))
 (swap! ana/*sf-analysers assoc "+" #'anasf-add)
 (swap! ana/*sf-analysers assoc "-" #'anasf-subtract)
@@ -256,9 +295,11 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
 (swap! ana/*sf-analysers assoc "/" #'anasf-divide)
 (swap! ana/*sf-analysers assoc "rem" #'anasf-remainder)
 (swap! ana/*sf-analysers assoc "inc" #'anasf-inc)
+(swap! ana/*sf-analysers assoc "dec" #'anasf-dec)
 (swap! ana/*sf-analysers assoc "bit-and" #'anasf-bit-and)
 (swap! ana/*sf-analysers assoc "bit-or" #'anasf-bit-or)
 (swap! ana/*sf-analysers assoc "bit-xor" #'anasf-bit-xor)
+(swap! ana/*sf-analysers assoc "bit-not" #'anasf-bit-not)
 
 
 #_

@@ -119,6 +119,7 @@
   (parse-number "2%")
   (parse-number "0xFFffffff")
   (parse-number "0f")
+  (parse-number "4d")
   
   )
 

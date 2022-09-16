@@ -176,9 +176,20 @@ GREEK 2
 (true? (eval-str "(and true true)"))
 
 (= 3 (eval-str "(do (=: x :x) (=: x 2) (+ x 1))"))
+(= 1 (eval-str "(do (=: x 1) (let x 2 nil) x)"))
 
 (= 1 (eval-str "(=: x 1)"))
 (eval-str "(and (=: x true) x)")
+;; context - expressions and statements
+(eval-str "(do (< 2 (=: x 1)) true)")
+(eval-str "(do (if (= 1 (=: x 1)) (set! x 2) nil) true)")
+
+(eval-str "(do (if true 1 :x) true)")
+
+(true? (eval-str "(do (case-enum (jf java.lang.Character$UnicodeScript HEBREW)
+GREEK (jc Math min 1 2)
+nil) true)"))
+
 ;; TODO
 ; (eval-str "(when (not (or false (=: x true))) x)")
 ; (eval-str "(when (and (=: x true)) x)")

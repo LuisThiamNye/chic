@@ -17,6 +17,9 @@
 (defn statement-env [env]
   (assoc env :ctx :statement))
 
+(defn expression-env [env]
+  (assoc env :ctx :expression))
+
 (defn give-env-retctx-of [env2 env1]
   (assoc env2 :ctx (:ctx env1)))
 
@@ -53,23 +56,34 @@
   (let [locals (:node/locals prev)
         ana (-analyse-node
               (cond-> (assoc node :node/env (:node/env prev))
-                locals (assoc :node/locals locals)))]
+                locals (assoc :node/locals locals)))
+        ana (if (contains? ana :node/source)
+              ana
+              (assoc ana :node/source (:node/source prev)))]
     (assert (some? (:node/locals ana)))
     (assert (some? (:node/env ana))
       {:msg "returned without env"
        :ret (select-keys ana [:node/kind])
        :prev (select-keys prev [:node/kind])})
-    ana))
+    (if (and (in-statement? (:node/env prev))
+          (not (spec/void? (:node/spec ana))))
+      (assoc ana :node/discard-result true
+        :node/spec (spec/of-class "void"))
+      ana)))
+
+(defn analyse-expr [prev node]
+  (update (analyse-after (update prev :node/env expression-env) node)
+    :node/env give-env-retctx-of (:node/env prev)))
 
 (defn analyse-args [prev args]
   (if (= 0 (count args))
     []
-    (let [n1 (analyse-after prev (nth args 0))]
+    (let [n1 (analyse-expr prev (nth args 0))]
       (if (= 1 (count args))
         [n1]
         (reduce
           (fn [acc node]
-            (conj acc (analyse-after (peek acc) node)))
+            (conj acc (analyse-expr (peek acc) node)))
           [n1] (subvec args 1))))))
 
 (defn analyse-body [prev body]
@@ -139,12 +153,12 @@
         valdecl (nth children 2)]
     (or
       (when (= :symbol (:node/kind target))
-        (let [sym (:string target)]
+        (let [sym (:string target)
+              statement? (in-statement? env)]
           (or
             (when-some [local (get (:node/locals node) sym)]
-              (let [v (analyse-after node valdecl)
-                    s (:node/spec v)
-                    statement? (in-statement? env)]
+              (let [v (analyse-expr node valdecl)
+                    s (:node/spec v)]
                 {:node/kind :assign-local
                  :node/spec (if statement?
                               (spec/of-class "void")
@@ -159,13 +173,18 @@
                    (assoc :node/locals
                      (assoc-in (:node/locals node) [sym :spec] s)))}))
             (when-some [field (get-in env [:fields sym])]
-              (assert (:mutable field))
-              (transfer-branch-env node
-                {:node/kind :self-set-field
-                 :field-name sym
-                 :type (type/classname->type (spec/get-exact-class (:spec field)))
-                 :val (analyse-after node valdecl)
-                 :node/spec {:spec/kind :exact-class :classname "void"}})))))
+              (assert (:mutable field)
+                (str "field " sym " not declared mutable"))
+              (let [v (analyse-expr node valdecl)]
+                (transfer-branch-env node
+                  {:node/kind :self-set-field
+                   :field-name sym
+                   :type (type/classname->type (spec/get-exact-class (:spec field)))
+                   :val v
+                   :statement? statement?
+                   :node/spec (if statement?
+                                (spec/of-class "void")
+                                (:node/spec v))}))))))
       (throw (ex-info "Could not resolve set! target"
                {:target target})))))
 #_
@@ -188,9 +207,10 @@
   (assert (<= 3 (count children)))
   (let [nam (:string (nth children 1))
         _ (assert (string? nam))
-        init (analyse-after node (nth children 2))
-        statement? (in-statement? env)]
-    (assert (not (spec/void? (:node/spec init))))
+        init (analyse-expr node (nth children 2))
+        statement? (in-statement? env)
+        init-spec (:node/spec init)]
+    (assert (not (spec/void? init-spec)))
     {:node/kind :assign-local
      :node/spec (if statement?
                   (spec/of-class "void")
@@ -200,7 +220,7 @@
      :statement? statement?
      :node/env (:node/env init)
      :node/locals (assoc-in (:node/locals init) [nam :spec]
-                    (:node/spec init))}))
+                    init-spec)}))
 
 (defn anasf-let [{:keys [children] :as node}]
   (if (= 1 (count children))
@@ -209,28 +229,32 @@
           tail (when (even? (count children))
                  (peek children))
           [pairs tail] (if tail [pairs tail]
-                         [(pop pairs) (peek (peek pairs))])
+                         [(do (assert (= :symbol (:node/kind (first (peek pairs)))))
+                            (pop pairs)) (peek (peek pairs))])
           assigns (reduce
                     (fn [acc [sym val]]
                       (assert (= :symbol (:node/kind sym)))
                       (let [prev (or (peek acc) node)
-                            aval (analyse-after prev val)
+                            aval (analyse-expr prev val)
                             nam (:string sym)]
-                        (assert (not (spec/void? (:node/spec aval))))
                         (conj acc
                           (transfer-branch-env aval
-                            {:node/kind :assign-local
-                             :local-name nam
-                             :val aval
-                             :statement? true
-                             :node/spec (spec/of-class "void")
-                             :node/locals (assoc-in (:node/locals aval) [nam :spec]
-                                            (:node/spec aval))}))))
+                            (if (spec/void? (:node/spec aval))
+                              aval
+                              {:node/kind :assign-local
+                               :local-name nam
+                               :val aval
+                               :statement? true
+                               :node/spec (spec/of-class "void")
+                               :node/locals (assoc (:node/locals aval) nam
+                                              {:spec (:node/spec aval)
+                                               :id (str (gensym nam))})})))))
                     [] pairs)
           tail (analyse-after (or (peek assigns) node) tail)]
       (transfer-branch-env tail
         {:node/kind :do
          :children (conj assigns tail)
+         :node/locals (:node/locals node)
          :node/spec (:node/spec tail)}))))
 
 (defn anasf-do [{:keys [children] :as node}]
@@ -259,8 +283,7 @@
             (assoc node :special-form
               (requiring-resolve 'jl.compiler.sforms/anasf-prefix-jcall)))))
     (condp = string
-      "nil" (transfer-branch-env node {:node/kind :nil
-                                       :node/spec {:spec/kind :nil}})
+      "nil" (new-void-node node)
       "true" (new-const-prim-node node true)
       "false" (new-const-prim-node node false)
       nil)
@@ -343,8 +366,8 @@
 
 (defn analyse-map [{:keys [children] :as node}]
   (-> (reduce (fn [target [k v]]
-                (let [k' (analyse-after target k)
-                      v' (analyse-after k' v)]
+                (let [k' (analyse-expr target k)
+                      v' (analyse-expr k' v)]
                   {:node/kind :jcall
                    :classname "io.lacuna.bifurcan.IMap"
                    :interface? true
@@ -371,23 +394,31 @@
             :string analyse-string
             :set analyse-set
             :char analyse-char
-            (throw (RuntimeException. (str "AST node analyser not found: "
-                                        (dissoc node :node/env)))))]
+            (throw (RuntimeException.
+                     (str "AST node analyser not found: "
+                       (select-keys node [:node/kind :node/source])))))]
     (try (f node)
       (catch Throwable e
         (throw (ex-info "Exception analysing node"
                  {:node (select-keys node [:node/kind :node/source])} e))))))
 
 (defn inject-default-env [node]
-  (assoc node :node/env {:class-aliases interop/base-class-aliases
-                         :class-resolver interop/find-class
-                         :self-classname "_.(Eval)"
-                         :ctx :expression}
+  (assoc node :node/env
+    {:class-aliases interop/base-class-aliases
+     :class-resolver interop/find-class
+     :self-classname "_.(Eval)"
+     :ctx :expression
+     :new-classes {"_.(Eval)" {:classname "_.(Eval)"
+                               :class (interop/new-unreal-class
+                                        "_.(Eval)" Object nil)}}}
     :node/locals {}))
 
 (defn expand-classname [env s]
   (assert (string? s))
-  (or (get (:class-aliases env) s) s))
+  (let [[_ a b c] (re-matches #"(\[+L)?(.+?)(;)?" s)
+        b (or (get (:class-aliases env) b) b)
+        ret (str a b c)]
+    ret))
 
 #_(deftype+ BaseAnaMetaRdrVisitor [parent ^:mut meta]
   PFormVisitor

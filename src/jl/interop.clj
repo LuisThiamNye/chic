@@ -1,6 +1,7 @@
 (ns jl.interop
   (:require
     [chic.util :as util]
+    [jl.compiler.op :as op]
     [jl.compiler.type :as type])
   (:import
     (org.objectweb.asm Type Opcodes)
@@ -27,6 +28,9 @@
   (-getType [_]))
 
 (defprotocol PClassNode
+  (-arrayType [_])
+  (-arrayClass? [_])
+  (-elementType [_])
   (-hiddenClass? [_])
   (-interface? [_])
   (-satisfies? [_ super])
@@ -36,12 +40,20 @@
   (-getInterfaces [_])
   (-getSuperclass [_]))
 
+(defprotocol PMethodNode
+  (-varargs? [_])
+  (-getParamTypes [_])
+  (-getRetType [_]))
+
 (extend-type Class
   PNamed
   (-getName [self] (.getName self))
   PClassMember
   (-getModifiers [self] (.getModifiers self))
   PClassNode
+  (-arrayClass? [self] (.isArray self))
+  (-arrayType [self] (.arrayType self))
+  (-elementType [self] (.componentType self))
   (-hiddenClass? [self] (.isHidden self))
   (-interface? [self] (.isInterface self))
   (-getInterfaces [self]
@@ -56,8 +68,36 @@
     (.getSuperclass self))
   (-satisfies? [self sup]
     ;; Class can only satisfy classes that already exist
-    (when (class? sup)
-      (.isAssignableFrom ^Class sup self))))
+    (if (class? sup)
+      (.isAssignableFrom ^Class sup self)
+      (= (.getName self) (-getName sup)))))
+
+(extend-type Constructor
+  PNamed
+  (-getName [self] (.getName self))
+  PClassMember
+  (-getModifiers [self] (.getModifiers self))
+  PMethodNode
+  (-varargs? [self] (.isVarArgs self))
+  (-getParamTypes [self] (.getParameterTypes self)))
+
+(extend-type Method
+  PNamed
+  (-getName [self] (.getName self))
+  PClassMember
+  (-getModifiers [self] (.getModifiers self))
+  PMethodNode
+  (-varargs? [self] (.isVarArgs self))
+  (-getParamTypes [self] (.getParameterTypes self))
+  (-getRetType [self] (.getReturnType self)))
+
+(extend-type Field
+  PNamed
+  (-getName [self] (.getName self))
+  PClassMember
+  (-getModifiers [self] (.getModifiers self))
+  PTyped
+  (-getType [self] (.getType self)))
 
 (defrecord UnrealClass [name super interfaces ^int flags
                         fields methods])
@@ -65,6 +105,20 @@
   PNamed
   (-getName [self] (:name self))
   PClassNode
+  (-arrayClass? [self] (:array? self))
+  (-elementType [self]
+    (:element-class self))
+  (-arrayType [self]
+    (if (= 0 (:ndims self 0))
+      (assoc (->UnrealClass (str "[L" (:name self) ";")
+               ;; FIXME do proper flag conversion
+               Object nil (:flags self) nil nil)
+        :array? true
+        :ndims 1
+        :element-class self
+        :hidden? (:hidden? self))
+      (assoc self :ndims (inc (:ndims self))
+        :name (str "[" (:name self)))))
   (-hiddenClass? [self] (:hidden? self))
   (-interface? [self] (< 0 (bit-and (:flags self) Opcodes/ACC_INTERFACE)))
   (-getInterfaces [self] (:interfaces self))
@@ -76,6 +130,7 @@
   (-satisfies? [self other]
     ;; could also implement by keeping set of visited bases and only checking the unvisited
     (or (identical? self other)
+      (= (:name self) (-getName other))
       (-satisfies? (:super self) other)
       (some #(-satisfies? % other)
         (:interfaces self)))))
@@ -89,7 +144,16 @@
   PTyped
   (-getType [self] (:type self)))
 
-(defrecord UnrealMethod [name param-classnames ret-classname ^int flags])
+(defrecord UnrealMethod [name param-types ret-type ^int flags])
+(extend-type UnrealMethod
+  PNamed
+  (-getName [self] (:name self))
+  PClassMember
+  (-getModifiers [self] (:flags self))
+  PMethodNode
+  (-getParamTypes [self] (:param-types self))
+  (-getRetType [self] (:ret-type self))
+  (-varargs? [self] (op/acc-mask-contains? (:flags self) :varargs)))
 
 (defn new-unreal-class
   ([name super interfaces]
@@ -98,10 +162,54 @@
    (into (->UnrealClass name super (object-array interfaces) 0
            (object-array (mapv map->UnrealField (:fields opts)))
            (object-array (mapv map->UnrealMethod (:methods opts))))
-     (dissoc opts :fields :methods))))
+     (update (dissoc opts :fields :methods)
+       :constructors #(object-array (mapv map->UnrealMethod %))))))
+
+(defn array-class-ndims [cls]
+  (loop [i 1
+         c cls]
+    (let [el (-elementType c)]
+      (if (-arrayClass? el)
+        (recur (inc i) el)
+        i))))
+
+(defn resolve-obj-class [{:keys [new-classes class-resolver]} classname]
+  (or
+    (get-in new-classes [classname :class])
+    (try (util/primitive-name->class classname)
+      (catch Exception _))
+    (when (= "void" classname) Void/TYPE)
+    (if-some [info (get new-classes classname)]
+      (or (:class info) (throw (ex-info "classinfo has no :class"
+                                 {:classname classname})))
+      (try (or (when class-resolver (class-resolver classname))
+             (find-class classname))
+        (catch ExceptionInInitializerError e
+          (throw (ClassNotFoundException. e)))))))
 
 (defn dynamic-class? [env cls]
   (-hiddenClass? cls))
+
+(defn split-classname [classname]
+  (let [ndims (count (re-find #"^\[+" classname))
+        el-classname (if (< 0 ndims)
+                       (second (re-matches #"L(.+);" (subs classname ndims)))
+                       classname)]
+    [ndims el-classname]))
+
+(defn array-class-of [el-class ndims]
+  (loop [i 0
+         c el-class]
+    (if (< i ndims)
+      (recur (inc i) (-arrayType c))
+      c)))
+
+(defn resolve-class [env classname]
+  (let [[ndims el-classname] (split-classname classname)
+        el-class (resolve-obj-class env el-classname)]
+    (if (= 0 ndims)
+      el-class
+      (array-class-of el-class ndims))))
 
 (defn member-accessible? [c1 target mods]
   (or (Modifier/isPublic mods)
@@ -116,16 +224,16 @@
       ;; FIXME
       true)))
 
-(defn method-applicable? [arg-cs desired-ret-c ^Executable method method-ret-c]
-  (and (or (nil? desired-ret-c)
+(defn method-applicable? [arg-cs desired-ret-c method method-ret-c]
+  (when (or (nil? desired-ret-c)
          (-satisfies? method-ret-c desired-ret-c))
-    (let [pts (.getParameterTypes method)]
+    (let [pts (-getParamTypes method)]
       (or (and (= (count pts) (count arg-cs))
             (every? identity
               (map #(-satisfies? %1 %2)
                 arg-cs pts)))
-          (when (and (.isVarArgs method) (<= (count pts) (count arg-cs)))
-            (let [vararg-type (.getComponentType (last pts))]
+          (when (and (-varargs? method) (<= (count pts) (count arg-cs)))
+            (let [vararg-type (-elementType (last pts))]
               (and (every? identity
                      (map #(-satisfies? %1 %2)
                        arg-cs (butlast pts)))
@@ -138,27 +246,14 @@
     (map vector sig1 sig2)))
 
 (defn most-specific-method [methods]
-  (reduce (fn [^Method ms ^Method method]
-            (let [sig1 (.getParameterTypes ms)
-                  sig2 (.getParameterTypes method)]
+  (reduce (fn [ms method]
+            (let [sig1 (-getParamTypes ms)
+                  sig2 (-getParamTypes method)]
               (cond
                 (sig-specificity>= sig1 sig2) ms
                 (sig-specificity>= sig2 sig1) method
                 :else (reduced nil))))
     (first methods) (next methods)))
-
-(defn resolve-class [{:keys [new-classes class-resolver]} classname]
-  (or
-    (get-in new-classes [classname :class])
-    (try (util/primitive-name->class classname)
-      (catch Exception _))
-    (if-some [info (get new-classes classname)]
-      (or (:class info) (throw (ex-info "classinfo has no :class"
-                                 {:classname classname})))
-      (try(or (when class-resolver (class-resolver classname))
-            (find-class classname))
-        (catch ExceptionInInitializerError e
-          (throw (ClassNotFoundException. e)))))))
 
 (defn get-all-instance-methods [cls]
   (reify clojure.lang.IReduceInit
@@ -234,21 +329,24 @@
         ret-c (when ret-type (->c ret-type))
         matches
         (into [] (comp
-                   (filter #(= (.getName ^Method %) method-name))
+                   (filter #(= (-getName %) method-name))
                    (filter #(= static?
-                              (Modifier/isStatic (.getModifiers %))))
-                   (filter #(= 0 (bit-and Opcodes/ACC_SYNTHETIC (.getModifiers %))))
-                   (filter #(member-accessible? self-class c (.getModifiers ^Method %)))
-                   (filter #(method-applicable? arg-cs ret-c % (.getReturnType ^Method %)))
+                              (Modifier/isStatic (-getModifiers %))))
+                   (filter #(= 0 (bit-and Opcodes/ACC_SYNTHETIC (-getModifiers %))))
+                   (filter #(member-accessible? self-class c (-getModifiers %)))
+                   (filter #(method-applicable? arg-cs ret-c % (-getRetType %)))
                    )
           (if static? (-getDeclaredMethods c)
             (get-all-instance-methods c)))]
     (case (count matches)
       0 (throw (RuntimeException.
                  (str "No method matches: " classname (if static? "/" ".") method-name
-                   " " (pr-str (partition 2 (interleave arg-types arg-cs))) " => " (pr-str ret-type))))
+                   " " (str (vec (partitionv 2 (interleave arg-types (map -getName arg-cs)))))
+                   " => " (pr-str ret-type))))
       (or (when-some [m (most-specific-method matches)]
-            (Type/getType ^Method m))
+            (Type/getMethodType (type/classname->type (-getName (-getRetType m)))
+              (into-array Type (mapv (comp type/classname->type -getName)
+                                 (-getParamTypes m)))))
         (throw (RuntimeException.
                  (str "Method ambiguous: " classname (if static? "/" ".") method-name
                    " " (pr-str arg-types) " => " (pr-str ret-type)
@@ -268,7 +366,8 @@
 
 (defn lookup-method-type
   ^Type [{:keys [new-classes] :as env} classname static? method-name arg-types ret-type]
-  (let [mthds (get-in new-classes
+  (match-method-type env classname static? method-name arg-types ret-type)
+  #_(let [mthds (get-in new-classes
                 [classname (if static? :class-methods :instance-methods)])
         mthd (first (filter #(= method-name (:name %)) mthds))]
     (if mthd
@@ -281,20 +380,22 @@
   (let [c (resolve-class env classname)
         ->c (fn [c] (or (try (util/primitive-name->class c)
                           (catch Exception _))
-                      (try (find-class c)
-                        (catch ClassNotFoundException _ Object)
-                        (catch ExceptionInInitializerError _ Object))))
+                      (try (resolve-class env c)
+                        (catch ClassNotFoundException _ Object))))
         arg-cs (mapv #(->c %) arg-types)
         matches (into [] (comp
-                           (filter #(member-accessible? Object c (.getModifiers ^Constructor %)))
+                           (filter #(member-accessible? Object c (-getModifiers %)))
                            (filter #(method-applicable? arg-cs nil % nil))
                            )
                   (-getDeclaredConstructors c))]
     (case (count matches)
       0 (throw (RuntimeException.
-                 (str "No ctor matches: " classname " " (pr-str arg-types))))
+                 (str "No ctor matches: " classname " "
+                   (pr-str (partition 2 (interleave arg-types arg-cs))))))
       (or (when-some [m (most-specific-method matches)]
-            (Type/getType ^Constructor m))
+            (Type/getMethodType Type/VOID_TYPE
+              (into-array Type (mapv (comp type/classname->type -getName)
+                                 (-getParamTypes m)))))
         (throw (RuntimeException.
                  (str "Ctor ambiguous: " classname " " (pr-str arg-types)
                    "\nMatches: " (mapv #(.toString %) matches))))))))
@@ -318,7 +419,8 @@
 
 (defn lookup-field-type
   ^Type [{:keys [new-classes self-classname] :as env} classname static? field-name]
-  (let [cls (get new-classes classname)
+  (get-field-type env self-classname classname static? field-name)
+  #_(let [cls (get new-classes classname)
         field (first (eduction
                        (filter #(= field-name (:name %)))
                        (filter #(= static? (contains? (:flags %) :static)))
@@ -372,11 +474,138 @@
 ;; want to unroll each class up to the common ancestor - intersecting excess interfaces
 (defn intersect-classes [classes]
   (let [ca (find-common-ancestor classes)]
-    (new-unreal-class ca
+    (new-unreal-class nil ca
       (reduce (fn [acc c]
                 (into acc (get-interfaces-since-super c ca)))
         #{} classes))))
 
+;; fields, local variables, and formal parameters
+#_(defn munge-unqualified-name [name]
+  )
+
+#_(def ^bytes method-munge-map
+  (let [m {\. 1
+           \/ 2
+           \; 3
+           \< 4
+           \> 5
+           \[ 6}
+        ks (sort (map int (keys m)))
+        low (first ks)
+        high (last ks)
+        a (byte-array (inc (- high low)))]
+    (doseq [[c offset] m]
+      (aset-byte a (- (int c) low) offset))
+    a))
+(defn method-char->munge-offset [c]
+  (case c
+    \. 1
+    \/ 2
+    \; 3
+    \< 4
+    \> 5
+    \[ 6
+    -1))
+(defn method-munge-offset->char [c]
+  (case c
+    1 \.
+    2 \/
+    3 \;
+    4 \<
+    5 \>
+    6 \[
+    (char 0)))
+
+(defn munge-method-name* [ary n start offset1]
+  (let [sb (StringBuilder.)
+        c1 ^char (first "\uDB80")
+        c2 ^char (first "\uDC00")]
+    (when (< 0 start)
+      (.append sb ary 0 start))
+    (loop [i (inc start)
+           offset offset1]
+      (.append sb c1)
+      (.append sb (char (+ (int c2) offset)))
+      (when-some
+        [[i offset]
+         (loop [i i]
+           (when (< i n)
+             (let [c (aget ary i)
+                   offset (method-char->munge-offset c)]
+               (if (<= 0 offset)
+                 [(inc i) offset]
+                 (do (.append sb c)
+                   (recur (inc i)))))))] 
+        (recur i offset)))
+    (.toString sb)))
+
+(defn munge-method-name [^String name]
+  (let [a (.toCharArray name)
+        n (alength a)]
+    (loop [i 0]
+      (if (< i n)
+        (let [offset (method-char->munge-offset (aget a i))]
+          (if (<= 0 offset)
+            (munge-method-name* a n i offset)
+            (recur (inc i))))
+        name))))
+
+(defn demunge-method-name* [ary n start start-c]
+  (let [sb (StringBuilder.)
+        esc-c1 ^char (first "\uDB80")
+        base-c2 ^char (first "\uDC00")]
+    (when (< 0 start)
+      (.append sb ary 0 start))
+    (loop [i (+ start 2)
+           c start-c]
+      (.append sb c)
+      (when-some
+        [[i c]
+         (loop [i i]
+           (when (< i n)
+             (let [c1 (aget ary i)]
+               (if (= c1 esc-c1)
+                 (let [c2 (aget ary i)
+                       offset (- (int c2) (int base-c2))
+                       c (method-munge-offset->char offset)]
+                   (if (<= 0 (int c))
+                     [(inc i) c]
+                     (do (.append sb c1)
+                       (.append sb c2)
+                       (recur (+ i 2)))))
+                 (do (.append sb c1)
+                   (recur (inc i)))))))] 
+        (recur i c)))
+    (.toString sb)))
+
+(defn demunge-method-name [^String name]
+  (let [a (.toCharArray name)
+        n (alength a)
+        esc-c1 ^char (first "\uDB80")
+        base-c2 ^char (first "\uDC00")]
+    (loop [i 0]
+      (if (< i n)
+        (let [c1 (aget a i)]
+          (if (= c1 esc-c1)
+            (let [c2 (aget a (inc i))
+                  offset (- (int c2) (int base-c2))
+                  c (method-munge-offset->char offset)]
+              (if (<= 0 (int c))
+                (demunge-method-name* a n i c)
+                (recur (+ i 2))))
+            (recur (inc i))))
+        name))))
+
+(comment
+  (let [s "hi"]
+    (identical? s (munge-method-name s)))
+  (let [s "tap>"]
+    (= s (demunge-method-name (munge-method-name s))))
+  (let [s "a->b"]
+    (= s (demunge-method-name (munge-method-name s))))
+  (let [s ".x"]
+    (= s (demunge-method-name (munge-method-name s))))
+  )
 
 (def jlc-essential
   #{"Boolean"

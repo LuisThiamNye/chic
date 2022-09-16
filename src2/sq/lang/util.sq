@@ -3,6 +3,14 @@
 (defclass sq.lang.util.Ints3
   [^:pub ^int x1 ^:pub ^int x2 ^:pub ^int x3])
 
+(defclass sq.lang.util.Maths
+  (defn clamp ^int [^int x ^int min ^int max]
+    (if (< max x)
+      max
+      (if (< x min)
+        min
+        x))))
+
 (defclass sq.lang.util.TrimRefValueMapLoopRunner
   :interfaces java.lang.Runnable
   #_"A procedure that can be run on a virtual thread
@@ -36,6 +44,8 @@ Uses a blocking infinte loop."
       (recur))))
 
 (Refer-Classes
+  (java.text CharacterIterator)
+  (io.lacuna.bifurcan Rope)
   (java.lang.reflect
     Field Method Modifier))
 
@@ -78,6 +88,97 @@ Uses a blocking infinte loop."
   [^:mut ^int i ^int maximum]
   (hasNext [_] (< i maximum))
   (next [_] (set! i (inc i))))
+
+
+(defclass sq.lang.util.EmptyCharacterIterator
+  :interfaces CharacterIterator
+  []
+  (defi first ^char [_]
+    (jf CharacterIterator DONE))
+  (defi last ^char [_]
+    (jf CharacterIterator DONE))
+  (defi current ^char [_]
+    (jf CharacterIterator DONE))
+  (defi next ^char [_]
+    (jf CharacterIterator DONE))
+  (defi previous ^char [_]
+    (jf CharacterIterator DONE))
+  (defi setIndex ^char [_ ^int idx2]
+    (when (not (= idx2 0))
+      (throw (nw IllegalArgumentException "Index must be zero")))
+    (jf CharacterIterator DONE))
+  (defi getBeginIndex ^int [_] 0)
+  (defi getEndIndex ^int [_] 0)
+  (defi getIndex ^int [_] 0)
+  (defi clone ^Object [self] self))
+
+
+(defclass sq.lang.util.RopeCharacterIterator
+  :interfaces CharacterIterator
+  [^Rope rope ^:mut ^int idx ^int end-idx]
+  
+  (defi first ^char [_]
+    (set! idx 0)
+    (.nth rope 0))
+  (defi last ^char [_]
+    (set! idx (dec end-idx))
+    (.nth rope idx))
+  (defi current ^char [_]
+    (if (= idx end-idx)
+      (jf CharacterIterator DONE)
+      (.nth rope idx)))
+  (defi next ^char [_]
+    (set! idx (inc idx))
+    (if (< idx end-idx)
+      (.nth rope idx)
+      (do (set! idx end-idx)
+          (jf CharacterIterator DONE))))
+  (defi previous ^char [_]
+    (if (= 0 idx)
+      (jf CharacterIterator DONE)
+      (do (set! idx (dec idx))
+          (.nth rope idx))))
+  (defi setIndex ^char [_ ^int idx2]
+    (when (or (< idx2 0) (< end-idx idx2))
+      (throw (nw IllegalArgumentException
+              (.concat (.concat "Index must be in interval [0, " (jc String valueOf end-idx))
+                   "] = [ getBeginIndex(), getEndIndex() ]"))))
+    (set! idx idx2)
+    (if (= idx2 end-idx)
+      (jf CharacterIterator DONE)
+      (.nth rope idx2)))
+  (defi getBeginIndex ^int [_] 0)
+  (defi getEndIndex ^int [_] end-idx)
+  (defi getIndex ^int [_] idx)
+  (defi clone ^Object [_]
+    (nw Self rope idx end-idx))
+  
+  (init [_ ^Rope rope']
+    (set! rope rope')
+    (set! idx 0)
+    (set! end-idx (.size rope)))
+  )
+
+(defclass sq.lang.util.RopeUtil
+  
+  (defn indexOf ^int [^Rope rope ^int ch ^int fromIndex]
+    (=: size (.size rope))
+    (loop [i fromIndex]
+      (if (< i size)
+        (if (= ch (.nth rope i))
+          i
+          (recur (inc i)))
+        -1)))
+  
+  (defn lastIndexOf ^int [^Rope rope ^int ch ^int fromIndex]
+    ;; fromIndex is inclusive
+    (loop [i fromIndex]
+      (if (<= 0 i)
+        (if (= ch (.nth rope i))
+          i
+          (recur (dec i)))
+        -1)))
+  )
 
 #_
 (defrewrite ->

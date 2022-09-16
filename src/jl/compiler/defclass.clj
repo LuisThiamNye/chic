@@ -16,7 +16,6 @@
     (ana/transfer-branch-env prev-node
       {:node/kind :jcall-super
        :classname classname
-       :method-name "<init>"
        :method-type
        (interop/match-ctor-type env classname
          (mapv (comp spec/get-exact-class :node/spec) args))
@@ -47,11 +46,19 @@
     {:hidden? (if (contains? info :hidden?)
                 (:hidden? info)
                 (.startsWith (:classname info) "_."))
-     :methods (mapv (comp
-                      (fn [m]
-                        (update m :flags op/kws->acc-mask))
-                      #(select-keys % [:name :param-classnames :ret-classname :flags]))
-                (into (:class-methods info) (:instance-methods info)))
+     :flags (op/kws->acc-mask (:flags info))
+     :methods
+     (mapv (comp
+             (fn [m]
+               (-> m
+                 (update :flags op/kws->acc-mask)
+                 (dissoc :param-classnames :ret-classname)
+                 (assoc :param-types (mapv (partial interop/resolve-class env)
+                                       (:param-classnames m)))
+                 (cond-> (:ret-classname m)
+                   (assoc :ret-type (interop/resolve-class env (:ret-classname m))))))
+             #(select-keys % [:name :param-classnames :ret-classname :flags]))
+       (into (:class-methods info) (:instance-methods info)))
      :fields (mapv (comp
                      (fn [m]
                        (-> m
@@ -66,14 +73,18 @@
                (-> m
                  (update :flags op/kws->acc-mask)
                  (dissoc :param-classnames :ret-classname)
-                 (assoc :type (interop/resolve-class env (:classname m)))))
+                 (assoc :param-types (mapv (partial interop/resolve-class env)
+                                       (:param-classnames m)))
+                 (assoc :ret-type Void/TYPE)))
              #(select-keys % [:name :param-classnames :ret-classname :flags]))
        (:constructors info))}))
 
 (defn adapt-method-env
-  [{:keys [classname super] :as clsinfo} {:keys [method] :as env}]
+  [{:keys [classname super] :as clsinfo} ret-classname {:keys [method] :as env}]
   (let [super (or super "java.lang.Object")]
-    (-> env
+    (-> (if (= "void" ret-classname)
+          (ana/statement-env env)
+          (ana/expression-env env))
       (assoc :fields (into {}
                        (map (fn [{:keys [name classname flags dynamic]}]
                               [name {:spec (spec/of-class classname)
@@ -115,7 +126,9 @@
                    (:spec/kind (:spec (peek (last param-pairs)))))
         method
         {:name mn
-         :flags (cond-> #{:public} varargs? (conj :varargs))
+         :flags (cond-> #{:public} 
+                  varargs? (conj :varargs)
+                  static? (conj :static))
          :ret-classname preknown-ret-classname
          :param-names (mapv :string params)
          :param-classnames
@@ -124,15 +137,17 @@
            (if static? param-pairs (drop 1 param-pairs)))}
         clsinfo (update clsinfo (if static? :class-methods :instance-methods)
                   (fnil conj []) method)
+        prev-method (:method env)
         body (ana/analyse-body
-               {:node/env (assoc (adapt-method-env clsinfo
-                                   (assoc (:node/env prev-node) :method
+               {:node/env (assoc (adapt-method-env clsinfo preknown-ret-classname
+                                   (assoc env :method
                                      {:side (if static? :class :instance)
                                       :initialiser? (#{"<clinit>" "<init>"} mn)}))
                             :external-locals (:node/locals prev-node))
                 :node/locals (into {} param-pairs)}
                bodydecl)
         body (assoc body :node/locals (:node/locals prev-node))
+        body (update body :node/env assoc :method prev-method)
         ret-classname (or preknown-ret-classname
                         (spec/get-exact-class (:node/spec body))
                         "void")]
@@ -215,8 +230,6 @@
            (update :constructors (fnil conj [])
              {:param-classnames (mapv :classname flds)
               :auto true}))))
-     adapt-env (fn [clsinfo env1]
-                 (adapt-method-env clsinfo env1))
      parse-cfield
      (fn [opts {:keys [children]}]
        (assert (<= 3 (count children)))
@@ -244,8 +257,8 @@
                      (:pub flaginfo)
                      (conj (:pub flaginfo)))
              initdecl (nth children 2)
-             init (ana/analyse-after (update (:prev-node opts) :node/env
-                                       (partial adapt-env opts)) initdecl)
+             init (ana/analyse-expr (update (:prev-node opts) :node/env
+                                       (partial adapt-method-env opts nil)) initdecl)
              fcls (or (spec/get-exact-class (:node/spec init))
                     "java.lang.Object")]
          (-> opts
@@ -270,8 +283,9 @@
        (let [mexp (nth children 1)
              _ (assert (= :symbol (:node/kind mexp)))
              mn (:string mexp)
-             params (:children (nth children 2))
-             ret-classname (or (class-tag params) "void")]
+             paramdecl (nth children 2)
+             params (:children paramdecl)
+             ret-classname (or (class-tag paramdecl) "void")]
          (update opts :instance-methods conj
            {:name mn
             :flags #{:abstract :public} ;; either pub or priv must be set
@@ -343,7 +357,7 @@
              _ (assert (= :symbol (:node/kind self-sym-ast)))
              self-sym (:string self-sym-ast)
              body (ana/analyse-body
-                    {:node/env (adapt-env clsinfo (:node/env (:prev-node clsinfo)))
+                    {:node/env (adapt-method-env clsinfo "void" (:node/env (:prev-node clsinfo)))
                      :node/locals
                      (into {self-sym {:arg-idx 0
                                       :spec {:spec/kind :exact-class
@@ -452,7 +466,8 @@
              outer-classname (:self-classname env)
              hidden? (interop/-hiddenClass? 
                        (interop/resolve-class env outer-classname))]
-         (assoc info :class (classinfo->class (assoc info :hidden? hidden?)))))
+         (assoc info :class (classinfo->class (:node/env (:prev-node info))
+                              (assoc info :hidden? hidden?)))))
      reify-classname (str (:self-classname env) "$reify" id)
      info
      (reduce (fn [info {:keys [node/kind] :as node}]
