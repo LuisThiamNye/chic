@@ -486,7 +486,7 @@
     (set! regions (nw LinearList)))
   (defi clear ^void [_]
     (set! regions (nw LinearList)))
-  (defi reset-regions! [_ ^LinearList regions']
+  #_(defi reset-regions! [_ ^LinearList regions']
     (set! regions regions'))
   (defi reset-regions! [_ ^"[Lchic.sqeditor.Region;" regions']
     (set! regions (nw LinearList (alength regions')))
@@ -569,9 +569,8 @@
   
   (defn delete-backward ^EditorCommit [^Selection sel ^Rope rope]
     ;; may want behaviour of deleting multiple spaces of tab size etc
-    (=: regions (jfi sel :regions))
     (=: regions (nw LinearList))
-    (let it (.iterator regions)
+    (let it (.iterator (jfi sel :regions))
       (loop [rope rope
              offset 0]
         (if (.hasNext it)
@@ -851,7 +850,7 @@
     (=: rope (jfi commit :rope))
     (when (not (== prev-rope rope))
       (=: t (jc System currentTimeMillis))
-      (when (nil? (jfi commit :regions))
+      (when (nil? (jfi working-commit :regions))
         (set! working-commit (nw EditorCommit (jfi working-commit :rope)
                                (jfi (jfi view :selection) :regions))))
       (=: should-commit?
@@ -891,6 +890,21 @@
         (.add commits (nw EditorCommit rope (jfi (jfi view :selection) :regions))))
       (set! working-commit com)
       (.apply-commit! self (ct EditorCommit com))))
+  
+  (defi navigateFromRegion ^void [self]
+    (=: nav-loc (jc SelectionOps combined-regions-str
+                  (jfi view :selection) (jfi (jfi view :buffer) :rope)))
+    (=: path (jc java.nio.file.Path of
+               (.concat "src2/" nav-loc) (na String 0)))
+    (try
+      (=: text (jc java.nio.file.Files readString path))
+      (.perform-edit! self
+        (nw EditorCommit
+          (jc Rope from text)))
+      
+      (catch java.io.IOException e
+        (.println (jf System out) "Could not load file")
+        (.println (jf System out) e))))
   
   (defi on-key-down ^void [self ^EventKey evt]
     (=: mods (bit-and (jfi evt :_modifiers) (bit-not 1)))
@@ -934,6 +948,7 @@
               (jc SelectionOps delete (jfi view :selection)
                 (jfi (jfi view :buffer) :rope))))
         Z (if shift? (.perform-redo self) (.perform-undo self))
+        G (.navigateFromRegion self)
         (when macos?
           (case-enum key
             LEFT (jc SelectionOps simple-move-ends (jfi view :selection) :line-start rope shift?)
@@ -1003,7 +1018,7 @@
     (jc SelectionOps add (jfi view' :selection) (nw Region 0 0))
     
     (set! font (nw Font (jc Typeface makeFromFile "/Volumes/Carbonator/csync/fonts/Input-Font/Input_Fonts/InputSans/InputSansCondensed/InputSansCondensed-Regular.ttf")
-                 20f))
+                 28f))
     (set! line-height (jc Math round (.getSpacing font)))
     
     (set! commits (nw ArrayList))
@@ -1084,8 +1099,8 @@
             (.handle-textinput intrmgr evt)))
         (if (instance? EventWindowResize evt)
           (let cr (.getContentRect jwm-window)
-            (set! content-rect (jc Rect makeLTRB 0 0 (.getRight cr) (.getBottom cr)))
-            true))
+            (do (set! content-rect (jc Rect makeLTRB 0 0 (.getRight cr) (.getBottom cr)))
+              true)))
         (if (instance? EventMouseScroll evt)
           (.handle-mousescroll intrmgr (ct EventMouseScroll evt)))
         (if (instance? EventMouseButton evt)

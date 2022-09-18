@@ -1,6 +1,6 @@
 (ns jl.compiler.sforms
   (:require
-    [chic.util :refer [inherit-vars]]
+    [chic.util :refer [inherit-vars loopr loop-zip]]
     [jl.interop :as interop]
     [jl.compiler.defclass :as defclass]
     [jl.compiler.spec :as spec]
@@ -483,23 +483,120 @@
         mc (defclass/class-tag (assoc mast :node/env env))]
     (anasf-jcall* node (nth children 1) mc m (subvec children 2))))
 
-(defn anasf-jscall [{:keys [children] :as node}]
+(defn get-method-pretypes [env target-class static? method-name nargs]
+  (let [self-class (try (interop/resolve-class env (:self-classname env))
+                     (catch ClassNotFoundException _ Object))]
+    (interop/get-methods-pretypes self-class target-class static? method-name nargs)))
+
+(defn determine-method [env methods0 args]
+  (let [arg-types (mapv (comp (partial spec/get-duck-class env) :node/spec) args)
+        methods0 methods0]
+    (loop-zip [method methods0] ;; first find exact match
+      [first-noneqs []]
+      (let [param-types (interop/-getParamTypes method)
+            first-noneq
+            (loop-zip [param-type ^Iterable (vec param-types)
+                       i :idx]
+              []
+              (let [arg-type (nth arg-types i)]
+                (if (interop/same-class? arg-type param-type)
+                  (recur)
+                  i))
+              -1)]
+        (if (<= 0 first-noneq)
+          (recur (conj first-noneqs first-noneq))
+          [method args]))
+      ;; then try inheritance match
+      (loop-zip [method ^Iterable methods0
+                 first-noneq ^Iterable first-noneqs]
+        [first-nomatches []
+         some-match? false]
+        (let [param-types (interop/-getParamTypes method)
+              first-nomatch
+              (loop [i first-noneq]
+                (if (< i (count param-types))
+                  (let [param-type (nth param-types i)
+                        arg-type (nth arg-types i)
+                        matches? (interop/-satisfies? arg-type param-type)]
+                    (if matches?
+                      (recur (inc i))
+                      i))
+                  -1))]
+          (recur (conj first-nomatches first-nomatch)
+            (or some-match? (< first-nomatch 0))))
+        (if some-match?
+          ;; find most specific of inheritance-matching methods
+          (loop-zip [fnm ^Iterable first-nomatches]
+            [i 0 most-specific nil]
+            (if (< 0 fnm)
+              (recur (inc i) most-specific)
+              (let [m (nth methods0 i)
+                    r (if (nil? most-specific)
+                        m
+                        (let [ms-params (interop/-getParamTypes most-specific)
+                              m-params (interop/-getParamTypes m)]
+                          (loop 
+                            [i (count m-params) s1 false s2 false]
+                            (let [p1 (nth ms-params i)
+                                  p2 (nth m-params i)]
+                              (if (<= 0 i)
+                                (recur (dec i)
+                                  (interop/-satisfies? p2 p1)
+                                  (interop/-satisfies? p1 p2))
+                                (if (and s1 s2)
+                                  (throw (ex-info "method ambiguous (no casting)" {})) ;; ambiguous
+                                  (if s1 most-specific m)))))))]
+                (recur (inc i) r)))
+            [most-specific args])
+          ;; else try casting
+          (loop-zip [method ^Iterable methods0
+                     first-nomatch ^Iterable first-nomatches]
+            [m+args* []]
+            (let
+              [param-types (interop/-getParamTypes method)
+               args'
+               (loop [i first-nomatch
+                      args' args]
+                 (if (< i (count param-types))
+                   (let [cto (nth param-types i)
+                         cfrom (nth arg-types i)
+                         coercion (ana/get-coercion env cfrom cto)]
+                     (if (nil? coercion)
+                       nil
+                       (recur (inc i)
+                         (update args' i assoc :node/coercion coercion))))
+                   args'))]
+              (recur
+                (if args'
+                  (conj m+args* [method args'])
+                  m+args*)))
+            (case (count m+args*)
+              0 (throw (ex-info "no match with casting"
+                         {:arg-types arg-types}))
+              1 (nth m+args* 0)
+              (throw (ex-info "method ambiguous with casting" {})) ;; ambiguous
+              )))))))
+
+(defn anasf-jscall [{:keys [children node/env] :as node}]
   (assert (<= 3 (count children)))
   (let [c (:string (nth children 1))
-        m (:string (nth children 2))
-        _ (assert (string? m) "Invalid method-name argument")
+        method-name (:string (nth children 2))
+        _ (assert (string? method-name) "Invalid method-name argument")
         _ (assert (string? c))
         c (ana/expand-classname (:node/env node) c)
         target-class (interop/resolve-class (:node/env node) c)
-        args (ana/analyse-args node (subvec children 3))
+        argsdecl (subvec children 3)
+        methods0 (get-method-pretypes env target-class true method-name (count argsdecl))
+        _ (assert (< 0 (count methods0)) "no accessible methods matching name+arity")
+        args (ana/analyse-args node argsdecl)
+        [method args] (determine-method env methods0 args)
         final (or (last args) node)
-        mt (interop/lookup-method-type (:node/env final) c true m
-             (mapv (comp (partial spec/get-duck-class (:node/env node)) :node/spec) args) nil)
+        mt (interop/method->type method)
         tags (mapv :string (ana/get-meta-tags (:node/meta (nth children 0))))]
     (ana/transfer-branch-env final
       {:node/kind :jcall
        :classname c
-       :method-name m
+       :method-name method-name
        :method-type mt
        :dynamic (or (some #{"dynamic"} tags)
                   (interop/dynamic-class? (:node/env node) target-class))

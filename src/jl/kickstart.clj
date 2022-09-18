@@ -76,6 +76,7 @@
     "sq.lang.DynInstanceMethodCallSite"
     "sq.lang.DynConstructorCallSite"
     "sq.lang.EnumSwitchMapCallSite"
+    "sq.lang.i.MethodHandleFinderLk"
     "sq.lang.DynGetFieldCallSite"
     "sq.lang.DynSetFieldCallSite"]
    
@@ -303,7 +304,8 @@
   (rfield (find-class "sq.lang.GlobalCHM") 'map))
 
 (defn find-class-lk [lk classname]
-  (or (find-hidden-class classname)
+  (or (when-some [h(find-hidden-class classname)]
+        h)
     (try (find-class classname)
       (catch ClassNotFoundException _))
     (case classname
@@ -324,10 +326,55 @@
     (apply [_ lk classname]
       (find-class-lk lk classname))))
 
+(defn find-method-handle-lk
+  [^MethodHandles$Lookup lk target-cn static? method-name param-cns]
+  (let [param-types (mapv (comp
+                            (fn [^Class c]
+                              (if (.isHidden c)
+                                (if (.isArray c)
+                                  (Class/forName "[Ljava.lang.Object;")
+                                  Object)
+                                c))
+                            (partial find-class-lk lk))
+                      param-cns)
+        target-class (find-class-lk lk target-cn)
+        lookup-class (.lookupClass lk)
+        methods0 (interop/get-methods-pretypes lookup-class target-class
+                   static? method-name (count param-types))
+        method
+        (case (count methods0)
+          0 (throw (ex-info "No new matching methods found"
+                     {:target-class target-class
+                      :static? static?
+                      :method-name method-name
+                      :param-types param-types
+                      :lookup-class lookup-class}))
+          1 (nth methods0 0)
+          (let [ms (interop/most-specific-method methods0)]
+            (if ms
+              ms
+            (throw (ex-info "method ambiguous"
+                               {:target-class target-class
+                                :methods methods0
+                               :static? static?
+                                :method-name method-name
+                                :param-types param-types
+                                :lookup-class lookup-class})))))]
+    (.unreflect lk method)))
+
+(load-class "sq.lang.i.MethodHandleFinderLk")
+
+(def methodHandleFinderLk
+  (reify sq.lang.i.MethodHandleFinderLk
+    (apply [_ lk target-cn static? method-name param-cns]
+      (find-method-handle-lk lk target-cn static? method-name param-cns))))
+
 (comment
   (load-class "sq.lang.InternalDataContainer")
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "classFinderLk" classFinderLk)
+  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+    "methodHandleFinderLk" methodHandleFinderLk)
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
     "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
   (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
@@ -396,7 +443,9 @@
       (catch Throwable e
         (.printStackTrace e))))
   
-  (instance? Cloneable (make-array java.lang.String 0))
+  ()
+  
+  (.getDeclaredMethods (cof "sq.lang.DynInstanceMethodCallSite"))
   
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]
@@ -425,9 +474,9 @@
   (println (chic.decompiler/decompile
              "tmp/eval.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/chic.sqeditor.RegionPathOps.class" :bytecode))
+             "tmp/chic.sqeditor.TextEditor.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.DynGetFieldCallSite.class" :bytecode))
+             "tmp/sq.lang.DynClassMethodCallSite.class" :bytecode))
   (import '(io.lacuna.bifurcan Rope))
   
 

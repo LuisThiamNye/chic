@@ -50,7 +50,7 @@
     (interop/intersect-classes
       (mapv (comp (partial interop/resolve-class env)
               (partial get-duck-class env)) (:specs spec)))
-    (get-exact-class spec)))
+    (interop/resolve-class env (get-exact-class spec))))
 
 (defn prim? [spec]
   (#{"boolean" "byte" "short" "char" "int" "long" "float" "double" "void"}

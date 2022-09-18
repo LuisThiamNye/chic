@@ -2,7 +2,24 @@
   (:require
     [taoensso.encore :as enc])
   (:import
+    (java.lang ClassValue)
     (org.objectweb.asm Type)))
+
+#_(def ^ClassValue basic-sort-classvalue
+  (proxy ClassValue [] []
+    (computeValue [_ cls]
+      (case (.getName cls)
+        Boolean/TYPE Type/BOOLEAN
+        Short/TYPE Type/SHORT
+        Character/TYPE Type/CHAR
+        Integer/TYPE Type/INT
+        Long/TYPE Type/LONG
+        Float/TYPE Type/FLOAT
+        Double/TYPE Type/DOUBLE
+        Void/TYPE Type/VOID
+        (if (.isArray cls)
+          Type/ARRAY
+          Type/OBJECT)))))
 
 (defn unbox [^Type atype]
   (let [n (.getInternalName atype)]

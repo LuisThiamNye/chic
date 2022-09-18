@@ -304,7 +304,8 @@
                      (map #(list '. (:sym %) 'hasNext)
                        it-bindings)
                      ary?
-                     (cons (list `< i-sym ary-n))))]
+                     (cons (list `< i-sym ary-n))))
+        track-idx? (or ary? defined-idx-sym)]
     (list 'let*
       (-> (if ary?
             (-> []
@@ -327,11 +328,11 @@
                           [sym init])))
                 cat)
           it-bindings))
-       (list `loop (cond-> acc-bindvec ary? 
+       (list `loop (cond-> acc-bindvec track-idx?
                      (-> (conj i-sym) (conj (int 0))))
          (list `if continue
            (list `let (persistent! @*item-letvec)
-             (cond-> loop-expr ary? (arrayify-loop-form2 i-sym)))
+             (cond-> loop-expr track-idx? (arrayify-loop-form2 i-sym)))
            completer-expr)))))
 
 (defmacro loop-zip 

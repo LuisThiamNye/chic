@@ -17,10 +17,11 @@
     (if (and (interop/dynamic-class? env cls)
           ;; can't seem to embed self in descriptor of indy for hidden class
           #_(not= classname (:self-classname env)))
-      #_(if (interop/-arrayClass? cls)
+      ;; vararg needs array type
+      (if (interop/-arrayClass? cls)
         (str (apply str (repeat (interop/array-class-ndims cls) "[")) "Ljava.lang.Object;")
         "java.lang.Object")
-      "java.lang.Object"
+      ; "java.lang.Object"
       classname)))
 
 (defn as-impl-type ^Type [env type]
@@ -133,7 +134,7 @@ JLS:
   (-emitLdcInsn [_ value])
   (-emitTypeInsn [_ op type])
   (-emitNewArray [_ type ndims])
-  (-emitInvokeMethod [_ op owner method sig])
+  (-emitInvokeMethod [_ op owner interface? method sig])
   (-emitInvokeDynamic [_ name method-type bsmhandle bsmargs])
   (-emitLoadLocal [_ id])
   (-emitStoreLocal [_ sort id])
@@ -190,7 +191,7 @@ JLS:
 
 (defn emit-box [ctx atype]
   (-emitInvokeMethod ctx :static
-    atype "valueOf" [(type/unbox atype) atype]))
+    atype false "valueOf" [(type/unbox atype) atype]))
 
 (declare emit-ast-node)
 
@@ -383,8 +384,9 @@ JLS:
         (-emitInsn ctx :dup)
         (-emitLdcInsn ctx "No match for case")
         (-emitInvokeMethod ctx :special (type/obj-classname->type "java.lang.Error")
-          "<init>" (Type/getMethodType Type/VOID_TYPE
-                     (into-array Type [(Type/getObjectType "java/lang/String")])))
+          false "<init>"
+          (Type/getMethodType Type/VOID_TYPE
+            (into-array Type [(Type/getObjectType "java/lang/String")])))
         (-emitInsn ctx :athrow)))
     (-emitLabel ctx end-label)))
 
@@ -484,7 +486,7 @@ JLS:
           false)
         (object-array [classname]))
       (-emitInvokeMethod ctx :special
-        type "<init>" method-type))))
+        type false "<init>" method-type))))
 
 (defn classname->ary-store-insn [classname]
   (condp = classname
@@ -545,10 +547,10 @@ JLS:
           false)
         (into [classname](map type/get-classname) (.getArgumentTypes method-type)))
       (-emitInvokeMethod ctx (if target (if interface? :interface :virtual) :static)
-        (type/obj-classname->type classname) method-name method-type))))
+        (type/obj-classname->type classname) interface? method-name method-type))))
 
 (defn emit-jcall-specific
-  [ctx {:keys [classname target method-name args method-type dynamic?]}]
+  [ctx {:keys [classname target method-name args method-type dynamic? node/env]}]
   (let [classname (or classname (spec/get-exact-class (:node/spec target)))
         method-name (interop/munge-method-name method-name)
         ; sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
@@ -560,7 +562,9 @@ JLS:
     (if dynamic?
       (throw (ex-info "noimpl" {}))
       (-emitInvokeMethod ctx :special
-        (type/obj-classname->type classname) method-name method-type))))
+        (type/obj-classname->type classname)
+        (interop/-interface? (interop/resolve-class env classname))
+        method-name method-type))))
 
 (defn emit-get-field
   [ctx {:keys [field-name target classname ^Type field-type dynamic node/env]}]
@@ -573,12 +577,9 @@ JLS:
     (when target (emit-ast-node ctx target))
     (if (and (not self?) (or dynamic dynamic-field dynamic-target))
       (-emitInvokeDynamic ctx field-name
-        (Type/getMethodType (if dynamic-field
-                              (Type/getObjectType "java/lang/Object")
-                              field-type)
-          (into-array Type [(if dynamic-target
-                              (Type/getObjectType "java/lang/Object")
-                              (type/obj-classname->type classname))]))
+        (Type/getMethodType (as-impl-type env field-type)
+          (into-array Type [(type/obj-classname->type
+                              (static-classname env classname))]))
         (Handle. Opcodes/H_INVOKESTATIC
           (when target "sq/lang/DynGetFieldCallSite")
           "bsm"
@@ -597,7 +598,7 @@ JLS:
         field-classname (type/get-classname field-type)
         dynamic (interop/dynamic-class? env
                   (interop/resolve-class env field-classname))
-        field-type (if dynamic (Type/getObjectType "java/lang/Object") field-type)]
+        field-type (as-impl-type env field-type)]
     (-emitLoadSelf ctx)
     (-emitFieldInsn ctx :getfield
       class-type field-name field-type)))
@@ -607,7 +608,7 @@ JLS:
         field-classname (type/get-classname type)
         dynamic? (interop/dynamic-class? env
                    (interop/resolve-class env field-classname))
-        type (if dynamic? (Type/getObjectType "java/lang/Object") type)]
+        type (as-impl-type env type)]
     (if statement?
       (do
         (-emitLoadSelf ctx)
@@ -625,7 +626,7 @@ JLS:
   (doseq [a args]
     (emit-ast-node ctx a))
   (-emitInvokeMethod ctx :special (type/obj-classname->type classname)
-    "<init>" method-type))
+    false "<init>" method-type))
 
 (defn emit-string [ctx {:keys [value]}]
   (-emitLdcInsn ctx value))
@@ -651,30 +652,33 @@ JLS:
           to-prim (keyword (type/get-classname type))]
       (when-not (= from-prim' to-prim)
         (let [insn (match [from-prim to-prim]
-                  [:int :long] :i2l
-                  [:int :float] :i2f
-                  [:int :double] :i2d
-                  [:int :byte] :i2b
-                  [:int :char] :i2c
-                  [:int :short] :i2s
-                  [:long :int] :l2i
-                  [:long :float] :l2f
-                  [:long :double] :l2d
-                  [:long :byte] [:l2i :i2b]
-                  [:long :char] [:l2i :i2c]
-                  [:long :short] [:l2i :i2s]
-                  [:float :int] :f2i
-                  [:float :long] :f2l
-                  [:float :double] :f2d
-                  [:float :byte] [:f2i :i2b]
-                  [:float :char] [:f2i :i2c]
-                  [:float :short] [:f2i :i2s]
-                  [:double :int] :d2i
-                  [:double :long] :d2l
-                  [:double :float] :d2f
-                  [:double :byte] [:d2i :i2b]
-                  [:double :char] [:d2i :i2c]
-                  [:double :short] [:d2i :i2s])]
+                     [:int :byte] :i2b
+                     [:int :char] :i2c
+                     [:int :short] :i2s
+                     [:long :byte] [:l2i :i2b]
+                     [:long :char] [:l2i :i2c]
+                     [:long :short] [:l2i :i2s]
+                     [:long :int] :l2i
+                     [:float :byte] [:f2i :i2b]
+                     [:float :char] [:f2i :i2c]
+                     [:float :short] [:f2i :i2s]
+                     [:float :int] :f2i
+                     [:float :long] :f2l
+                     [:double :byte] [:d2i :i2b]
+                     [:double :char] [:d2i :i2c]
+                     [:double :short] [:d2i :i2s]
+                     [:double :int] :d2i
+                     [:double :float] :d2f
+                     [:double :long] :d2l
+                     
+                     ;; widening
+                     [:int :long] :i2l
+                     [:int :float] :i2f
+                     [:int :double] :i2d
+                     [:long :float] :l2f
+                     [:long :double] :l2d
+                     [:float :double] :f2d
+                     )]
           (if (vector? insn)
             (do (-emitInsn ctx (nth insn 0))
               (-emitInsn ctx (nth insn 1)))
@@ -820,16 +824,18 @@ JLS:
     ;; first save stack to locals TODO
     (.visitTryCatchBlock mv start end handler
       (some-> ex-type .getInternalName)))
-  (-emitInvokeMethod [_ op owner method sig]
+  (-emitInvokeMethod [_ op owner interface? method sig]
     (.visitMethodInsn mv (condp = op
                            :virtual Opcodes/INVOKEVIRTUAL
                            :interface Opcodes/INVOKEINTERFACE
                            :static Opcodes/INVOKESTATIC
                            :special Opcodes/INVOKESPECIAL)
-      (.getInternalName ^Type owner) method
+      (.getInternalName ^Type owner)
+      method
       (if (instance? Type sig)
         (.getDescriptor ^Type sig)
-        (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))))
+        (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))
+      interface?))
   (-emitInvokeDynamic [_ name method-type bsmhandle bsmargs]
     (.visitInvokeDynamicInsn mv name (.getDescriptor ^Type method-type)
       bsmhandle (object-array bsmargs)))
@@ -876,6 +882,12 @@ JLS:
       local-map
       (java.util.TreeSet.) nslots
       (java.util.HashMap.))))
+
+(defn emit-coercion [ctx coercion]
+  (match coercion
+    [:insn op]
+    (when-not (= op :nop)
+      (-emitInsn ctx op))))
 
 (defn emit-ast-node [ctx node]
   (when-some [line (:line (:node/source node))]
@@ -926,9 +938,12 @@ JLS:
                      :type (class node)})))]
     (try
       (f ctx node)
-      (when (:node/discard-result node)
-        (let [wide? (#{"long" "double"} (spec/get-exact-class (:node/spec node)))]
-          (-emitInsn ctx (if wide? :pop2 :pop))))
+      
+      (if-some [coercion (:node/coercion node)]
+        (emit-coercion ctx coercion)
+        (when (:node/discard-result node) ;; TODO can represent as coercion
+          (let [wide? (#{"long" "double"} (spec/get-exact-class (:node/spec node)))]
+            (-emitInsn ctx (if wide? :pop2 :pop)))))
       (catch Throwable e
         (throw (ex-info "Failed to emit node"
                  {:node (select-keys node [:node/kind :node/source])}
@@ -1014,7 +1029,7 @@ JLS:
     (doseq [{:keys [name type flags dynamic]} instance-fields]
       (let [_fv (.visitField cv (reduce bit-or 0
                                   (map op/kw->acc-opcode flags)) name
-                 (if dynamic "Ljava/lang/Object;" (.getDescriptor (as-impl-type env type)))
+                 (.getDescriptor (as-impl-type env type))
                  nil nil)]))
     ;; METHODS
     (doseq [{:keys [name body ret-classname param-names param-classnames

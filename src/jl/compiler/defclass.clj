@@ -24,6 +24,7 @@
                    :classname "void"}})))
 
 (defn class-tag [{:keys [node/env] :as node}]
+  (assert (some? env))
   (let [tag (:tag (:node/meta node))]
     (when (= :vector (:node/kind tag))
       (let [s (some #(cond
@@ -32,6 +33,7 @@
                 (:children tag))
             ret (if (= "Self" s) (:self-classname env)
                   (ana/expand-classname env s))]
+        
         ;; note: could be primitive
         ; (assert (some #{\.} ret)
         ;   (pr-str ret " env: " (keys env)))
@@ -283,7 +285,7 @@
        (let [mexp (nth children 1)
              _ (assert (= :symbol (:node/kind mexp)))
              mn (:string mexp)
-             paramdecl (nth children 2)
+             paramdecl (assoc (nth children 2) :node/env env)
              params (:children paramdecl)
              ret-classname (or (class-tag paramdecl) "void")]
          (update opts :instance-methods conj

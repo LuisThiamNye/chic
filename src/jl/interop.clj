@@ -28,6 +28,7 @@
   (-getType [_]))
 
 (defprotocol PClassNode
+  (-primitive? [_])
   (-arrayType [_])
   (-arrayClass? [_])
   (-elementType [_])
@@ -51,6 +52,7 @@
   PClassMember
   (-getModifiers [self] (.getModifiers self))
   PClassNode
+  (-primitive? [self] (.isPrimitive self))
   (-arrayClass? [self] (.isArray self))
   (-arrayType [self] (.arrayType self))
   (-elementType [self] (.componentType self))
@@ -105,6 +107,7 @@
   PNamed
   (-getName [self] (:name self))
   PClassNode
+  (-primitive? [_] false)
   (-arrayClass? [self] (:array? self))
   (-elementType [self]
     (:element-class self))
@@ -155,6 +158,10 @@
   (-getRetType [self] (:ret-type self))
   (-varargs? [self] (op/acc-mask-contains? (:flags self) :varargs)))
 
+(defn same-class? [c1 c2]
+  (or (identical? c1 c2)
+    (= (-getName c1) (-getName c2))))
+
 (defn new-unreal-class
   ([name super interfaces]
    (->UnrealClass name super (object-array interfaces) 0 nil nil))
@@ -164,6 +171,15 @@
            (object-array (mapv map->UnrealMethod (:methods opts))))
      (update (dissoc opts :fields :methods)
        :constructors #(object-array (mapv map->UnrealMethod %))))))
+
+(defn method->type [method]
+  (if (instance? Method method)
+    (Type/getType ^Method method)
+    (Type/getMethodType
+      (type/classname->type (-getName (-getRetType method)))
+      (into-array Type
+        (mapv (comp type/classname->type -getName)
+          (-getParamTypes method))))))
 
 (defn array-class-ndims [cls]
   (loop [i 1
@@ -210,6 +226,12 @@
     (if (= 0 ndims)
       el-class
       (array-class-of el-class ndims))))
+
+(defn make-unbox-conversion [box-name prim-name]
+  [:method :class (str "java/lang/" box-name) (str prim-name "Value")])
+
+(defn make-box-conversion [box-name prim-name]
+  [:method :instance (str "java/lang/" box-name) "valueOf"])
 
 (defn member-accessible? [c1 target mods]
   (or (Modifier/isPublic mods)
@@ -312,6 +334,32 @@
                (rc acc cls))]
         (if (reduced? acc) @acc acc)))))
 
+(defn name-matching-method? [static? method-name m]
+  (and (= (-getName m) method-name)
+    (let [mods (-getModifiers m)]
+      (and
+        (= static? (Modifier/isStatic mods))
+        (= 0 (bit-and Opcodes/ACC_SYNTHETIC mods))))))
+
+(defn arity-matching-method? [nargs method]
+  (let [nparams (count (-getParamTypes method))]
+    (or (= nparams nargs)
+      (let [varargs? (-varargs? method)]
+        (when varargs?
+          (< nparams nargs))))))
+
+(defn get-methods-pretypes [self-class target-class static? method-name nargs]
+  (into []
+    (filter
+      (fn [method]
+        (and
+          (name-matching-method? static? method-name method)
+          (arity-matching-method? nargs method)
+          (member-accessible? self-class target-class (-getModifiers method)))))
+    (if static?
+      (-getDeclaredMethods target-class)
+      (get-all-instance-methods target-class))))
+
 (defn match-method-type ^Type
   [{:keys [self-classname] :as env}
    classname static? method-name arg-types ret-type]
@@ -353,6 +401,8 @@
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
 (comment
+  (match-method-type {:self-classname "java.lang.Object"}
+    "java.lang.Integer" true "valueOf" ["double"] nil)
   (match-method-type
   {:self-classname "java.lang.Object"
    :class-resolver #'jl.kickstart/cof}

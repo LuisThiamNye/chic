@@ -190,6 +190,10 @@ GREEK 2
 GREEK (jc Math min 1 2)
 nil) true)"))
 
+;; coercions
+(eval-str "(jc Double valueOf 1)")
+; (eval-str "(jc Integer valueOf 1.)")
+
 ;; TODO
 ; (eval-str "(when (not (or false (=: x true))) x)")
 ; (eval-str "(when (and (=: x true)) x)")

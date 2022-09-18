@@ -1,10 +1,12 @@
 (ns jl.compiler.analyser
   (:require
     [jl.compiler.type :as type]
-    [chic.util :refer [<- deftype+]]
+    [chic.util :as util :refer [<- deftype+]]
     [jl.rv-data :as rv-data]
     [jl.interop :as interop]
     [jl.compiler.spec :as spec]
+    [jl.compiler.op :as op]
+    [clojure.core.match :refer [match]]
     [jl.reader :as reader :refer [PFormVisitor]]
     [chic.debug :as debug]
     [jl.interop :as interop])
@@ -114,6 +116,77 @@
                               (type/unbox(type/obj-classname->type
                                            (.getName (class value)))))}
      :value value}))
+
+(def prim-widening-conversions-
+  ;; can't implicitly to char as it is unsigned (would lose negatives)
+  (into {}
+    (map (fn [[from tos]]
+           (let [basic-from (keyword (case from ("byte" "short" "char") "int" from))]
+             [(util/primitive-name->class from)
+              (into {}
+                (map (fn [to]
+                       (let [basic-to (keyword (case to ("byte" "short" "char") "int" to))]
+                         [(util/primitive-name->class to)
+                          (match [basic-from basic-to]
+                            [:int :float] :i2f
+                            [:int :double] :i2d
+                            [:long :float] :l2f
+                            [:long :double] :l2d
+                            [:float :double] :f2d
+                            :else :nop)])))
+               tos)])))
+    [["byte" ["short" "int" "long" "float" "double"]]
+     ["short" ["int" "long" "float" "double"]]
+     ["char" ["int" "long" "float" "double"]]
+     ["int" ["long" "float" "double"]]
+     ["long" ["float" "double"]]
+     ["float" ["double"]]]))
+
+(defn get-implicit-prim-wideconv [cfrom cto]
+  (when-some [op (get (get prim-widening-conversions- cfrom)
+                   cto)]
+    [:insn op]))
+
+(defn get-coercion [env cfrom cto]
+  (when (and (interop/-primitive? cfrom) (interop/-primitive? cto))
+    (get-implicit-prim-wideconv cfrom cto))
+  #_(if (interop/-primitive? cto)
+    (case (.getName ^Class cto)
+      "boolean" (when (identical? cfrom Boolean)
+                  (interop/make-unbox-conversion "Boolean" "boolean"))
+      "byte" (when (identical? cfrom Byte)
+                  (interop/make-unbox-conversion "Byte" "byte"))
+      "short" (when (identical? cfrom Short)
+                  (interop/make-unbox-conversion "Short" "short"))
+      "char" (when (identical? cfrom Character)
+                  (interop/make-unbox-conversion "Character" "char"))
+      "int" (when (identical? cfrom Integer)
+                  (interop/make-unbox-conversion "Integer" "int"))
+      "long" (when (identical? cfrom Long)
+                  (interop/make-unbox-conversion "Long" "long"))
+      "float" (when (identical? cfrom Float)
+                  (interop/make-unbox-conversion "Float" "float"))
+      "double" (when (identical? cfrom Double)
+                  (interop/make-unbox-conversion "Double" "double")))
+    (if (interop/-primitive? cfrom)
+      (case (.getName ^Class cfrom)
+        "boolean" (when (identical? cto Boolean/TYPE)
+                    (interop/make-box-conversion "Boolean" "boolean"))
+        "byte" (when (identical? cto Byte/TYPE)
+                 (interop/make-box-conversion "Byte" "byte"))
+        "short" (when (identical? cto Short/TYPE)
+                  (interop/make-box-conversion "Short" "short"))
+        "char" (when (identical? cto Character/TYPE)
+                 (interop/make-box-conversion "Character" "char"))
+        "int" (when (identical? cto Integer/TYPE)
+                (interop/make-box-conversion "Integer" "int"))
+        "long" (when (identical? cto Long/TYPE)
+                 (interop/make-box-conversion "Long" "long"))
+        "float" (when (identical? cto Float/TYPE)
+                  (interop/make-box-conversion "Float" "float"))
+        "double" (when (identical? cto Double/TYPE)
+                   (interop/make-box-conversion "Double" "double")))
+      nil)))
 
 (defn analyse-number [node]
   (let [v (rv-data/parsed-number-value node)]
