@@ -195,15 +195,21 @@
       type))
   
   (defi ^:priv reset ^void [self]
-    (=: target-class (ct Class (.apply class-finder lk target-classname)))
-    (=: type (.type self))
-    (=: method (jc Self match-ctor target-class (.parameterArray type)))
-    (=: target-mh (.asType (.unreflectConstructor lk method) type))
-    (=: lk' (jc MethodHandles lookup))
-    (=: fallback-mh (.get-fallback self type))
-    (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
-                             "dynclsSwitchPoint")))
-    (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
+    (try
+      (=: target-class (ct Class (.apply class-finder lk target-classname)))
+      (=: type (.type self))
+      (=: method (jc Self match-ctor target-class (.parameterArray type)))
+      (=: target-mh (.asType (.unreflectConstructor lk method) type))
+      (=: lk' (jc MethodHandles lookup))
+      (=: fallback-mh (.get-fallback self type))
+      (=: sw (ct SwitchPoint (.get (jf sq.lang.InternalDataContainer :map)
+                               "dynclsSwitchPoint")))
+      (.setTarget self (.guardWithTest sw target-mh fallback-mh))
+      (catch Exception e
+        (throw (nw Error
+                 (.concat "Failed to reset dynamic constructor of "
+                   target-classname)
+                 e)))))
   
   (defi fallback ^Object [self ^"[Ljava.lang.Object;" args]
     (.reset self)
@@ -213,7 +219,9 @@
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
                ^String target-classname]
     (=: cs (nw Self lk type target-classname))
-    (.reset cs)
+    (try (.reset cs)
+      (catch Throwable e
+        (.setTarget cs (.get-fallback cs type))))
     cs)
   )
 

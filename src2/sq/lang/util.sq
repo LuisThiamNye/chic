@@ -43,6 +43,11 @@ Uses a blocking infinte loop."
           (recur)))
       (recur))))
 
+(defclass sq.lang.util.IteratorIterable
+  :interfaces Iterable
+  [^java.util.Iterator it]
+  (defi iterator [_] it))
+
 (Refer-Classes
   (java.text CharacterIterator)
   (io.lacuna.bifurcan Rope)

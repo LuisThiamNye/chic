@@ -62,6 +62,7 @@
     "sq.lang.util.RopeCharacterIterator"
     "sq.lang.util.EmptyCharacterIterator"
     "sq.lang.util.RopeUtil"
+    "sq.lang.util.IteratorIterable"
     "sq.lang.util.Maths"]
    
    "src2/sq/lang/keyword.sq"
@@ -100,6 +101,7 @@
     "chic.sqeditor.Misc"
     "chic.sqeditor.BreakNav"
     "chic.sqeditor.i.LineOffsetConverter"
+    "chic.sqeditor.TextButtonList"
     "chic.sqeditor.Region"
     "chic.sqeditor.RegionOps"
     "chic.sqeditor.RegionPathOps"
@@ -350,16 +352,16 @@
                       :param-types param-types
                       :lookup-class lookup-class}))
           1 (nth methods0 0)
-          (let [ms (interop/most-specific-method methods0)]
+          (let [ms (interop/match-method-by-arg-types methods0 param-types)]
             (if ms
               ms
-            (throw (ex-info "method ambiguous"
-                               {:target-class target-class
-                                :methods methods0
-                               :static? static?
-                                :method-name method-name
-                                :param-types param-types
-                                :lookup-class lookup-class})))))]
+              (throw (ex-info "method ambiguous"
+                       {:target-class target-class
+                        :methods methods0
+                        :static? static?
+                        :method-name method-name
+                        :arg-types param-types
+                        :lookup-class lookup-class})))))]
     (.unreflect lk method)))
 
 (load-class "sq.lang.i.MethodHandleFinderLk")
@@ -390,6 +392,7 @@
   (load-hidden "sq.lang.util.RopeCharacterIterator")
   (load-hidden "sq.lang.util.EmptyCharacterIterator")
   (load-hidden "sq.lang.util.RopeUtil")
+  (load-hidden "sq.lang.util.IteratorIterable")
   
   (load-class "sq.lang.DynClassMethodCallSite")
   (load-class "sq.lang.DynInstanceMethodCallSite")
@@ -430,6 +433,7 @@
   (load-hidden "chic.sqeditor.EditorCommit")
   (load-hidden "chic.sqeditor.Selection")
   (load-hidden "chic.sqeditor.SelectionOps")
+  (load-hidden "chic.sqeditor.TextButtonList")
   (load-hidden "chic.sqeditor.View")
   (load-hidden "chic.sqeditor.TextEditor")
   
@@ -443,9 +447,11 @@
       (catch Throwable e
         (.printStackTrace e))))
   
-  ()
-  
-  (.getDeclaredMethods (cof "sq.lang.DynInstanceMethodCallSite"))
+  (.getInterfaces (cof "_.chic,sqeditor,TextEditor$reify6"))
+  abcd
+  (filter
+    #(= "hasNext" (.getName %))
+    (vec (interop/get-all-instance-methods (cof "java.util.Iterator"))))
   
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]

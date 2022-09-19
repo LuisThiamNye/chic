@@ -1,11 +1,15 @@
 
 (Refer-Classes
-  (sq.lang.util Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
   (io.lacuna.bifurcan Set Map List LinearList Rope IList)
-  (java.util ArrayList HashMap)
-  (java.util.function UnaryOperator Consumer IntBinaryOperator)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
   (java.util.concurrent.atomic AtomicReference)
   (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
   (io.github.humbleui.types IRect Rect RRect)
   (io.github.humbleui.jwm
     EventMouseButton EventMouseMove EventMouseScroll
@@ -20,7 +24,8 @@
   (com.ibm.icu.text BreakIterator)
   (chic.sqeditor
     RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
-    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit)
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps)
   (chic.sqeditor.i LineOffsetConverter))
 
 (Alias-Classes
@@ -41,6 +46,9 @@
       (<= (.getTop rect) y)
       (< x (.getRight rect))
       (< y (.getBottom rect))))
+  
+  (defn withPos ^IRect [^IRect rect ^int x ^int y]
+    (jc IRect makeLTRB x y (.getWidth rect) (.getHeight rect)))
   )
 
 (defclass chic.sqeditor.Interactor
@@ -107,8 +115,8 @@
           rect (.getRect intr)
           _handled? (when (jc RectTools contains-point?
                             rect (.getX evt) (.getY evt))
-                      (do (.handle-mousedown intr evt) nil))
-          _ (set! focused-intr intr)
+                      (do (set! focused-intr intr)
+                        (.handle-mousedown intr evt) nil))
           (recur))))
     true)
   
@@ -138,27 +146,6 @@
     (when (not (nil? focused-intr))
       (.handle-textinput focused-intr evt))
     true)
-  )
-
-(defclass chic.sqeditor.Buffer
-  [^:pub ^:mut ^Rope rope
-   ^:pub ^LinearList line-start-idxs]
-  
-  (defi set-rope [_ ^Rope r]
-    (set! rope r)
-    (.clear line-start-idxs)
-    (.addLast line-start-idxs (jc Integer valueOf 0))
-    (=: it (.codePoints rope))
-    (loop [i 1]
-      (when (.hasNext it)
-        (=: ich (.nextInt it))
-        (when (= 10 ich)
-          (.addLast line-start-idxs (jc Integer valueOf i)))
-        (recur (inc i)))))
-  
-  (init [self ^Rope r]
-    (set! line-start-idxs (nw LinearList))
-    (.set-rope self r))
   )
 
 (defclass chic.sqeditor.Misc
@@ -480,6 +467,57 @@
     (set! rope r)
     (set! regions (ct "[Lchic.sqeditor.Region;" (.toArray rs)))))
 
+(defclass chic.sqeditor.Buffer
+  [^:pub ^:mut ^Rope rope
+   ^:pub ^LinearList line-start-idxs
+   ^:pub ^:mut ^Path path
+   ^:pub ^:mut ^Rope saved-rope
+   ^:pub ^ArrayList commits
+   ^:pub ^ArrayList redo-commits
+   ^:pub ^:mut ^EditorCommit latest-commit
+   ^:pub ^:mut ^long last-commit-time]
+  
+  (defi set-rope ^void [_ ^Rope r]
+    (set! rope r)
+    (.clear line-start-idxs)
+    (.addLast line-start-idxs (jc Integer valueOf 0))
+    (=: it (.codePoints rope))
+    (loop [i 1]
+      (when (.hasNext it)
+        (=: ich (.nextInt it))
+        (when (= 10 ich)
+          (.addLast line-start-idxs (jc Integer valueOf i)))
+        (recur (inc i)))))
+  
+  (defi set-path ^void [_ ^Path f]
+    (set! path f))
+  
+  (defi reload ^void [self]
+    (=: rope (jc Rope from (jc Files readString path)))
+    (.set-rope self rope)
+    (set! saved-rope rope))
+  
+  (defi reset-history! ^void [_]
+    (.clear commits)
+    (.clear redo-commits)
+    (set! last-commit-time (jc System currentTimeMillis))
+    (set! latest-commit (nw EditorCommit rope)))
+  
+  (init [self]
+    (set! commits (nw ArrayList))
+    (set! redo-commits (nw ArrayList))
+    (set! line-start-idxs (nw LinearList))
+    (.set-rope self (jf Rope EMPTY))
+    (.reset-history! self))
+  
+  (init [self ^Rope r]
+    (set! commits (nw ArrayList))
+    (set! redo-commits (nw ArrayList))
+    (set! line-start-idxs (nw LinearList))
+    (.set-rope self r)
+    (.reset-history! self))
+  )
+
 (defclass chic.sqeditor.Selection
   [^:pub ^:mut ^LinearList regions]
   (init [_]
@@ -493,6 +531,89 @@
     (loop [i 0]
       (when (< i (alength regions'))
         (.addLast regions (aa regions' i)))))
+  )
+
+(defclass chic.sqeditor.BufferOps
+  
+  (defn commit! [^Buffer buffer ^Selection sel ^EditorCommit commit]
+    (=: latest-commit (jfi buffer :latest-commit))
+    (=: next-rope (jfi commit :rope))
+    (.set-rope buffer next-rope)
+    (when (not (nil? (=: regions (jfi commit :regions))))
+      (.reset-regions! sel regions)))
+  
+  (defn edit! [^Buffer buffer ^Selection sel ^EditorCommit commit]
+    (=: prev-rope (jfi buffer :rope))
+    (=: next-rope (jfi commit :rope))
+    (when (not (== prev-rope next-rope))
+      (=: t (jc System currentTimeMillis))
+      (=: latest-commit (jfi buffer :latest-commit))
+      (when (nil? (jfi latest-commit :regions))
+        ;; save regions prior to the next commit, useful for initial commit
+        (set! latest-commit
+          (setf! buffer :latest-commit
+            (nw EditorCommit (jfi latest-commit :rope) (jfi sel :regions)))))
+      (=: should-commit?
+        (let
+          dt (- t (jfi buffer :last-commit-time))
+          nchardiff 1
+          thres (ct long (* 3400 (jc Math exp (* -0.0027 (ct double nchardiff)))))
+          (<= thres dt)))
+      (when should-commit?
+        (.add (jfi buffer :commits) latest-commit)
+        (setf! buffer :last-commit-time t)
+        (setf! buffer :latest-commit commit))
+      (jc Self commit! buffer sel commit)))
+  
+  (defn undo! [^Buffer buffer ^Selection sel]
+    (=: prev-rope (jfi buffer :rope))
+    (=: commits (jfi buffer :commits))
+    (=: latest-commit (jfi buffer :latest-commit))
+    (=: ncommits (.size commits))
+    (if (= 0 ncommits)
+      (setf! buffer :latest-commit
+        (nw EditorCommit (jfi latest-commit :rope) 
+          (ct "[LRegion;" nil)))
+      (jc Self commit! buffer sel
+        (ct EditorCommit
+          (if (== (jfi latest-commit :rope) prev-rope)
+            ;; no uncommitted changes
+            (do (.add (jfi buffer :redo-commits) latest-commit)
+              (setf! buffer :latest-commit (.remove commits (dec ncommits))))
+            ;; else uncommitted changes
+            (do (.add (jfi buffer :redo-commits)
+                  (nw EditorCommit prev-rope (jfi sel :regions)))
+              latest-commit))))))
+  
+  (defn redo! [^Buffer buffer ^Selection sel]
+    (=: redo-commits (jfi buffer :redo-commits))
+    (when (< 0 (=: nredos (.size redo-commits)))
+      (=: com (.remove redo-commits (dec nredos)))
+      (=: latest-commit (jfi buffer :latest-commit))
+      (=: commits (jfi buffer :commits))
+      (.add commits latest-commit)
+      (=: rope (jfi buffer :rope))
+      (when (not (== (jfi latest-commit :rope) rope))
+        (.add commits (nw EditorCommit rope (jfi sel :regions))))
+      (setf! buffer :latest-commit com)
+      (jc Self commit! buffer sel (ct EditorCommit com))))
+  
+  (defn dirty? [^Buffer buffer]
+    (and (not (nil? (jfi buffer :path)))
+      (not (== (jfi buffer :saved-rope) (jfi buffer :rope)))))
+  
+  (defn save! ^void [^Buffer buffer]
+    (=: rope (jfi buffer :rope))
+    (=: path (jfi buffer :path))
+    (jc Files createDirectories
+      (.getParent path)
+      (na FileAttribute 0))
+    (jc Files writeString path
+      (.toString rope)
+      (let a (na OpenOption 0)
+        (do #_(sa a 0 (jf StandardOpenOption CREATE))
+          a)))
+    (setf! buffer :saved-rope rope))
   )
 
 (defclass chic.sqeditor.SelectionOps
@@ -648,34 +769,73 @@
   
   (defi close ^void [_]))
 
+(defclass chic.sqeditor.TextButtonList
+  [^IntConsumer on-click
+   ^:mut ^int y-top
+   ^:mut ^int y-bottom
+   ^:mut ^int item-height]
+  
+  (init [_ ^IntConsumer f]
+    (set! on-click f))
+  
+  (defi draw [_ ^IRect rect ^Canvas cnv ^Iterable labels ^Font font ^Paint fill]
+    (=: height (ct int (.getSpacing font)))
+    (set! item-height height)
+    (set! y-top (.getTop rect))
+    (=: x (ct float (.getLeft rect)))
+    (=: it (.iterator labels))
+    (=: offset (- height (ct int (.getDescent (.getMetrics font)))))
+    (loop [y (+ (.getTop rect) offset)]
+      (if (.hasNext it)
+        (let label (ct String (.next it))
+          textline (jc TextLine make label font)
+          (do (.drawTextLine cnv textline x y fill)
+            (recur (+ y height))))
+        (set! y-bottom (- y offset)))))
+  
+  (defi on-mouse-down ^void [_ ^EventMouseButton evt]
+    (=: idx
+      (/ (jc Math min (dec y-bottom) (- (.getY evt) y-top)) item-height))
+    (.accept on-click idx))
+  )
+
 (defclass chic.sqeditor.TextEditor
   :interfaces AutoCloseable
   [^RRect border-rrect
    ^Paint border-paint-focused
-   ^View view
+   ^:mut ^IRect visible-rect
+   ^:mut ^View view
+   ^ArrayList views
    ^:pub ^:mut ^LinearList textlines
    ^:mut ^int line-height
    ^:mut ^int plane-origin-x
    ^:mut ^int plane-origin-y
    ^:mut ^Font font
+   ^:mut ^Font ui-font
+   ^:mut ^Paint text-paint
    ^:mut ^boolean dragging?
    ^Interactor intr
+   ^Interactor sidebar-intr
+   ^:pub ^TextButtonList ui-sidebar
    ^IntrMgr intrmgr
-   ^ArrayList commits
-   ^ArrayList redo-commits
-   ^:mut ^EditorCommit working-commit
-   ^:mut ^long last-commit-time]
+   ^:mut ^int scroll-x
+   ^:mut ^int scroll-y]
   
   (defi draw-text [self ^Rect rect ^Canvas cnv]
-    (=: text-paint (nw Paint))
-    (.setColor text-paint 0xFF000000)
-    (=: it (.iterator textlines))
-    (loop [y (- (+ line-height plane-origin-y)
+    (=: min-vis-idx (/ (- (.getTop visible-rect) plane-origin-y)
+                      line-height))
+    (=: nlines (ct int (.size textlines)))
+    (=: max-vis-idx (jc Math min
+                      (dec nlines)
+                      (/ (- (.getBottom visible-rect) plane-origin-y)
+                        line-height)))
+    (loop [i min-vis-idx
+           y (- (+ (* (inc i) line-height) plane-origin-y)
                (jc Math round (.getDescent (.getMetrics font))))]
-      (when (.hasNext it)
-        (.drawTextLine cnv (ct TextLine (.next it))
+      (when (<= i max-vis-idx)
+        (.drawTextLine cnv (ct TextLine (.nth textlines i))
           (ct float plane-origin-x) (ct float y) text-paint)
-        (recur (+ y line-height)))))
+        (recur (inc i) (+ y line-height)))))
   
   (defi line-offset->xpos ^int [self ^int line-idx ^int offset]
     (let text-line (ct TextLine (.nth (jfi self :textlines) (ct long line-idx)))
@@ -763,10 +923,57 @@
         (ct float (+ line-top line-height extra-v)))
       cursor-paint))
   
-  (defi draw ^void [self ^Rect rect ^Canvas cnv]
-    (.set-rect intr (.toIRect rect))
-    (set! plane-origin-x (+ 5 (jc Math round (.getLeft rect))))
-    (set! plane-origin-y (+ 3 (jc Math round (.getTop rect))))
+  (def text-padding-h 5)
+  (def text-padding-v 3)
+  (def sidebar-width 350)
+  
+  (defi draw ^void [self ^IRect irect ^Canvas cnv]
+    (=: irect
+      (jc IRect makeLTRB
+        (+ sidebar-width (.getLeft irect))
+        (+ (.getTop irect) (ct int (.getSpacing ui-font)) 5)
+        (.getRight irect)
+        (- (.getBottom irect) 20)))
+    
+    (=: sidebar-rect (jc IRect makeLTRB 0 0 sidebar-width (.getBottom irect)))
+    (.set-rect sidebar-intr sidebar-rect)
+    (=: sidebar-labels
+      (let
+        list (nw ArrayList)
+        (loop [i (dec (.size views))]
+          (if (<= 0 i)
+            (let
+              v (ct View (.get views i))
+              path (jfi (jfi v :buffer) :path)
+              (do (.add list (if (nil? path)
+                               "<no file>"
+                               (.toString path)))
+                (recur (dec i))))
+            list))))
+      (let n (.save cnv)
+        (try
+          (.clipRect cnv (.toRect sidebar-rect))
+          (.draw ui-sidebar sidebar-rect cnv sidebar-labels ui-font text-paint)
+          (finally
+            (.restoreToCount cnv n))))
+    
+    (=: filepath (jfi (jfi view :buffer) :path))
+    (.drawString cnv
+      (if (nil? filepath)
+        "<no file>"
+        (.toString filepath))
+      (+ sidebar-width text-padding-h)
+        (+ (ct float text-padding-v)
+          (let m (.getMetrics ui-font)
+            (- (.getSpacing ui-font) (.getDescent m))))
+        ui-font text-paint)
+    (when (jc BufferOps dirty? (jfi view :buffer))
+      (.setStrokeWidth text-paint 6)
+      (.drawPoint cnv (+ sidebar-width 3) 3 text-paint))
+    (set! visible-rect irect)
+    (.set-rect intr irect)
+    (set! plane-origin-x (+ text-padding-h scroll-x (.getLeft irect)))
+    (set! plane-origin-y (+ text-padding-v scroll-y (.getTop irect)))
     
     ;; region highlights
     (=: it (.iterator (jfi (jfi view :selection) :regions)))
@@ -777,6 +984,7 @@
           (.draw-selection-region self region cnv))
         (recur)))
     
+    (=: rect (.toRect irect))
     (.draw-text self rect cnv)
     
     ;; cursors
@@ -836,75 +1044,51 @@
             (.toString (.slice rope prev-i (.size rope))) font))))
     (set! textlines textlines'))
   
-  (defi apply-commit! [self ^EditorCommit commit]
-    (=: current-working working-commit)
-    (=: new-rope (jfi commit :rope))
-    (.set-rope (jfi view :buffer) new-rope)
-    (set! last-commit-time (jc System currentTimeMillis))
-    (when (not (nil? (=: regions (jfi commit :regions))))
-      (.reset-regions! (jfi view :selection) regions))
-    (.regenerate-textlines! self new-rope))
-  
   (defi perform-edit! ^void [self ^EditorCommit commit]
-    (=: prev-rope (jfi (jfi view :buffer) :rope))
-    (=: rope (jfi commit :rope))
-    (when (not (== prev-rope rope))
-      (=: t (jc System currentTimeMillis))
-      (when (nil? (jfi working-commit :regions))
-        (set! working-commit (nw EditorCommit (jfi working-commit :rope)
-                               (jfi (jfi view :selection) :regions))))
-      (=: should-commit?
-        (let
-          dt (- t last-commit-time)
-          nchardiff 1
-          thres (* 3400L (ct long (jc Math exp (* -0.0027 (ct double nchardiff)))))
-          (<= thres dt)))
-      (when should-commit?
-        (.add commits working-commit)
-        (set! working-commit commit))
-      (.apply-commit! self commit)))
+    (jc BufferOps edit! (jfi view :buffer)
+      (jfi view :selection) commit)
+    (.regenerate-textlines! self (jfi commit :rope)))
   
   (defi perform-undo ^void [self]
-    (=: rope (jfi (jfi view :buffer) :rope))
-    (=: commits commits)
-    (=: ncommits (.size commits))
-    (if (= 0 ncommits)
-      (set! working-commit (nw EditorCommit (jfi working-commit :rope)
-                             (ct "[Lchic.sqeditor.Region;" nil)))
-      (.apply-commit! self
-       (ct EditorCommit
-         (if (== (jfi working-commit :rope) rope)
-           ;; no uncommitted changes
-           (do (.add redo-commits working-commit)
-             (set! working-commit (.remove commits (dec ncommits))))
-           ;; else uncommitted changes
-           (do (.add redo-commits (nw EditorCommit rope (jfi (jfi view :selection) :regions)))
-             working-commit))))))
+    (=: buffer (jfi view :buffer))
+    (jc BufferOps undo! buffer (jfi view :selection))
+    (.regenerate-textlines! self (jfi buffer :rope)))
   
   (defi perform-redo ^void [self]
-    (when (< 0 (=: nredos (.size redo-commits)))
-      (=: com (.remove redo-commits (dec nredos)))
-      (.add commits working-commit)
-      (=: rope (jfi (jfi view :buffer) :rope))
-      (when (not (== (jfi working-commit :rope) rope))
-        (.add commits (nw EditorCommit rope (jfi (jfi view :selection) :regions))))
-      (set! working-commit com)
-      (.apply-commit! self (ct EditorCommit com))))
+    (=: buffer (jfi view :buffer))
+    (jc BufferOps redo! buffer (jfi view :selection))
+    (.regenerate-textlines! self (jfi buffer :rope)))
   
   (defi navigateFromRegion ^void [self]
     (=: nav-loc (jc SelectionOps combined-regions-str
                   (jfi view :selection) (jfi (jfi view :buffer) :rope)))
     (=: path (jc java.nio.file.Path of
-               (.concat "src2/" nav-loc) (na String 0)))
-    (try
-      (=: text (jc java.nio.file.Files readString path))
-      (.perform-edit! self
-        (nw EditorCommit
-          (jc Rope from text)))
-      
-      (catch java.io.IOException e
-        (.println (jf System out) "Could not load file")
-        (.println (jf System out) e))))
+               (.concat (.concat "src3/" nav-loc) ".sq") (na String 0)))
+    (=: buffer' (nw Buffer))
+    (.set-path buffer' path)
+    (=: view' (nw View buffer'))
+    (set! view view')
+    (.add views view')
+    (jc SelectionOps add (jfi view' :selection) (nw Region 0 0))
+    (if (jc Files exists path (na LinkOption 0))
+      (try
+        (.reload buffer')
+        (.regenerate-textlines! self
+          (jfi buffer' :rope))
+        (catch java.io.IOException e
+          (.println (jf System out) "Could not load file")
+          (.println (jf System out) e)))
+      (.regenerate-textlines! self
+        (jf Rope EMPTY))))
+  
+  (defi close-current ^void [self]
+    (=: n (.size views))
+    (when (and (< 1 n)
+            (not (jc BufferOps dirty? (jfi view :buffer))))
+      (.remove views (dec n))
+      (set! view (.get views (- n 2)))
+      (.regenerate-textlines! self
+        (jfi (jfi view :buffer) :rope))))
   
   (defi on-key-down ^void [self ^EventKey evt]
     (=: mods (bit-and (jfi evt :_modifiers) (bit-not 1)))
@@ -948,6 +1132,8 @@
               (jc SelectionOps delete (jfi view :selection)
                 (jfi (jfi view :buffer) :rope))))
         Z (if shift? (.perform-redo self) (.perform-undo self))
+        S (jc BufferOps save! (jfi view :buffer))
+        W (.close-current self)
         G (.navigateFromRegion self)
         (when macos?
           (case-enum key
@@ -983,11 +1169,44 @@
       (jc SelectionOps insert-text (jfi view :selection)
         (jfi (jfi view :buffer) :rope) (.getText evt))))
   
+  (defn scroll-offset ^int [^int prev ^int content-length ^int visible-length
+                            ^int delta]
+    (if (<= content-length visible-length)
+      0
+      (jc Maths clamp
+        (+ prev delta)
+        (- visible-length content-length)
+        0)))
+  
+  (defi on-mouse-scroll ^void [self ^EventMouseScroll evt]
+    (=: visible-width (.getWidth visible-rect))
+    (=: content-width
+      (loop [i (dec (.size textlines))
+             acc 0]
+        (if (<= 0 i)
+          (let textline (ct TextLine (.nth textlines i))
+            (recur (dec i)
+              (jc Math max acc (ct int (jc Math ceil (.getWidth textline))))))
+          (+ acc (* 2 text-padding-h)))))
+    (set! scroll-x (jc Self scroll-offset scroll-x content-width visible-width
+                     (ct int (.getDeltaX evt))))
+    (=: visible-height (.getHeight visible-rect))
+    (=: content-height (+ (* (ct int (.size textlines)) line-height)
+                         text-padding-v
+                         40))
+    (set! scroll-y (jc Self scroll-offset scroll-y content-height visible-height
+                     (ct int (.getDeltaY evt)))))
+  
+  (defi set-view-idx ^void [self ^int idx]
+    (set! view (.remove views (- (.size views) idx 1)))
+    (.add views view)
+    (.regenerate-textlines! self (jfi (jfi view :buffer) :rope)))
+  
   (init [self ^IntrMgr intrmgr']
     ;; interactor
+    (set! intrmgr intrmgr')
     (set! intr (nw Interactor))
     (.reg-intr! intrmgr' intr)
-    (set! intrmgr intrmgr')
     (.add-listener intr :mouse-down
       (reify Consumer
         (accept ^void [_ evt]
@@ -996,6 +1215,10 @@
       (reify Consumer
         (accept ^void [_ evt]
           (.on-mouse-up self (ct EventMouseButton evt)))))
+    (.add-listener intr :mouse-scroll
+      (reify Consumer
+        (accept ^void [_ evt]
+          (.on-mouse-scroll self (ct EventMouseScroll evt)))))
     (.add-listener intr :key-down
       (reify Consumer
         (accept ^void [_ evt]
@@ -1005,30 +1228,45 @@
         (accept ^void [_ evt]
           (.on-text-input self (ct EventTextInput evt)))))
     
+    (set! sidebar-intr (nw Interactor))
+    (.reg-intr! intrmgr' sidebar-intr)
+    (set! ui-sidebar (nw TextButtonList
+                       (reify IntConsumer
+                         (accept ^void [_ ^int idx]
+                           (.set-view-idx self idx)))))
+    (.add-listener sidebar-intr :mouse-down
+      (reify Consumer
+        (accept ^void [_ evt]
+          (.on-mouse-down (jfi self :ui-sidebar) (ct EventMouseButton evt)))))
+    
     (set! border-paint-focused
       (let p (nw Paint)
         (do (.setColor p 0x5f000000)
           (.setMode p (jf PaintMode STROKE))
           (.setStrokeWidth p 2f)
           p)))
-    (=: rope (jc Rope from "Hello world\nMy name is\n  Thomas the tank engine\niiiiiiiiii\nMMMMMMM"))
-    (=: buffer (nw Buffer rope))
+    (=: buffer (nw Buffer))
+    (.set-path buffer (jc Path of "src3/home.sq" (na String 0)))
+    (.reload buffer)
+    (.reset-history! buffer)
     (=: view' (nw View buffer))
     (set! view view')
+    (set! views (nw ArrayList))
+    (.add views view)
     (jc SelectionOps add (jfi view' :selection) (nw Region 0 0))
     
     (set! font (nw Font (jc Typeface makeFromFile "/Volumes/Carbonator/csync/fonts/Input-Font/Input_Fonts/InputSans/InputSansCondensed/InputSansCondensed-Regular.ttf")
-                 28f))
+                 30f))
+    (set! ui-font (.makeWithSize font 28f))
     (set! line-height (jc Math round (.getSpacing font)))
+    (set! text-paint (nw Paint))
+    (.setColor text-paint 0xFF000000)
     
-    (set! commits (nw ArrayList))
-    (set! redo-commits (nw ArrayList))
-    (set! working-commit (nw EditorCommit rope))
-    (.perform-undo self)
-    (.apply-commit! self working-commit))
+    (.regenerate-textlines! self (jfi buffer :rope)))
   
   (defi close ^void [_]
-    (.unreg-intr! intrmgr intr))
+    (.unreg-intr! intrmgr intr)
+    (.unreg-intr! intrmgr sidebar-intr))
   )
 
 (defclass chic.sqeditor.UiRoot
@@ -1040,10 +1278,9 @@
     (set! intrmgr intrmgr')
     (set! texteditor (nw TextEditor intrmgr')))
   
-  (defi draw [self ^Canvas cnv]
+  (defi draw [self ^IRect rect ^Canvas cnv]
     ;; TODO 5 padding
-    (=: texteditor-rect (nw Rect 5f 5f 400f 250f))
-    (try (.draw texteditor texteditor-rect cnv)
+    (try (.draw texteditor rect cnv)
       (catch ClassCastException e
         (.close (ct AutoCloseable texteditor))
         (set! texteditor (nw TextEditor intrmgr))
@@ -1080,7 +1317,7 @@
   
   (defi paint ^void [_ ^Canvas cnv]
     (.clear cnv 0xFFffffff)
-    (.draw root cnv))
+    (.draw root (jc RectTools withPos (.getContentRect jwm-window) 0 0) cnv))
   
   (defi notifyEvent ^void [self ^Event evt]
     (when

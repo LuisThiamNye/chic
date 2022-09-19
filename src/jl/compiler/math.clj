@@ -2,6 +2,7 @@
   (:require
     [jl.compiler.spec :as spec]
     [jl.compiler.core :as comp]
+    [jl.compiler.sforms :as sforms]
     [clojure.core.match :refer [match]]
     [jl.compiler.analyser :as ana :refer [-analyse-node]])
   (:import
@@ -197,26 +198,18 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
     
     
     (assoc r :args [x1 x2])))
-(defn anasf-arith-2 [op {:keys [children] :as node}]
+(defn anasf-arith-2 [op {:keys [children node/env] :as node}]
   (assert (= 3 (count children)))
   (let [[x1 x2] (ana/analyse-args node (subvec children 1))
-        s1 (:node/spec x1)
-        s2 (:node/spec x2)
-        p1 (spec/prim? s1)
-        p2 (spec/prim? s2)]
-    (when-not (and p1 p2)
-      (throw (RuntimeException.
-               (str "arith-2 operands not prim: " s1 ", " s2 ))))
-    (when-not (= p1 p2)
-      (throw (RuntimeException.
-               (str "arith-2 operands not equal type: " p1 ", " p2))))
+        [x1 x2 prim] (sforms/coerce-arith-pair env x1 x2)]
     (ana/transfer-branch-env x2
       {:node/kind :arithmetic-2
-       :op op :type (keyword p1)
+       :op op :type prim
        :node/spec (:node/spec x2)
        :arg1 x1 :arg2 x2
        ; :args [x1 x2]
        })))
+
 (defn anasf-arith-2+ [op {:keys [children] :as node}]
   (if (= 3 (count children))
     (anasf-arith-2 op node)
@@ -225,10 +218,22 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
         (into [(nth children 1)
                (assoc node :children (subvec children 0 3))]
           (subvec children 3))))))
+
 (defn anasf-add [node]
   (anasf-arith-2+ :add node))
-(defn anasf-subtract [node]
-  (anasf-arith-2+ :subtract node))
+
+(defn anasf-subtract [{:keys [children] :as node}]
+  (if (= 2 (count children))
+    (let [arg (ana/analyse-expr node (nth children 1))
+          prim (spec/prim? (:node/spec arg))]
+      (assert prim)
+      (ana/transfer-branch-env arg
+        {:node/kind :arithmetic-1
+         :op :negate
+         :node/spec (:node/spec arg)
+         :arg arg}))
+    (anasf-arith-2+ :subtract node)))
+
 (defn anasf-multiply [node]
   (anasf-arith-2+ :multiply node))
 (defn anasf-divide [node]
