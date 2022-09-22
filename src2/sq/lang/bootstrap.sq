@@ -295,6 +295,18 @@
       (.get (jf sq.lang.InternalDataContainer :map)
         "classFinderLk")))
   
+  (defi get-fallback [self ^MethodType type]
+    (=: lk' (jc MethodHandles lookup))
+    (.asType
+      (.asCollector
+        (.bind lk' self "fallback"
+          (jc MethodType methodType
+            (jc Class forName "java.lang.Object")
+            (jc Class forName "[Ljava.lang.Object;")))
+        (jc Class forName "[Ljava.lang.Object;")
+        (.parameterCount type))
+      type))
+  
   (defi ^:priv reset ^void [self]
     (=: target-class (ct Class (.apply class-finder lk target-classname)))
     (=: map (jf sq.lang.InternalDataContainer :map))
@@ -303,17 +315,7 @@
     (=: type (.type self))
     (=: field (jc sq.lang.util.ClassReflect find-field target-class false field-name))
     (=: target-mh (.asType (.unreflectSetter lk field) type))
-    (=: fallback-mh
-      (do (=: lk' (jc MethodHandles lookup))
-        (.asType
-          (.asCollector
-           (.bind lk' self "fallback"
-             (jc MethodType methodType
-               (jc Class forName "java.lang.Object")
-               (jc Class forName "[Ljava.lang.Object;")))
-           (jc Class forName "[Ljava.lang.Object;")
-           (.parameterCount type))
-          type)))
+    (=: fallback-mh (.get-fallback self type))
     (=: sw (ct SwitchPoint (.get map "dynclsSwitchPoint")))
     (.setTarget self (.guardWithTest sw target-mh fallback-mh)))
   
@@ -325,7 +327,9 @@
     ^CallSite [^MHLookup lk ^String method-name ^MethodType type
                ^String target-classname ^String field-classname]
     (=: cs (nw Self lk type method-name target-classname field-classname))
-    (.reset cs)
+    (try (.reset cs)
+      (catch Throwable e
+        (.setTarget cs (.get-fallback cs type))))
     cs)
   )
 

@@ -1,6 +1,6 @@
 (ns jl.interop
   (:require
-    [chic.util :as util]
+    [chic.util :as util :refer [loop-zip]]
     [jl.compiler.op :as op]
     [jl.compiler.type :as type])
   (:import
@@ -200,6 +200,10 @@
                                  {:classname classname})))
       (try (or (when class-resolver (class-resolver classname))
              (find-class classname))
+        (catch ClassNotFoundException e
+          (throw (ex-info "No class found"
+                   {:new-classes (keys new-classes)}
+                   e)))
         (catch ExceptionInInitializerError e
           (throw (ClassNotFoundException. e)))))))
 
@@ -227,11 +231,27 @@
       el-class
       (array-class-of el-class ndims))))
 
+(defn primitive-name->desc [name]
+  (case name
+    "boolean" "Z"
+    "byte" "B"
+    "char" "C"
+    "short" "S"
+    "int" "I"
+    "long" "J"
+    "float" "F"
+    "double" "D"
+    "void" "V"))
+
 (defn make-unbox-conversion [box-name prim-name]
-  [:method :class (str "java/lang/" box-name) (str prim-name "Value")])
+  (let [box-iname (str "java/lang/" box-name)]
+    [:method :instance box-iname (str prim-name "Value")
+     (str "()" (primitive-name->desc prim-name))]))
 
 (defn make-box-conversion [box-name prim-name]
-  [:method :instance (str "java/lang/" box-name) "valueOf"])
+  (let [box-iname (str "java/lang/" box-name)]
+    [:method :class box-iname "valueOf"
+     (str "(" (primitive-name->desc prim-name) ")L" box-iname ";" )]))
 
 (defn member-accessible? [c1 target mods]
   (or (Modifier/isPublic mods)
@@ -339,7 +359,10 @@
     (let [mods (-getModifiers m)]
       (and
         (= static? (Modifier/isStatic mods))
-        (= 0 (bit-and Opcodes/ACC_SYNTHETIC mods))))))
+        (= 0 (bit-and Opcodes/ACC_SYNTHETIC
+               #_(bit-or Opcodes/ACC_SYNTHETIC
+                 Opcodes/ACC_ABSTRACT)
+               mods))))))
 
 (defn arity-matching-method? [nargs method]
   (let [nparams (count (-getParamTypes method))]
@@ -347,6 +370,75 @@
       (let [varargs? (-varargs? method)]
         (when varargs?
           (< nparams nargs))))))
+
+(defn match-method-by-arg-types [methods0 arg-types]
+  (let []
+    (loop-zip [method methods0] ;; first find exact match
+      [first-noneqs []]
+      (let [param-types (-getParamTypes method)
+            first-noneq
+            (loop-zip [param-type ^Iterable (vec param-types)
+                       i :idx]
+              []
+              (let [arg-type (nth arg-types i)]
+                (if (same-class? arg-type param-type)
+                  (recur)
+                  i))
+              -1)]
+        (if (<= 0 first-noneq)
+          (recur (conj first-noneqs first-noneq))
+          method))
+      ;; then try inheritance match
+      (loop-zip [method ^Iterable methods0
+                 first-noneq ^Iterable first-noneqs]
+        [first-nomatches []
+         some-match? false]
+        (let [param-types (-getParamTypes method)
+              first-nomatch
+              (loop [i first-noneq]
+                (if (< i (count param-types))
+                  (let [param-type (nth param-types i)
+                        arg-type (nth arg-types i)
+                        matches? (-satisfies? arg-type param-type)]
+                    (if matches?
+                      (recur (inc i))
+                      i))
+                  -1))]
+          (recur (conj first-nomatches first-nomatch)
+            (or some-match? (< first-nomatch 0))))
+        (if some-match?
+          ;; find most specific of inheritance-matching methods
+          (loop-zip [fnm ^Iterable first-nomatches]
+            [i 0 most-specific nil]
+            (if (< 0 fnm)
+              (recur (inc i) most-specific)
+              (let [m (nth methods0 i)
+                    r (if (nil? most-specific)
+                        m
+                        (let [ms-params (-getParamTypes most-specific)
+                              m-params (-getParamTypes m)]
+                          (loop 
+                            [i (dec (count m-params)) s1 false s2 false
+                             diff? false]
+                            (if (<= 0 i)
+                              (let [p1 (nth ms-params i)
+                                    p2 (nth m-params i)]
+                                (recur (dec i)
+                                  (or s1 (-satisfies? p2 p1))
+                                  (or s2 (-satisfies? p1 p2))
+                                  (or diff? (not (same-class? p1 p2)))))
+                              (if diff?
+                                (if (and s1 s2)
+                                  (throw (ex-info "method ambiguous (no casting)"
+                                           {:arg-types arg-types
+                                            :method-param-types
+                                            (mapv (comp vec -getParamTypes) methods0)}))
+                                  (if s1 most-specific m))
+                                ;; may be overriding implementations
+                                ;; pick the earlier method (lowest in class hierarchy)
+                                most-specific)))))]
+                (recur (inc i) r)))
+            most-specific))))))
 
 (defn get-methods-pretypes [self-class target-class static? method-name nargs]
   (into []
@@ -451,7 +543,9 @@
                    "\nMatches: " (mapv #(.toString %) matches))))))))
 
 (defn get-field-type ^Type [env asking-classname classname static? field-name]
-  (let [cls (resolve-class env classname)
+  (let [cls (if (string? classname)
+              (resolve-class env classname)
+              classname)
         askcls (if asking-classname (try (resolve-class env asking-classname)
                                       (catch ClassNotFoundException _ Object))
                  Object)

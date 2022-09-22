@@ -205,7 +205,7 @@ Widening primitive conversion (§5.1.2) is applied to convert either or both ope
     (ana/transfer-branch-env x2
       {:node/kind :arithmetic-2
        :op op :type prim
-       :node/spec (:node/spec x2)
+       :node/spec (spec/of-class (name prim))
        :arg1 x1 :arg2 x2
        ; :args [x1 x2]
        })))

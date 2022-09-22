@@ -128,6 +128,7 @@
                        (let [basic-to (keyword (case to ("byte" "short" "char") "int" to))]
                          [(util/primitive-name->class to)
                           (match [basic-from basic-to]
+                            [:int :long] :i2l
                             [:int :float] :i2f
                             [:int :double] :i2d
                             [:long :float] :l2f
@@ -147,46 +148,57 @@
                    cto)]
     [:insn op]))
 
+(comment
+  (get-implicit-prim-wideconv Integer/TYPE Long/TYPE)
+  (get-implicit-prim-wideconv Integer/TYPE Float/TYPE))
+
 (defn get-coercion [env cfrom cto]
-  (when (and (interop/-primitive? cfrom) (interop/-primitive? cto))
-    (get-implicit-prim-wideconv cfrom cto))
-  #_(if (interop/-primitive? cto)
-    (case (.getName ^Class cto)
-      "boolean" (when (identical? cfrom Boolean)
-                  (interop/make-unbox-conversion "Boolean" "boolean"))
-      "byte" (when (identical? cfrom Byte)
-                  (interop/make-unbox-conversion "Byte" "byte"))
-      "short" (when (identical? cfrom Short)
+  (if (and (interop/-primitive? cfrom) (interop/-primitive? cto))
+    (get-implicit-prim-wideconv cfrom cto)
+    (if (interop/-primitive? cto)
+      (case (.getName ^Class cto)
+        "boolean" (when (interop/-satisfies? Boolean cfrom)
+                    (interop/make-unbox-conversion "Boolean" "boolean"))
+        "byte" (when (interop/-satisfies? Byte cfrom)
+                 (interop/make-unbox-conversion "Byte" "byte"))
+        "short" (when (interop/-satisfies? Short cfrom)
                   (interop/make-unbox-conversion "Short" "short"))
-      "char" (when (identical? cfrom Character)
-                  (interop/make-unbox-conversion "Character" "char"))
-      "int" (when (identical? cfrom Integer)
-                  (interop/make-unbox-conversion "Integer" "int"))
-      "long" (when (identical? cfrom Long)
-                  (interop/make-unbox-conversion "Long" "long"))
-      "float" (when (identical? cfrom Float)
+        "char" (when (interop/-satisfies? Character cfrom)
+                 (interop/make-unbox-conversion "Character" "char"))
+        "int" (when (interop/-satisfies? Integer cfrom)
+                (interop/make-unbox-conversion "Integer" "int"))
+        "long" (when (interop/-satisfies? Long cfrom)
+                 (interop/make-unbox-conversion "Long" "long"))
+        "float" (when (interop/-satisfies? Float cfrom)
                   (interop/make-unbox-conversion "Float" "float"))
-      "double" (when (identical? cfrom Double)
-                  (interop/make-unbox-conversion "Double" "double")))
-    (if (interop/-primitive? cfrom)
-      (case (.getName ^Class cfrom)
-        "boolean" (when (identical? cto Boolean/TYPE)
-                    (interop/make-box-conversion "Boolean" "boolean"))
-        "byte" (when (identical? cto Byte/TYPE)
-                 (interop/make-box-conversion "Byte" "byte"))
-        "short" (when (identical? cto Short/TYPE)
-                  (interop/make-box-conversion "Short" "short"))
-        "char" (when (identical? cto Character/TYPE)
-                 (interop/make-box-conversion "Character" "char"))
-        "int" (when (identical? cto Integer/TYPE)
-                (interop/make-box-conversion "Integer" "int"))
-        "long" (when (identical? cto Long/TYPE)
-                 (interop/make-box-conversion "Long" "long"))
-        "float" (when (identical? cto Float/TYPE)
-                  (interop/make-box-conversion "Float" "float"))
-        "double" (when (identical? cto Double/TYPE)
-                   (interop/make-box-conversion "Double" "double")))
-      nil)))
+        "double" (when (interop/-satisfies? Double cfrom)
+                   (interop/make-unbox-conversion "Double" "double")))
+      (if (interop/-primitive? cfrom)
+        (case (.getName ^Class cfrom)
+          "boolean" (when (interop/-satisfies? Boolean cto)
+                      (interop/make-box-conversion "Boolean" "boolean"))
+          "byte" (when (interop/-satisfies? Byte cto)
+                   (interop/make-box-conversion "Byte" "byte"))
+          "short" (when (interop/-satisfies? Short cto)
+                    (interop/make-box-conversion "Short" "short"))
+          "char" (when (interop/-satisfies? Character cto)
+                   (interop/make-box-conversion "Character" "char"))
+          "int" (when (interop/-satisfies? Integer cto)
+                  (interop/make-box-conversion "Integer" "int"))
+          "long" (when (interop/-satisfies? Long cto)
+                   (interop/make-box-conversion "Long" "long"))
+          "float" (when (interop/-satisfies? Float cto)
+                    (interop/make-box-conversion "Float" "float"))
+          "double" (when (interop/-satisfies? Double cto)
+                     (interop/make-box-conversion "Double" "double")))
+        (if (identical? cto Object)
+          [:insn :nop]
+          nil)))))
+
+(comment
+  (get-coercion {} Integer/TYPE Integer)
+  (get-coercion {} Integer/TYPE Object)
+  (get-coercion {} String Object))
 
 (defn analyse-number [node]
   (let [v (rv-data/parsed-number-value node)]
@@ -249,7 +261,7 @@
               (assert (:mutable field)
                 (str "field " sym " not declared mutable"))
               (let [v (analyse-expr node valdecl)]
-                (transfer-branch-env node
+                (transfer-branch-env v
                   {:node/kind :self-set-field
                    :field-name sym
                    :type (type/classname->type (spec/get-exact-class (:spec field)))
@@ -395,66 +407,89 @@
         (sf node)
         (throw (RuntimeException. "cannot invoke"))))))
 
-(defn analyse-vector [{:keys [children] :as node}]
-  (if (= 0 (count children))
-    (transfer-branch-env node
-      {:node/kind :get-field
-       :classname "io.lacuna.bifurcan.List"
-       :field-name "EMPTY"
-       :field-type (type/obj-classname->type "io.lacuna.bifurcan.List")})
-    (let [args (analyse-args node children)
-          final (peek args)]
-      (transfer-branch-env final
-        {:node/kind :jcall
-         :classname "io.lacuna.bifurcan.List"
-         :method-name "of"
-         :method-type (Type/getMethodType "([Ljava/lang/Object;)Lio/lacuna/bifurcan/List;")
-         :args [{:node/kind :new-array
-                 :classname "java.lang.Object"
-                 :ndims 1
-                 :dims [(new-const-prim-node final (count children))]
-                 :items args}]}))))
+(defn node-as-class [env cto node]
+  (let [cls (spec/get-duck-class env (:node/spec node))]
+    (if (interop/same-class? cto cls)
+      node
+      (let [coercion (get-coercion env cls cto)]
+        (if coercion
+          (assoc node :node/coercion coercion)
+          (throw (ex-info "no coercion for node"
+                   {:node (select-keys node [:node/kind :node/source])})))))))
 
-(defn analyse-set [{:keys [children] :as node}]
+(defn analyse-vector [{:keys [children node/env] :as node}]
+  (let [clsname "io.lacuna.bifurcan.List"
+        spec (spec/of-class clsname)]
+    (if (= 0 (count children))
+     (transfer-branch-env node
+       {:node/kind :get-field
+        :classname clsname
+        :field-name "EMPTY"
+        :field-type (type/obj-classname->type clsname)
+        :node/spec spec})
+     (let [args (analyse-args node children)
+           args (mapv (partial node-as-class env Object) args)
+           final (peek args)]
+       (transfer-branch-env final
+         {:node/kind :jcall
+          :classname clsname
+          :method-name "of"
+          :method-type (Type/getMethodType "([Ljava/lang/Object;)Lio/lacuna/bifurcan/List;")
+          :node/spec spec
+          :args [{:node/kind :new-array
+                  :classname "java.lang.Object"
+                  :ndims 1
+                  :dims [(new-const-prim-node final (count children))]
+                  :items args}]})))))
+
+(defn analyse-set [{:keys [children node/env] :as node}]
   ;; FIXME too similar to vector
-  (let [children (vec children)]
+  (let [children (vec children)
+        clsname "io.lacuna.bifurcan.Set"
+        spec (spec/of-class clsname)]
     (if (= 0 (count children))
       (transfer-branch-env node
         {:node/kind :get-field
-         :classname "io.lacuna.bifurcan.Set"
+         :classname clsname
          :field-name "EMPTY"
-         :field-type (type/obj-classname->type "io.lacuna.bifurcan.Set")})
+         :field-type (type/obj-classname->type clsname)
+         :node/spec spec})
       (let [args (analyse-args node children)
+            args (mapv (partial node-as-class env Object) args)
             final (peek args)]
         (transfer-branch-env final
           {:node/kind :jcall
-           :classname "io.lacuna.bifurcan.Set"
+           :classname clsname
            :method-name "of"
            :method-type (Type/getMethodType "([Ljava/lang/Object;)Lio/lacuna/bifurcan/Set;")
+           :node/spec spec
            :args [{:node/kind :new-array
                    :classname "java.lang.Object"
                    :ndims 1
                    :dims [(new-const-prim-node final (count children))]
                    :items args}]})))))
 
-(defn analyse-map [{:keys [children] :as node}]
-  (-> (reduce (fn [target [k v]]
-                (let [k' (analyse-expr target k)
-                      v' (analyse-expr k' v)]
-                  {:node/kind :jcall
-                   :classname "io.lacuna.bifurcan.IMap"
-                   :interface? true
-                   :method-name "put"
-                   :method-type (Type/getMethodType "(Ljava/lang/Object;Ljava/lang/Object;)Lio/lacuna/bifurcan/IMap;")
-                   :target target
-                   :args [k' v']}))
-        (transfer-branch-env node
-          {:node/kind :get-field
-           :classname "io.lacuna.bifurcan.Map"
-           :field-name "EMPTY"
-           :field-type (type/obj-classname->type "io.lacuna.bifurcan.Map")})
-        children)
-    (assoc :node/spec (spec/of-class "io.lacuna.bifurcan.Map"))))
+(defn analyse-map [{:keys [children node/env] :as node}]
+  (let [clsname "io.lacuna.bifurcan.Map"]
+    (-> (reduce
+          (fn [target [k v]]
+            (let [k' (node-as-class env Object (analyse-expr target k))
+                  v' (node-as-class env Object (analyse-expr k' v))]
+              {:node/kind :jcall
+               :classname "io.lacuna.bifurcan.IMap"
+               :interface? true
+               :method-name "put"
+               :method-type (Type/getMethodType
+                              "(Ljava/lang/Object;Ljava/lang/Object;)Lio/lacuna/bifurcan/IMap;")
+               :target target
+               :args [k' v']}))
+          (transfer-branch-env node
+            {:node/kind :get-field
+             :classname clsname
+             :field-name "EMPTY"
+             :field-type (type/obj-classname->type clsname)})
+          children)
+      (assoc :node/spec (spec/of-class clsname)))))
 
 (defn -analyse-node [node]
   (let [f (condp = (:node/kind node)

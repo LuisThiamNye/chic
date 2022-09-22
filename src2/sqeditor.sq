@@ -957,16 +957,16 @@
           (finally
             (.restoreToCount cnv n))))
     
-    (=: filepath (jfi (jfi view :buffer) :path))
-    (.drawString cnv
-      (if (nil? filepath)
-        "<no file>"
-        (.toString filepath))
-      (+ sidebar-width text-padding-h)
-        (+ (ct float text-padding-v)
-          (let m (.getMetrics ui-font)
-            (- (.getSpacing ui-font) (.getDescent m))))
-        ui-font text-paint)
+    (=: regions (jfi (jfi view :selection) :regions))
+    (when (< 0 (.size regions))
+      (=: line-num (inc (jc Misc cursor->line-idx
+                          (jfi (jfi view :buffer) :line-start-idxs)
+                          (jfi (ct Region (.nth regions 0)) :end))))
+      (.drawString cnv (jc String valueOf line-num)
+        sidebar-width (- (.getSpacing font)
+                        (.getDescent (.getMetrics font)))
+        font text-paint))
+    
     (when (jc BufferOps dirty? (jfi view :buffer))
       (.setStrokeWidth text-paint 6)
       (.drawPoint cnv (+ sidebar-width 3) 3 text-paint))

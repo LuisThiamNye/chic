@@ -192,7 +192,20 @@ nil) true)"))
 
 ;; coercions
 (eval-str "(jc Double valueOf 1)")
-; (eval-str "(jc Integer valueOf 1.)")
+(= ":x" (str (eval-str "(.nth [:x] 0)")))
+;; boxing
+(eval-str "[0]")
+(eval-str "#{\\x}")
+(eval-str "{1 true}")
+;; unboxing
+(= 0 (eval-str "(jc Integer valueOf (jc Integer valueOf 0))"))
+
+(eval-str "(< 1. 2)")
+(= 2. (eval-str "(+ 1. 1)"))
+
+(eval-str "(- (jc System currentTimeMillis)
+             (+ 1 (jc System currentTimeMillis)))")
+
 
 ;; TODO
 ; (eval-str "(when (not (or false (=: x true))) x)")

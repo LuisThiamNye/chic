@@ -98,6 +98,7 @@
     "chic.sqeditor.IntrMgr"
     "chic.sqeditor.Interactor"
     "chic.sqeditor.Buffer"
+    "chic.sqeditor.BufferOps"
     "chic.sqeditor.Misc"
     "chic.sqeditor.BreakNav"
     "chic.sqeditor.i.LineOffsetConverter"
@@ -398,7 +399,7 @@
   (load-class "sq.lang.DynInstanceMethodCallSite")
   (load-class "sq.lang.DynConstructorCallSite")
   (load-class "sq.lang.DynGetFieldCallSite")
-  ; (load-class "sq.lang.DynSetFieldCallSite")
+  (load-class "sq.lang.DynSetFieldCallSite")
   (load-class "sq.lang.EnumSwitchMapCallSite")
   
   ; (sq.lang.DynConstructorCallSite. nil nil nil)
@@ -432,6 +433,7 @@
   (load-hidden "chic.sqeditor.RegionPathOps")
   (load-hidden "chic.sqeditor.EditorCommit")
   (load-hidden "chic.sqeditor.Selection")
+  (load-hidden "chic.sqeditor.BufferOps")
   (load-hidden "chic.sqeditor.SelectionOps")
   (load-hidden "chic.sqeditor.TextButtonList")
   (load-hidden "chic.sqeditor.View")
@@ -447,18 +449,12 @@
       (catch Throwable e
         (.printStackTrace e))))
   
-  (.getInterfaces (cof "_.chic,sqeditor,TextEditor$reify6"))
-  abcd
-  (filter
-    #(= "hasNext" (.getName %))
-    (vec (interop/get-all-instance-methods (cof "java.util.Iterator"))))
-  
+  (count (.charAt (.toCharSequence (Rope/from "abc")) 1))
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]
     (chic.windows/safe-doui
       (.close (rfield w 'jwm-window))))
 
-    ssd szz fss
   
   (.newInstance (first (.getConstructors (cof "chic.sqeditor.UiRoot")))
     nil)

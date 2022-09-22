@@ -436,6 +436,7 @@
     [id (:reify-id env 1)
      env (assoc env :reify-id (inc id))
      node (assoc node :node/env env)
+     reify-classname (str (:self-classname env) "$reify" id)
      parse-method
      (fn [{:keys [prev-node] :as info} {:keys [children] :as node}]
        (assert (<= 2 (count children))
@@ -467,10 +468,13 @@
              super (interop/resolve-class env (:super info))
              outer-classname (:self-classname env)
              hidden? (interop/-hiddenClass? 
-                       (interop/resolve-class env outer-classname))]
-         (assoc info :class (classinfo->class (:node/env (:prev-node info))
-                              (assoc info :hidden? hidden?)))))
-     reify-classname (str (:self-classname env) "$reify" id)
+                       (interop/resolve-class env outer-classname))
+             info (assoc info
+                    :class (classinfo->class (:node/env (:prev-node info))
+                             (assoc info :hidden? hidden?)))]
+         (assoc info :prev-node
+           (assoc-in (:prev-node info)
+             [:node/env :new-classes reify-classname] info))))
      info
      (reduce (fn [info {:keys [node/kind] :as node}]
                (condp = kind

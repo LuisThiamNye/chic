@@ -19,8 +19,43 @@
     {:node/kind :unary-cmp
      }))
 
+(defn coerce-arith-pair [env x1 x2]
+  (let [clsname1 (spec/get-exact-class (:node/spec x1))
+        clsname2 (spec/get-exact-class (:node/spec x2))
+        prim1? (type/prim-classname->type clsname1)
+        prim2? (type/prim-classname->type clsname2)
+        _ (assert (and prim1? prim2?)
+            (str "types " clsname1 " " clsname2 " not primitive"))]
+    (if (= clsname1 clsname2)
+      [x1 x2 (keyword clsname1)]
+      (let [cls1 (interop/resolve-class env clsname1)
+            cls2 (interop/resolve-class env clsname2)
+            c1 (ana/get-coercion env cls1 cls2)]
+        (if c1
+          [(assoc x1 :node/coercion c1) x2 (keyword clsname2)]
+          (let [c2 (ana/get-coercion env cls2 cls1)]
+            (if c2
+              [x1 (assoc x2 :node/coercion c2) (keyword clsname1)]
+              (throw (ex-info "No coercion to unify " clsname1 ", " clsname2)))))))))
+
 ;; TODO integer optimisations eg (< -1 i) => (<= 0 i) - compare to zero
-(defn anasf-numcmp [op {:keys [children] :as node}]
+(defn anasf-numcmp [op {:keys [children node/env] :as node}]
+  (assert (= 3 (count children)))
+  (let [[x1 x2] (ana/analyse-args node (subvec children 1))
+        [x1 x2 prim] (coerce-arith-pair env x1 x2)]
+    (ana/transfer-branch-env x2
+      {:node/kind :num-cmp-2
+       :node/spec (spec/of-class "boolean")
+       :op op
+       :type prim
+       :arg1 x1 :arg2 x2})))
+(defn anasf-gte [node] (anasf-numcmp :>= node))
+(defn anasf-gt [node] (anasf-numcmp :> node))
+(defn anasf-lte [node] (anasf-numcmp :<= node))
+(defn anasf-lt [node] (anasf-numcmp :< node))
+(defn anasf-eq [node] (anasf-numcmp := node))
+
+(defn anasf-identical? [{:keys [children] :as node}]
   (assert (= 3 (count children)))
   (let [[x1 x2] (ana/analyse-args node (subvec children 1))
         clsname1 (spec/get-exact-class (:node/spec x1))
@@ -28,22 +63,14 @@
         prim1? (type/prim-classname->type clsname1)
         prim2? (type/prim-classname->type clsname2)
         prim? prim1?
-        _ (assert (= prim1? prim2?)
-            (str "types " clsname1 " " clsname2 " not equal"))
-        clsname clsname1]
+        _ (assert (not (or prim1? prim2?))
+            (str "types " clsname1 " " clsname2 " must not be primitive"))]
     (ana/transfer-branch-env x2
       {:node/kind :num-cmp-2
-       :node/spec {:spec/kind :exact-class :classname "boolean"}
-       :op op
-       :type (if prim?
-               (keyword clsname) :ref)
+       :node/spec (spec/of-class "boolean")
+       :op :=
+       :type :ref
        :arg1 x1 :arg2 x2})))
-(defn anasf-gte [node] (anasf-numcmp :>= node))
-(defn anasf-gt [node] (anasf-numcmp :> node))
-(defn anasf-lte [node] (anasf-numcmp :<= node))
-(defn anasf-lt [node] (anasf-numcmp :< node))
-(defn anasf-identical? [node] (anasf-numcmp := node))
-(defn anasf-eq [node] (anasf-numcmp := node))
 
 ;; TODO auto convert shortcutting 'and' to non-shortcutting bit-and if operands are cheap
 
@@ -375,6 +402,12 @@
                      (str "Could not find recur target"
                        "\nEnv: " (:node/env node)))))
         locals (:locals jump-target)
+        recur-args (subvec children 1)
+        _ (when (not= (count locals) (count recur-args))
+            (throw (ex-info "Mismatched recur arg number"
+                     {:locals (mapv :name locals)
+                      :expected (count locals)
+                      :got (count recur-args)})))
         assigns
         (reduce (fn [assigns [local vexpr]]
                   (let [prev (or (peek assigns) node)
@@ -391,7 +424,7 @@
                          :node/locals
                          (assoc-in (:node/locals init)
                            [nam :spec] (:node/spec init))}))))
-          [] (map vector locals (subvec children 1)))]
+          [] (map vector locals recur-args))]
     (ana/transfer-branch-env (or (peek assigns) node)
       {:node/kind :do
        :node/spec {:spec/kind :jump}
@@ -407,6 +440,7 @@
         args (ana/analyse-args node (subvec children 2))
         nargs (count args)
         final (or (last args) node)
+        env (:node/env final)
         new-ctor (first (filter #(= nargs (count (:param-classnames %)))
                     (get-in node [:node/env :new-classes classname :constructors])))
         ctype (if new-ctor
@@ -436,52 +470,6 @@
        :classname classname
        :ndims ndims ;; TODO allow override with keyword option :dims n
        :dims dims})))
-
-(defn anasf-jcall* [{:keys [node/env] :as node}
-                    target-ast method-classname method-name args-ast]
-  (let [target (ana/analyse-expr node target-ast)
-        c (or method-classname (spec/get-exact-class (:node/spec target)))
-        args (ana/analyse-args target args-ast)
-        ; nargs (count args)
-        ; new-method (first (filter #(= nargs (count (:param-classnames %)))
-        ;                     (get-in node [:node/env :new-classes classname :instance-methods])))
-        new-class (get-in node [:node/env :new-classes c])
-        target-class (interop/resolve-class (:node/env node) c)
-        final (or (last args) target)
-        mt (interop/lookup-method-type (:node/env final) c false method-name
-             (mapv (comp (partial spec/get-duck-class env) :node/spec) args) nil)
-        tags (ana/get-meta-tags (:node/meta node))]
-    (ana/transfer-branch-env final
-      (cond->
-        {:target target
-         :method-name method-name
-         :method-type mt
-         :args args
-         :dynamic (or (some #{"dynamic"} tags)
-                    (interop/dynamic-class? (:node/env node) target-class))
-         :node/spec (spec/of-class (type/get-classname (.getReturnType mt)))
-         }
-        method-classname
-        (assoc :node/kind :jcall-specific
-          :classname method-classname)
-        (not method-classname)
-        (assoc :node/kind :jcall
-          :interface? (interop/-interface? target-class))))))
-
-(defn anasf-jcall [{:keys [children] :as node}]
-  (assert (<= 3 (count children)))
-  (let [m (:string (nth children 2))
-        _ (assert (string? m))]
-    (anasf-jcall* node (nth children 1) nil m (subvec children 3))))
-
-(defn anasf-prefix-jcall [{:keys [children node/env] :as node}]
-  (assert (<= 2 (count children)))
-  (let [mast (nth children 0)
-        m (:string mast)
-        _ (assert (string? m))
-        m (subs m 1)
-        mc (defclass/class-tag (assoc mast :node/env env))]
-    (anasf-jcall* node (nth children 1) mc m (subvec children 2))))
 
 (defn get-method-pretypes [env target-class static? method-name nargs]
   (let [self-class (try (interop/resolve-class env (:self-classname env))
@@ -536,20 +524,36 @@
                         (let [ms-params (interop/-getParamTypes most-specific)
                               m-params (interop/-getParamTypes m)]
                           (loop 
-                            [i (count m-params) s1 false s2 false]
-                            (let [p1 (nth ms-params i)
-                                  p2 (nth m-params i)]
-                              (if (<= 0 i)
+                            [i (dec (count m-params)) s1 false s2 false
+                             diff? false]
+                            (if (<= 0 i)
+                              (let [p1 (nth ms-params i)
+                                    p2 (nth m-params i)]
                                 (recur (dec i)
-                                  (interop/-satisfies? p2 p1)
-                                  (interop/-satisfies? p1 p2))
+                                  (or s1 (interop/-satisfies? p2 p1))
+                                  (or s2 (interop/-satisfies? p1 p2))
+                                  (or diff? (not (interop/same-class? p1 p2)))))
+                              (if diff?
                                 (if (and s1 s2)
-                                  (throw (ex-info "method ambiguous (no casting)" {})) ;; ambiguous
-                                  (if s1 most-specific m)))))))]
+                                  (throw (ex-info "method ambiguous (no casting)"
+                                           {:arg-types arg-types
+                                            :method-param-types
+                                            (mapv (comp vec interop/-getParamTypes) methods0)}))
+                                  (if s1 most-specific m))
+                                ;; may be overriding implementations
+                                ;; pick the earlier method (lowest in class hierarchy)
+                                most-specific)))))]
                 (recur (inc i) r)))
             [most-specific args])
           ;; else try casting
-          (loop-zip [method ^Iterable methods0
+          (loop-zip [method ^Iterable (let [seen-params (java.util.HashSet.)]
+                                        (filterv ;; pick earliest override
+                                          (fn [m]
+                                            (let [pt (vec (interop/-getParamTypes m))]
+                                              (if (.contains seen-params pt)
+                                                false
+                                                (.add seen-params pt))))
+                                          methods0))
                      first-nomatch ^Iterable first-nomatches]
             [m+args* []]
             (let
@@ -561,7 +565,9 @@
                    (let [cto (nth param-types i)
                          cfrom (nth arg-types i)
                          coercion (ana/get-coercion env cfrom cto)]
-                     (if (nil? coercion)
+                     (if (and (nil? coercion)
+                           ;; FIXME duplicate work from inheritance matching
+                           (not (interop/-satisfies? cfrom cto)))
                        nil
                        (recur (inc i)
                          (update args' i assoc :node/coercion coercion))))
@@ -572,10 +578,63 @@
                   m+args*)))
             (case (count m+args*)
               0 (throw (ex-info "no match with casting"
-                         {:arg-types arg-types}))
+                         {:arg-types arg-types
+                          :method-param-types (mapv (comp vec interop/-getParamTypes) methods0)}))
               1 (nth m+args* 0)
-              (throw (ex-info "method ambiguous with casting" {})) ;; ambiguous
+              (throw (ex-info "method ambiguous with casting"
+                       {:arg-types arg-types
+                        :method-param-types (mapv (comp vec interop/-getParamTypes) methods0)})) ;; ambiguous
               )))))))
+
+(defn anasf-jcall* [{:keys [node/env] :as node}
+                    target-ast method-classname method-name args-ast]
+  (let [target (ana/analyse-expr node target-ast)
+        c (or method-classname (spec/get-exact-class (:node/spec target)))
+        target-class (interop/resolve-class (:node/env node) c)
+        methods0 (get-method-pretypes env target-class false method-name (count args-ast))
+        args (ana/analyse-args target args-ast)
+        ; nargs (count args)
+        ; new-method (first (filter #(= nargs (count (:param-classnames %)))
+        ;                     (get-in node [:node/env :new-classes classname :instance-methods])))
+        final (or (last args) target)
+        env (:node/env final)
+        [method args] (determine-method env methods0 args)
+        new-class (get-in node [:node/env :new-classes c])
+        mt (interop/method->type method)
+        ; mt (interop/lookup-method-type (:node/env final) c false method-name
+        ;      (mapv (comp (partial spec/get-duck-class env) :node/spec) args) nil)
+        tags (ana/get-meta-tags (:node/meta node))]
+    (ana/transfer-branch-env final
+      (cond->
+        {:target target
+         :method-name method-name
+         :method-type mt
+         :args args
+         :dynamic (or (some #{"dynamic"} tags)
+                    (interop/dynamic-class? (:node/env node) target-class))
+         :node/spec (spec/of-class (type/get-classname (.getReturnType mt)))
+         }
+        method-classname
+        (assoc :node/kind :jcall-specific
+          :classname method-classname)
+        (not method-classname)
+        (assoc :node/kind :jcall
+          :interface? (interop/-interface? target-class))))))
+
+(defn anasf-jcall [{:keys [children] :as node}]
+  (assert (<= 3 (count children)))
+  (let [m (:string (nth children 2))
+        _ (assert (string? m))]
+    (anasf-jcall* node (nth children 1) nil m (subvec children 3))))
+
+(defn anasf-prefix-jcall [{:keys [children node/env] :as node}]
+  (assert (<= 2 (count children)))
+  (let [mast (nth children 0)
+        m (:string mast)
+        _ (assert (string? m))
+        m (subs m 1)
+        mc (defclass/class-tag (assoc mast :node/env env))]
+    (anasf-jcall* node (nth children 1) mc m (subvec children 2))))
 
 (defn anasf-jscall [{:keys [children node/env] :as node}]
   (assert (<= 3 (count children)))
@@ -643,6 +702,34 @@
        :dynamic (interop/dynamic-class? (:node/env node) target-class)
        :node/spec (spec/of-class (type/get-classname ft))})))
 
+(defn anasf-set-field [{:keys [children node/env] :as node}]
+  (when-not (= 4 (count children))
+    (throw (RuntimeException. "setf! must have three args")))
+  (let [targetdecl (nth children 1)
+        target (ana/analyse-expr node targetdecl)
+        target-classname (spec/get-exact-class (:node/spec target))
+        target-class (interop/resolve-class env target-classname)
+        fdecl (nth children 2)
+        _ (assert (= :keyword (:node/kind fdecl)))
+        field-name (:string fdecl)
+        ft (interop/lookup-field-type env target-class false field-name)
+        ; _ (assert (:mutable field)
+        ;     (str "field " field-name " not declared mutable"))
+        valdecl (nth children 3)
+        v (ana/analyse-expr target valdecl)
+        statement? (ana/in-statement? env)]
+    (ana/transfer-branch-env v
+      {:node/kind :set-field
+       :target target
+       :classname target-classname
+       :field-name field-name
+       :field-type ft
+       :val v
+       :statement? statement?
+       :node/spec (if statement?
+                    (spec/of-class "void")
+                    (:node/spec v))})))
+
 (defn anasf-cast [{:keys [children] :as node}]
   (assert (= 3 (count children)))
   (let [cdecl (nth children 1)
@@ -696,6 +783,7 @@
 (swap! ana/*sf-analysers assoc "jc" #'anasf-jscall)
 (swap! ana/*sf-analysers assoc "jf" #'anasf-jfield-get)
 (swap! ana/*sf-analysers assoc "jfi" #'anasf-jifield-get)
+(swap! ana/*sf-analysers assoc "setf!" #'anasf-set-field)
 (swap! ana/*sf-analysers assoc "loop" #'anasf-loop)
 (swap! ana/*sf-analysers assoc "recur" #'anasf-recur)
 (swap! ana/*sf-analysers assoc "when" #'anasf-when)

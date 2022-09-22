@@ -235,13 +235,23 @@ JLS:
   (let [prim (spec/prim? (:node/spec arg))
         _ (assert (some? prim))
         prim (keyword prim)
-        xor-insn (if (= :long prim) :lxor :ixor)]
-    (if (= :not op)
-      (do (if (= :long prim)
-            (-emitLdcInsn ctx -1)
-            (-emitInsn ctx :iconst-m1))
+        ]
+    (case op
+      :not
+      (let [xor-insn (if (= :long prim) :lxor :ixor)]
+        (if (= :long prim)
+          (-emitLdcInsn ctx (long -1))
+          (-emitInsn ctx :iconst-m1))
         (-emitInsn ctx xor-insn))
-      (assert false))))
+      :negate
+      (-emitInsn ctx
+        (case prim
+          :byte :ineg
+          :short :ineg
+          :int :ineg
+          :long :lneg
+          :float :fneg
+          :double :dneg)))))
 
 (defn num-cmp-insns [op' type']
   ;; TODO investigate non-branching bit arithmetic
@@ -592,6 +602,39 @@ JLS:
       (-emitFieldInsn ctx (if target :getfield :getstatic)
         (type/obj-classname->type classname) field-name field-type))))
 
+(defn emit-set-field
+  [ctx {:keys [field-name target classname ^Type field-type node/env val statement?]}]
+  (assert (some? field-type))
+  (let [self? (= classname (.getClassName ^Type (-selfType ctx)))
+        dynamic-field (interop/dynamic-class? env
+                        (interop/resolve-class env (type/get-classname field-type)))
+        dynamic-target (interop/dynamic-class? env
+                        (interop/resolve-class env classname))]
+    (when target (emit-ast-node ctx target))
+    (emit-ast-node ctx val)
+    (when-not statement?
+      (let [wide? (when (type/prim? field-type)
+                    (#{:long :double}
+                      (keyword (type/get-classname field-type))))]
+        (-emitInsn ctx (if wide? :dup2-x1 :dup-x1))))
+    (if (and (not self?) (or dynamic-field dynamic-target))
+      (-emitInvokeDynamic ctx field-name
+        (Type/getMethodType Type/VOID_TYPE
+          (into-array Type [(type/classname->type
+                              (static-classname env classname))
+                            (as-impl-type env field-type)]))
+        (Handle. Opcodes/H_INVOKESTATIC
+          (when target "sq/lang/DynSetFieldCallSite")
+          "bsm"
+          (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
+            "Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+            "Ljava/lang/String;Ljava/lang/String;"
+            ")Ljava/lang/invoke/CallSite;")
+          false)
+        [classname (type/get-classname field-type)])
+      (-emitFieldInsn ctx (if target :getfield :getstatic)
+        (type/obj-classname->type classname) field-name field-type))))
+
 (defn emit-self-get-field [ctx {:keys [field-name node/spec node/env]}]
   (let [class-type (-selfType ctx)
         field-type (type/classname->type (spec/get-exact-class spec))
@@ -834,7 +877,9 @@ JLS:
       method
       (if (instance? Type sig)
         (.getDescriptor ^Type sig)
-        (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig))))
+        (if (string? sig)
+          sig
+          (Type/getMethodDescriptor (peek sig) (into-array Type (pop sig)))))
       interface?))
   (-emitInvokeDynamic [_ name method-type bsmhandle bsmargs]
     (.visitInvokeDynamicInsn mv name (.getDescriptor ^Type method-type)
@@ -887,7 +932,11 @@ JLS:
   (match coercion
     [:insn op]
     (when-not (= op :nop)
-      (-emitInsn ctx op))))
+      (-emitInsn ctx op))
+    [:method side ciname method-name desc]
+    (-emitInvokeMethod ctx (case side :instance :virtual :class :static)
+      (Type/getObjectType ciname) false
+      method-name desc)))
 
 (defn emit-ast-node [ctx node]
   (when-some [line (:line (:node/source node))]
@@ -921,6 +970,7 @@ JLS:
            :array-set emit-array-set
            :self-field-get emit-self-get-field
            :self-set-field emit-self-set-field
+           :set-field emit-set-field
            :arithmetic-1 emit-arithmetic-1
            :keyword emit-keyword
            :jcall-super emit-jcall-super
@@ -938,7 +988,6 @@ JLS:
                      :type (class node)})))]
     (try
       (f ctx node)
-      
       (if-some [coercion (:node/coercion node)]
         (emit-coercion ctx coercion)
         (when (:node/discard-result node) ;; TODO can represent as coercion
@@ -949,7 +998,6 @@ JLS:
                  {:node (select-keys node [:node/kind :node/source])}
                  e))))))
 
-;; Note: theoretically possible to init object without ctor by inlining the bytecode
 (defn visit-positional-ctor
   [env ^ClassVisitor cv super-iname ^Type class-type fields self-bindname body]
   (let [method-desc (Type/getMethodDescriptor Type/VOID_TYPE
@@ -1053,10 +1101,9 @@ JLS:
             (emit-ast-node ctx body)
             (.visitInsn mv (type-sort->return-op (.getSort ret-type)))
             (try (.visitMaxs mv -1 -1)
-              (catch ArrayIndexOutOfBoundsException e
-                (println "WARNING: could not compute maxs for: " name)
-                (.printStackTrace e)
-                #_(throw (ex-info (str "Method Err: " name) {} e))))
+              (catch Exception e
+                (throw (ex-info (str "Could not computer maxs for: " name)
+                         {:bytes (.toByteArray cv)} e))))
             (.visitEnd mv)))))
     ;; CLINIT
     (when (seq field-inits)
@@ -1102,7 +1149,6 @@ JLS:
 (defn load-ast-classes-hidden
   [{:keys [^MethodHandles$Lookup lookup]} {:keys [node/env] :as node}]
   (let [new-classes (:new-classes env)
-        new-compiled-classes (mapv (partial classinfo->bytes env) (vals new-classes))
         writeout
         (fn [fn ba]
           (java.nio.file.Files/write
@@ -1110,7 +1156,13 @@ JLS:
                                                  "_." "")
                                      ".class") (make-array String 0))
             ba
-            (make-array java.nio.file.OpenOption 0)))]
+            (make-array java.nio.file.OpenOption 0)))
+        new-compiled-classes
+        (try (mapv (partial classinfo->bytes env) (vals new-classes))
+          (catch Exception e
+            (when-some [ba (:bytes (ex-data e))]
+              (writeout "eval" ba))
+            (throw e)))]
     (into {}
       (map (fn [[name bytes]]
              (let [lk lookup]
@@ -1152,7 +1204,7 @@ JLS:
     (try (.visitMaxs mv -1 -1)
       (.visitEnd mv)
       (.toByteArray cv)
-      (catch Throwable e
+      (catch Exception e
         (throw (ex-info "Failed to compute stack frames" {:bytes (.toByteArray cv)} e))))))
 
 (defn eval-ast
