@@ -516,9 +516,9 @@
      :class-resolver interop/find-class
      :self-classname "_.(Eval)"
      :ctx :expression
-     :new-classes {"_.(Eval)" {:classname "_.(Eval)"
-                               :class (interop/new-unreal-class
-                                        "_.(Eval)" Object nil)}}}
+     :self-classinfo {:classname "_.(Eval)"
+                      :class (interop/new-unreal-class
+                               "_.(Eval)" Object nil)}}
     :node/locals {}))
 
 (defn expand-classname [env s]

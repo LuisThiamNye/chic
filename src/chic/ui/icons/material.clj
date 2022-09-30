@@ -30,16 +30,18 @@
      (throw (ex-info "Could not find icon for that style" {:title title :style style})))))
 
 (def icon-name->category
-  (into {}
-        (map (fn [s]
-               (let [[_ category icon] (re-matches #"(.+)::(.+)" s)]
-                 [icon category])))
-        (keys (json/parse-stream
-               (java.io.BufferedReader.
-                (java.io.InputStreamReader.
+  (try
+    (into {}
+     (map (fn [s]
+            (let [[_ category icon] (re-matches #"(.+)::(.+)" s)]
+              [icon category])))
+     (keys (json/parse-stream
+             (java.io.BufferedReader.
+               (java.io.InputStreamReader.
                  (.openStream
-                  (java.net.URL.
-                   "https://raw.githubusercontent.com/google/material-design-icons/4.0.0/update/current_versions.json"))))))))
+                   (java.net.URL.
+                     "https://raw.githubusercontent.com/google/material-design-icons/4.0.0/update/current_versions.json")))))))
+    (catch Exception _ {})))
 
 (def *svg-bytes-cache (atom {}))
 

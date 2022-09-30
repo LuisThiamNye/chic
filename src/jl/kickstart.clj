@@ -6,7 +6,8 @@
     [jl.interop :as interop :refer [find-class]]
     [jl.reader :as reader]
     [jl.compiler.analyser :as ana]
-    [io.github.humbleui.core :as hui])
+    [io.github.humbleui.core :as hui]
+    [io.github.humbleui.core :as core])
   (:import
     (java.util.concurrent ConcurrentHashMap)
     (org.objectweb.asm ClassWriter Opcodes)
@@ -131,7 +132,9 @@
                (println (.toString e))
                (println)))))]
     (println "Uninstalling old class: " c)
-    (.invoke m c (object-array 0))))
+    (try (.invoke m c (object-array 0))
+      (catch Throwable _
+        (println "Warning: could not uninstall")))))
 
 (def ^java.util.concurrent.ConcurrentHashMap
   *meta-classes
@@ -290,7 +293,7 @@
                  clsname)
             ret (compiler/load-ast-classes-hidden
                   {:lookup lookup} ir)
-            hclsname (or host (str "_." (.replace clsname \. \,)))
+            ;hclsname (or host (str "_." (.replace clsname \. \,)))
             new-classes (get-in ir [:node/env :new-classes])]
         (doseq [[c lk] ret]
           (let [mc (:class (get new-classes c))]
@@ -402,13 +405,11 @@
   (load-class "sq.lang.DynSetFieldCallSite")
   (load-class "sq.lang.EnumSwitchMapCallSite")
   
-  ; (sq.lang.DynConstructorCallSite. nil nil nil)
-  
   (load-class "sq.lang.i.Named")
   (load-class "sq.lang.Keyword")
+  (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
   (load-hidden "sq.lang.util.Maths")
   
-  (load-hidden-as "sq.lang.Keyword" "sq.lang.KeywordMgr")
   (load-class "sq.lang.KeywordFactory")
   
   (.put (get-globalchm) "chic.window"
@@ -424,14 +425,14 @@
   (load-hidden "chic.sqeditor.Interactor")
   (load-hidden "chic.sqeditor.IntrMgr")
   
+  (load-hidden "chic.sqeditor.Region")
+  (load-hidden "chic.sqeditor.EditorCommit")
   (load-hidden "chic.sqeditor.Buffer")
   (load-hidden "chic.sqeditor.Misc")
   (load-hidden "chic.sqeditor.BreakNav")
   (load-class "chic.sqeditor.i.LineOffsetConverter")
-  (load-hidden "chic.sqeditor.Region")
   (load-hidden "chic.sqeditor.RegionOps")
   (load-hidden "chic.sqeditor.RegionPathOps")
-  (load-hidden "chic.sqeditor.EditorCommit")
   (load-hidden "chic.sqeditor.Selection")
   (load-hidden "chic.sqeditor.BufferOps")
   (load-hidden "chic.sqeditor.SelectionOps")
@@ -442,28 +443,33 @@
   (load-hidden "chic.sqeditor.UiRoot")
   (load-hidden "chic.sqeditor.Window")
   
-  (.getModifiers (.arrayType (cof "java.lang.Object")))
+  (io.github.humbleui.skija.Typeface/makeFromName
+    "InputSansCondensed" io.github.humbleui.skija.FontStyle/NORMAL)
 
   (chic.windows/dosendui
     (try (rcall (cof "chic.sqeditor.Window") 'spawn)
       (catch Throwable e
         (.printStackTrace e))))
   
-  (count (.charAt (.toCharSequence (Rope/from "abc")) 1))
+  ;; Classes keep vanishing from behind the SoftReferences of DCL's cache
+  ;; IllegalAccessErrors on classes happens after running this
+  (run! (fn [c]
+          (.put (rfield clojure.lang.DynamicClassLoader 'classCache)
+            (.getName c) (java.lang.ref.SoftReference. c)))
+    (eduction
+      (keep (fn [{:keys [^Class impl-class]}]
+              (when (and impl-class (not (.isHidden impl-class)))
+                impl-class)))
+      (vals *meta-classes)))
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]
     (chic.windows/safe-doui
       (.close (rfield w 'jwm-window))))
 
   
-  (.newInstance (first (.getConstructors (cof "chic.sqeditor.UiRoot")))
-    nil)
   (let [cn "sq.lang.DynInstanceMethodCallSite"]
-    (.put (rfield clojure.lang.DynamicClassLoader 'classCache)
-      cn (java.lang.ref.SoftReference. (cof cn))))
+    )
   
-
-  (abs 2.7)
  (try (sq.lang.KeywordFactory/from "x")
    (catch Throwable e
      (.printStackTrace e)))

@@ -18,10 +18,13 @@
 (def ^Typeface face-code-default
   (if input-font-path
     (Typeface/makeFromFile input-font-path)
-    (Typeface/makeFromData
-     (Data/makeFromBytes
-      (util/url->bytes (re-find #"https:.+\.ttf"
-                                (slurp "https://fonts.googleapis.com/css2?family=Fira+Code&display=swap")))))))
+    (try
+      (Typeface/makeFromData
+       (Data/makeFromBytes
+         (util/url->bytes (re-find #"https:.+\.ttf"
+                            (slurp "https://fonts.googleapis.com/css2?family=Fira+Code&display=swap")))))
+      (catch Exception _
+        face-default))))
 
 (def context-default
   (enc/memoize

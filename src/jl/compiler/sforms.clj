@@ -36,7 +36,7 @@
           (let [c2 (ana/get-coercion env cls2 cls1)]
             (if c2
               [x1 (assoc x2 :node/coercion c2) (keyword clsname1)]
-              (throw (ex-info "No coercion to unify " clsname1 ", " clsname2)))))))))
+              (throw (ex-info (str "No coercion to unify " clsname1 ", " clsname2) {})))))))))
 
 ;; TODO integer optimisations eg (< -1 i) => (<= 0 i) - compare to zero
 (defn anasf-numcmp [op {:keys [children node/env] :as node}]
@@ -590,6 +590,7 @@
                     target-ast method-classname method-name args-ast]
   (let [target (ana/analyse-expr node target-ast)
         c (or method-classname (spec/get-exact-class (:node/spec target)))
+        _ (assert (some? c))
         target-class (interop/resolve-class (:node/env node) c)
         methods0 (get-method-pretypes env target-class false method-name (count args-ast))
         args (ana/analyse-args target args-ast)
@@ -599,7 +600,7 @@
         final (or (last args) target)
         env (:node/env final)
         [method args] (determine-method env methods0 args)
-        new-class (get-in node [:node/env :new-classes c])
+        ; new-class (get-in node [:node/env :new-classes c])
         mt (interop/method->type method)
         ; mt (interop/lookup-method-type (:node/env final) c false method-name
         ;      (mapv (comp (partial spec/get-duck-class env) :node/spec) args) nil)

@@ -20,7 +20,7 @@
   (io.github.humbleui.jwm.skija
     EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
   (io.github.humbleui.skija
-    Canvas Paint PaintMode Font TextLine Typeface)
+    Canvas Paint PaintMode Font TextLine Typeface FontStyle)
   (com.ibm.icu.text BreakIterator)
   (chic.sqeditor
     RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
@@ -338,7 +338,7 @@
   (defn effective-range ^Ints2 [^Region region ^Rope rope]
     (if (= 0 (=: rope-size (.size rope)))
       (nw Ints2 0 0)
-      (if (jc RegionOps caret? region)
+      (if (jc Self caret? region)
         (let
           end (jfi region :end)
           lsi (inc (jc RopeUtil lastIndexOf rope 10 (dec end)))
@@ -347,7 +347,7 @@
           lei (if (<= 0 next-lf-idx) (inc next-lf-idx) rope-size)
           (nw Ints2 lsi lei))
         (nw Ints2
-          (jc RegionOps min region) (jc RegionOps max region)))))
+          (jc Self min region) (jc Self max region)))))
   )
 
 (defclass chic.sqeditor.RegionPathOps
@@ -1105,9 +1105,13 @@
           (.line-offset->xpos self line-idx offset))))
     (=: line-start-idxs (jfi (jfi view :buffer) :line-start-idxs) )
     (=: shift? (.isModifierDown evt (jf KeyModifier SHIFT)))
-    (=: primary? (.isModifierDown evt (jf KeyModifier MAC_COMMAND)))
-    (=: option? (.isModifierDown evt (jf KeyModifier MAC_OPTION)))
     (=: macos? (== (jf Platform MACOS) (jf Platform CURRENT)))
+    (=: control? (.isModifierDown evt (jf KeyModifier CONTROL)))
+    (=: primary? (.isModifierDown evt
+                   (if macos?
+                     (jf KeyModifier MAC_COMMAND)
+                     (jf KeyModifier CONTROL))))
+    (=: option? (.isModifierDown evt (jf KeyModifier MAC_OPTION)))
     (if primary?
       (case-enum key
         A (jc SelectionOps select-all (jfi view :selection) rope)
@@ -1135,6 +1139,8 @@
         S (jc BufferOps save! (jfi view :buffer))
         W (.close-current self)
         G (.navigateFromRegion self)
+        HOME (jc SelectionOps simple-move-ends (jfi view :selection) :doc-start rope shift?)
+        END (jc SelectionOps simple-move-ends (jfi view :selection) :doc-end rope shift?)
         (when macos?
           (case-enum key
             LEFT (jc SelectionOps simple-move-ends (jfi view :selection) :line-start rope shift?)
@@ -1144,25 +1150,28 @@
             BACKSPACE (.perform-edit! self
                         (jc SelectionOps delete-by-movement (jfi view :selection) :line-start rope))
             nil)))
-      (if (and macos? option?)
+      ;; non primary
+      (if (if macos? option? control?)
         (case-enum key
           RIGHT (jc SelectionOps simple-move-ends (jfi view :selection) :word-right rope shift?)
           LEFT (jc SelectionOps simple-move-ends (jfi view :selection) :word-left rope shift?)
           nil)
         (case-enum key
-         RIGHT (jc SelectionOps simple-move-ends (jfi view :selection) :right rope shift?)
-         LEFT (jc SelectionOps simple-move-ends (jfi view :selection) :left rope shift?)
-         UP (jc SelectionOps simple-moved-vertically (jfi view :selection) :up rope shift?
-              line-start-idxs lo)
-         DOWN (jc SelectionOps simple-moved-vertically (jfi view :selection) :down rope shift?
-                line-start-idxs lo)
-         BACKSPACE (.perform-edit! self
-                     (jc SelectionOps delete-backward (jfi view :selection)
-                       (jfi (jfi view :buffer) :rope)))
-         ENTER (.perform-edit! self
-                 (jc SelectionOps insert-text (jfi view :selection)
-                   (jfi (jfi view :buffer) :rope) "\n"))
-         nil))))
+          RIGHT (jc SelectionOps simple-move-ends (jfi view :selection) :right rope shift?)
+          LEFT (jc SelectionOps simple-move-ends (jfi view :selection) :left rope shift?)
+          UP (jc SelectionOps simple-moved-vertically (jfi view :selection) :up rope shift?
+               line-start-idxs lo)
+          DOWN (jc SelectionOps simple-moved-vertically (jfi view :selection) :down rope shift?
+                 line-start-idxs lo)
+          BACKSPACE (.perform-edit! self
+                      (jc SelectionOps delete-backward (jfi view :selection)
+                        (jfi (jfi view :buffer) :rope)))
+          ENTER (.perform-edit! self
+                  (jc SelectionOps insert-text (jfi view :selection)
+                    (jfi (jfi view :buffer) :rope) "\n"))
+          HOME (jc SelectionOps simple-move-ends (jfi view :selection) :line-start rope shift?)
+          END (jc SelectionOps simple-move-ends (jfi view :selection) :line-end rope shift?)
+          nil))))
   
   (defi on-text-input ^void [self ^EventTextInput evt]
     (.perform-edit! self
@@ -1255,7 +1264,8 @@
     (.add views view)
     (jc SelectionOps add (jfi view' :selection) (nw Region 0 0))
     
-    (set! font (nw Font (jc Typeface makeFromFile "/Volumes/Carbonator/csync/fonts/Input-Font/Input_Fonts/InputSans/InputSansCondensed/InputSansCondensed-Regular.ttf")
+    (set! font (nw Font (jc Typeface makeFromName "InputSansCondensed"
+                          (jf FontStyle NORMAL))
                  30f))
     (set! ui-font (.makeWithSize font 28f))
     (set! line-height (jc Math round (.getSpacing font)))

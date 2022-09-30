@@ -189,9 +189,11 @@
         (recur (inc i) el)
         i))))
 
-(defn resolve-obj-class [{:keys [new-classes class-resolver]} classname]
+(defn resolve-obj-class [{:keys [new-classes class-resolver] :as env} classname]
   (or
     (get-in new-classes [classname :class])
+    (when (= classname (:self-classname env))
+      (:class (:self-classinfo env))) ;; only used for _.(Eval)
     (try (util/primitive-name->class classname)
       (catch Exception _))
     (when (= "void" classname) Void/TYPE)
@@ -201,8 +203,10 @@
       (try (or (when class-resolver (class-resolver classname))
              (find-class classname))
         (catch ClassNotFoundException e
-          (throw (ex-info "No class found"
-                   {:new-classes (keys new-classes)}
+          (throw (ex-info (str "No class found: " classname)
+                   {:new-classes (keys new-classes)
+                    :env (select-keys env [:self-classname])
+                    :env-keys (keys env)}
                    e)))
         (catch ExceptionInInitializerError e
           (throw (ClassNotFoundException. e)))))))
@@ -210,12 +214,44 @@
 (defn dynamic-class? [env cls]
   (-hiddenClass? cls))
 
+(defn primitive-name->desc [name]
+  (case name
+    "boolean" "Z"
+    "byte" "B"
+    "char" "C"
+    "short" "S"
+    "int" "I"
+    "long" "J"
+    "float" "F"
+    "double" "D"
+    "void" "V"))
+
+(defn primitive-desc->name [desc]
+  (case desc
+    "Z" "boolean"
+    "B" "byte"
+    "C" "char"
+    "S" "short"
+    "I" "int"
+    "J" "long"
+    "F" "float"
+    "D" "double"
+    "V" "void"))
+
 (defn split-classname [classname]
   (let [ndims (count (re-find #"^\[+" classname))
+        raw (subs classname ndims)
         el-classname (if (< 0 ndims)
-                       (second (re-matches #"L(.+);" (subs classname ndims)))
+                       (or (second (re-matches #"L(.+);" raw))
+                         (primitive-desc->name raw))
                        classname)]
     [ndims el-classname]))
+
+(comment
+  (split-classname "int")
+  (split-classname "[I")
+  (split-classname "[Ljava.lang.String;")
+  )
 
 (defn array-class-of [el-class ndims]
   (loop [i 0
@@ -230,18 +266,6 @@
     (if (= 0 ndims)
       el-class
       (array-class-of el-class ndims))))
-
-(defn primitive-name->desc [name]
-  (case name
-    "boolean" "Z"
-    "byte" "B"
-    "char" "C"
-    "short" "S"
-    "int" "I"
-    "long" "J"
-    "float" "F"
-    "double" "D"
-    "void" "V"))
 
 (defn make-unbox-conversion [box-name prim-name]
   (let [box-iname (str "java/lang/" box-name)]

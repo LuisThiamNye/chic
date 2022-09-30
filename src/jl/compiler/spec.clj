@@ -48,8 +48,7 @@
 (defn get-duck-class [env spec] ;; returns a class of the intersection of behaviours
   (if (= :union (:spec/kind spec))
     (interop/intersect-classes
-      (mapv (comp (partial interop/resolve-class env)
-              (partial get-duck-class env)) (:specs spec)))
+      (mapv (partial get-duck-class env) (:specs spec)))
     (interop/resolve-class env (get-exact-class spec))))
 
 (defn prim? [spec]
