@@ -475,21 +475,27 @@
           (fn [target [k v]]
             (let [k' (node-as-class env Object (analyse-expr target k))
                   v' (node-as-class env Object (analyse-expr k' v))]
-              {:node/kind :jcall
-               :classname "io.lacuna.bifurcan.IMap"
-               :interface? true
-               :method-name "put"
-               :method-type (Type/getMethodType
-                              "(Ljava/lang/Object;Ljava/lang/Object;)Lio/lacuna/bifurcan/IMap;")
-               :target target
-               :args [k' v']}))
+              (transfer-branch-env v'
+                {:node/kind :jcall
+                 :classname "io.lacuna.bifurcan.IMap"
+                 :interface? true
+                 :method-name "put"
+                 :method-type (Type/getMethodType
+                                "(Ljava/lang/Object;Ljava/lang/Object;)Lio/lacuna/bifurcan/IMap;")
+                 :target target
+                 :args [k' v']})))
           (transfer-branch-env node
             {:node/kind :get-field
              :classname clsname
              :field-name "EMPTY"
              :field-type (type/obj-classname->type clsname)})
           children)
-      (assoc :node/spec (spec/of-class clsname)))))
+      (as-> m
+        (transfer-branch-env m
+          {:node/kind :cast
+           :type (type/classname->type clsname)
+           :body m
+           :node/spec (spec/of-class clsname)})))))
 
 (defn -analyse-node [node]
   (let [f (condp = (:node/kind node)

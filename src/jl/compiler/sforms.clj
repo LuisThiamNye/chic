@@ -7,7 +7,8 @@
     [jl.compiler.core :as comp]
     [clojure.core.match :refer [match]]
     [jl.compiler.analyser :as ana :refer [-analyse-node]]
-    [jl.compiler.type :as type])
+    [jl.compiler.type :as type]
+    [jl.rv-data :as rv-data])
   (:import
     (org.objectweb.asm Type)))
 
@@ -133,21 +134,60 @@
        (ana/new-const-prim-node prev false)))
    node (next children)))
 
+(defn anasf-case-int [{:keys [children] :as node}]
+  (assert (<= 2 (count children)))
+  (let [test (ana/analyse-expr node (nth children 1))
+        {:keys [keymap cases]}
+        (reduce (fn [acc [keydecl then]]
+                  (let [keydecl->int (fn [keydecl]
+                                       (assert (#{:number :char} (:node/kind keydecl))
+                                         {:node/kind (:node/kind keydecl)})
+                                       (if (= :char (:node/kind keydecl))
+                                         (int (:value keydecl))
+                                         (int (rv-data/parsed-number-value keydecl))))
+                        intkeys (if (= :vector (:node/kind keydecl))
+                                 (mapv keydecl->int (:children keydecl))
+                                 [(keydecl->int keydecl)])
+                        prev (or (peek (:cases acc)) test)]
+                    (-> acc
+                      (update :cases conj (ana/analyse-after prev then))
+                      (update :keymap into
+                        (mapv (fn [intkey] [intkey (count (:cases acc))]) intkeys)))))
+          {:cases [] :keymap {}}
+          (partitionv 2 (subvec children 2)))
+        fallback (when (odd? (count children))
+                   (ana/analyse-after test (peek children)))
+        spec (join-branch-specs (cond-> cases
+                                  fallback (conj fallback)))]
+    (ana/transfer-branch-env test
+      {:node/kind :case
+       :mode :int
+       :test test
+       :keymap keymap
+       :cases cases
+       :fallback fallback
+       :node/spec spec})))
+
 (defn anasf-case-enum [{:keys [children] :as node}]
   (assert (<= 2 (count children)))
   (let [test (ana/analyse-expr node (nth children 1))
-        cases
+        {:keys [keymap cases]}
         (reduce (fn [acc [enum then]]
-                  ;; TODO in future support multiple cases for enum, as vector
-                  (let [_ (assert (#{:symbol :keyword} (:node/kind enum)))
-                        enum (:string enum)
-                        prev (or (peek (peek acc)) test)]
-                    (conj acc [enum (ana/analyse-after prev then)])))
-          [] (partitionv 2 (subvec children 2)))
+                  (let [_ (assert (#{:symbol :keyword :vector} (:node/kind enum)))
+                        enums (if (= :vector (:node/kind enum))
+                                (mapv :string (:children enum))
+                                [(:string enum)])
+                        prev (or (peek (:cases acc)) test)]
+                    (-> acc
+                      (update :cases conj (ana/analyse-after prev then))
+                      (update :keymap into
+                        (mapv (fn [e] [e (count (:cases acc))]) enums)))))
+          {:keymap {} :cases []}
+          (partitionv 2 (subvec children 2)))
         fallback (when (odd? (count children))
                    (ana/analyse-after test (peek children)))
         enum-cls (spec/get-exact-class (:node/spec test))
-        spec (join-branch-specs (cond-> (mapv peek cases)
+        spec (join-branch-specs (cond-> cases
                                   fallback (conj fallback)))]
     (assert (some? enum-cls))
     (ana/transfer-branch-env test
@@ -155,6 +195,7 @@
        :mode :enum
        :classname enum-cls
        :test test
+       :keymap keymap
        :cases cases
        :fallback fallback
        :node/spec spec})))
@@ -477,6 +518,7 @@
     (interop/get-methods-pretypes self-class target-class static? method-name nargs)))
 
 (defn determine-method [env methods0 args]
+  {:post [(some? %) (some? (nth % 0))]}
   (let [arg-types (mapv (comp (partial spec/get-duck-class env) :node/spec) args)
         methods0 methods0]
     (loop-zip [method methods0] ;; first find exact match
@@ -792,6 +834,7 @@
 (swap! ana/*sf-analysers assoc "try" #'anasf-try)
 (swap! ana/*sf-analysers assoc "defclass" #'anasf-defclass)
 (swap! ana/*sf-analysers assoc "case-enum" #'anasf-case-enum)
+(swap! ana/*sf-analysers assoc "case" #'anasf-case-int)
 (swap! ana/*sf-analysers assoc "<-" #'anasf-<-)
 
 ;; TODO use comptime info to skip conditional jumps

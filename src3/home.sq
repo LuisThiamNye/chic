@@ -1,3 +1,4 @@
 " Hello!
 sq/lang/util
+sq/compiler/reader
 "

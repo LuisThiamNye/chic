@@ -32,6 +32,8 @@
 (= [] (ana/str->ast "#_#_(+) (-)"))
 (= [] (ana/str->ast "#_(+ 1 #_2)"))
 
+(eval-str "(= 10 \\newline)")
+
 (= 2 (count (:children(:tag(:node/meta (first (ana/str->ast "^a ^b x")))))))
 
 (= 3 (eval-str "(+ 1 2)"))
@@ -111,6 +113,8 @@
   (eval-str "{}"))
 
 (= "{:x v}" (str (eval-str "{:x \"v\"}")))
+(contains? #{"{:x v, :y v}" "{:y v, :x v}"}
+  (str (eval-str "{:x \"v\" :y \"v\"}")))
 
 (identical? io.lacuna.bifurcan.List/EMPTY
   (eval-str "[]"))
@@ -120,7 +124,7 @@
 (identical? io.lacuna.bifurcan.Set/EMPTY
   (eval-str "#{}"))
 
-(= "{:x, v}" (str (eval-str "#{:x \"v\"}")))
+(contains? #{"{v, :x}" "{:x, v}"} (str (eval-str "#{:x \"v\"}")))
 
 ;; tableswitch
 (= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
@@ -129,6 +133,9 @@ GREEK 2
 LATIN 3
 4)"))
 
+(eval-str "(case 2 1 false 2 true 3 false false)")
+(eval-str "(case 2 1 false 2 true 5 false false)")
+
 ;; tableswitch fail
 (= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
 ARABIC 1
@@ -136,15 +143,22 @@ GREEK 2
 LATIN 3
 4)"))
 
+(eval-str "(case 0 1 false 2 false 3 false true)")
+
 ;; lookupswitch
 (= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
 GREEK 2
 4)"))
 
+(eval-str "(case 2 1 false 2 true false)")
+(eval-str "(case 20 1 false 20 true false)")
+
 ;; lookupswitch fail
 (= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
 GREEK 2
 4)"))
+
+(eval-str "(case 3 1 false 2 false true)")
 
 ;; no match
 (true? (eval-str "(try (case-enum (jf java.lang.Character$UnicodeScript HEBREW))
@@ -170,6 +184,7 @@ GREEK 2
 (reify Object (egg [_]))"))
 
 (true? (eval-str "(<- (if false false) (if true true) (if false false false))"))
+(eval-str "(defclass tmp.Tmp (defn f ^void [] (<- (if false nil) (let x true y x) x)))")
 
 (true? (eval-str "(and true)"))
 (false? (eval-str "(and true false)"))

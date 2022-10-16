@@ -2,7 +2,7 @@
   (:require
     [taoensso.encore :as enc]
     [clojure.core.match :refer [match]]
-    [chic.util :refer [deftype+]]
+    [chic.util :refer [deftype+ loop-zip]]
     [jl.interop :as interop]
     [jl.compiler.type :as type]
     [jl.compiler.op :as op]
@@ -357,32 +357,65 @@ JLS:
   (emit-ast-node ctx arg)
   (-emitTypeInsn ctx :instanceof classname))
 
-(defn emit-case [ctx {:keys [mode classname test cases fallback]}]
-  (assert (= :enum mode))
+;; how java determines table/lookupswitch: https://github.com/openjdk/jdk/blob/e7d0ab227ff86bb65abf7fbeb135ce657454200b/src/jdk.compiler/share/classes/com/sun/tools/javac/jvm/Gen.java#L1320
+(defn determine-switch-opcode [ncases min-n max-n]
+  (let [table-space-cost (+ 4 1 (- max-n min-n))
+        table-ncmps 3
+        lookup-space-cost (+ 3 (* 2 ncases))
+        lookup-ncmps ncases]
+    (if (and (< 0 ncases)
+          (<=
+            (+ table-space-cost (* 3 table-ncmps))
+            (+ lookup-space-cost (* 3 lookup-ncmps))))
+      Opcodes/TABLESWITCH
+      Opcodes/LOOKUPSWITCH)))
+
+(defn emit-case [ctx {:keys [mode classname test keymap cases fallback]}]
+  (assert (#{:enum :int} mode))
   (emit-ast-node ctx test)
   (let [case-labels (mapv (fn [_] (Label.)) cases)
         fb-label (Label.)
         end-label (Label.)
-        tableswitch-min-cases 3 ;; same as java (for enums)
-        ncases (count cases)
-        table-switch? (<= tableswitch-min-cases ncases)
-        ;; if table switch, sort alphabetically to increase chance of table
-        ;; offsets matching ordinals
-        cases (cond->> cases table-switch? (sort-by first))]
-    (-emitInvokeDynamic ctx "idx"
-      (Type/getMethodType Type/INT_TYPE
-        (into-array Type [(type/obj-classname->type classname)]))
-      (Handle. Opcodes/H_INVOKESTATIC
-        "sq/lang/EnumSwitchMapCallSite" "bsm"
-        (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
-          "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;"
-          "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;")
-        false)
-      (into [classname] (map first cases)))
+        ncases (count keymap)
+        ;; if enum, sort alphabetically to increase chance of table
+        ;; offsets matching ordinals.
+        ;; otherwise, sorting of ints also needed for lookupswitch
+        case-keys (vec (sort (keys keymap)))
+        [min-n max-n] (if (= :enum mode)
+                        [1 ncases]
+                        [(first case-keys) (peek case-keys)])
+        table-switch? (= Opcodes/TABLESWITCH
+                        (determine-switch-opcode ncases
+                          min-n max-n))]
+    (when (= :enum mode)
+      (-emitInvokeDynamic ctx "idx"
+        (Type/getMethodType Type/INT_TYPE
+          (into-array Type [(type/obj-classname->type classname)]))
+        (Handle. Opcodes/H_INVOKESTATIC
+         "sq/lang/EnumSwitchMapCallSite" "bsm"
+          (str "(Ljava/lang/invoke/MethodHandles$Lookup;"
+            "Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;"
+            "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;")
+         false)
+        (into [classname] case-keys)))
     (if table-switch?
-      (-emitTableSwitch ctx 1 ncases fb-label case-labels)
-      (-emitLookupSwitch ctx fb-label (range 1 (inc ncases)) case-labels))
-    (doseq [[label c] (map vector case-labels (map peek cases))]
+      (-emitTableSwitch ctx min-n max-n fb-label
+        (if (= :enum mode)
+          case-labels
+          (loop-zip [k ^Iterable case-keys
+                     label ^Iterable case-labels]
+            [i (first case-keys)
+             labels []]
+            (recur
+              (inc k)
+              (conj (into labels (mapv (constantly fb-label) (range i k)))
+                label))
+            labels)))
+      (-emitLookupSwitch ctx fb-label (if (= :enum mode)
+                                        (range min-n (inc max-n))
+                                        case-keys)
+        case-labels))
+    (doseq [[label c] (map vector case-labels cases)]
       (-emitLabel ctx label)
       (emit-ast-node ctx c)
       (-emitJump ctx :goto end-label))
@@ -638,9 +671,9 @@ JLS:
 (defn emit-self-get-field [ctx {:keys [field-name node/spec node/env]}]
   (let [class-type (-selfType ctx)
         field-type (type/classname->type (spec/get-exact-class spec))
-        field-classname (type/get-classname field-type)
-        dynamic (interop/dynamic-class? env
-                  (interop/resolve-class env field-classname))
+        ; field-classname (type/get-classname field-type)
+        ; dynamic (interop/dynamic-class? env
+        ;           (interop/resolve-class env field-classname))
         field-type (as-impl-type env field-type)]
     (-emitLoadSelf ctx)
     (-emitFieldInsn ctx :getfield
@@ -649,8 +682,8 @@ JLS:
 (defn emit-self-set-field [ctx {:keys [field-name ^Type type val node/env statement?]}]
   (let [self-type (-selfType ctx)
         field-classname (type/get-classname type)
-        dynamic? (interop/dynamic-class? env
-                   (interop/resolve-class env field-classname))
+        ; dynamic? (interop/dynamic-class? env
+        ;            (interop/resolve-class env field-classname))
         type (as-impl-type env type)]
     (if statement?
       (do

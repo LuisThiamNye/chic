@@ -1,10 +1,24 @@
 package tmp;
 
 class Tmp {
-	// static void main(Object o) {
-	// }
 
-	static void main() throws Exception {
-		var x = java.nio.file.Path.of(new java.net.URI(""));
+	static void main(int c) throws Exception {
+		switch (c) {
+			case '"':
+			case ';':
+			case '\'':
+			case '^':
+			case '(':
+			case ')':
+			case '[':
+			case ']':
+			case '{':
+			case '}':
+			case '\\':
+			case '#':
+				var x = -1;
+			default:
+				return;
+		}
 	}
 }

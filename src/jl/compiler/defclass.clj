@@ -1,5 +1,6 @@
 (ns jl.compiler.defclass
   (:require
+    [chic.util :refer [loop-zip]]
     [jl.interop :as interop]
     [jl.compiler.spec :as spec]
     [jl.compiler.core :as comp]
@@ -102,10 +103,8 @@
       (assoc-in [:class-aliases "Self"] classname)
       (assoc-in [:class-aliases "Super"] super))))
 
-(defn analyse-method-body
-  [prev-node clsinfo static? mn paramdecl bodydecl retc]
-  (let [env (:node/env prev-node)
-        params (:children paramdecl)
+(defn analyse-method-from-sig [env clsinfo static? mn paramdecl retc]
+  (let [params (:children paramdecl)
         tagged-ret (class-tag (assoc paramdecl :node/env env))
         param-pairs
         (into []
@@ -125,28 +124,34 @@
               ", predetermined " retc))
         preknown-ret-classname (or retc tagged-ret)
         varargs? (= :exact-array
-                   (:spec/kind (:spec (peek (last param-pairs)))))
-        method
-        {:name mn
-         :flags (cond-> #{:public} 
-                  varargs? (conj :varargs)
-                  static? (conj :static))
-         :ret-classname preknown-ret-classname
-         :param-names (mapv :string params)
-         :param-classnames
-         (mapv (fn [[_ {:keys [spec]}]]
+                   (:spec/kind (:spec (peek (last param-pairs)))))]
+    {:name mn
+     :flags (cond-> #{:public} 
+              varargs? (conj :varargs)
+              static? (conj :static))
+     :ret-classname preknown-ret-classname
+     :param-names (mapv :string params)
+     :node/locals (into {} param-pairs)
+     :param-classnames
+     (mapv (fn [[_ {:keys [spec]}]]
              (spec/get-exact-class spec))
-           (if static? param-pairs (drop 1 param-pairs)))}
+       (if static? param-pairs (drop 1 param-pairs)))}))
+
+(defn analyse-method-body
+  [prev-node clsinfo static? mn paramdecl bodydecl retc]
+  (let [env (:node/env prev-node)
+        method (analyse-method-from-sig env clsinfo static? mn paramdecl retc)
         clsinfo (update clsinfo (if static? :class-methods :instance-methods)
                   (fnil conj []) method)
         prev-method (:method env)
+        preknown-ret-classname (:ret-classname method)
         body (ana/analyse-body
                {:node/env (assoc (adapt-method-env clsinfo preknown-ret-classname
                                    (assoc env :method
                                      {:side (if static? :class :instance)
                                       :initialiser? (#{"<clinit>" "<init>"} mn)}))
                             :external-locals (:node/locals prev-node))
-                :node/locals (into {} param-pairs)}
+                :node/locals (:node/locals method)}
                bodydecl)
         body (assoc body :node/locals (:node/locals prev-node))
         body (update body :node/env assoc :method prev-method)
@@ -285,7 +290,8 @@
        (let [mexp (nth children 1)
              _ (assert (= :symbol (:node/kind mexp)))
              mn (:string mexp)
-             paramdecl (assoc (nth children 2) :node/env env)
+             env' (:node/env (:prev-node opts))
+             paramdecl (assoc (nth children 2) :node/env env')
              params (:children paramdecl)
              ret-classname (or (class-tag paramdecl) "void")]
          (update opts :instance-methods conj
@@ -295,14 +301,43 @@
             :param-names (into [""] (map :string) params)
             :param-classnames
             (mapv (fn [p]
-                    (class-tag (assoc p :node/env (:node/env (:prev-node opts)))))
+                    (class-tag (assoc p :node/env env')))
               params)})))
+     parse-declare-cmethod
+     (fn [info {:keys [children]}]
+       (assert (<= 2 (count children)))
+       (let [mexp (nth children 1)
+             _ (assert (= :symbol (:node/kind mexp)))
+             mn (:string mexp)
+             env' (:node/env (:prev-node info))
+             paramdecl (assoc (nth children 2) :node/env env')
+             method (analyse-method-from-sig env' info true mn paramdecl nil)]
+         (-> info
+           (update :class-methods conj method))))
      parse-named-cmethod
      (fn [opts mn paramdecl bodydecl retc]
-       (let [m (analyse-method-body (:prev-node opts) opts true mn paramdecl bodydecl retc)]
+       (let [method (analyse-method-body (:prev-node opts) opts true mn paramdecl bodydecl retc)
+             all-methods (:class-methods opts [])
+             [conflict-idx conflicting-method]
+             (loop-zip [m all-methods
+                        i :idx]
+               []
+               (if (and (= mn (:name m))
+                     (= (:ret-classname method) (:ret-classname m))
+                     (= (:param-classnames method) (:param-classnames m)))
+                 (do [i m])
+                 (recur))
+               nil)
+             all-methods
+             (if conflicting-method
+               (if (:body conflicting-method)
+                 (throw (ex-info "Conflicting method" {}))
+                 (into (subvec all-methods 0 conflict-idx)
+                   (subvec all-methods (inc conflict-idx))))
+               all-methods)]
          (-> opts
-           (assoc :prev-node (:body m))
-           (update :class-methods conj m))))
+           (assoc :prev-node (:body method))
+           (assoc :class-methods (conj all-methods method)))))
      parse-cmethod
      (fn [opts {:keys [children]}]
        (assert (<= 2 (count children)))
@@ -386,11 +421,12 @@
                       "defn" (parse-cmethod opts dnode)
                       "defabstract" (parse-amethod opts dnode)
                       "def" (parse-cfield opts dnode)
+                      "declare-fn" (parse-declare-cmethod opts dnode)
                       "init-auto" (parse-init-auto opts dnode)
                       "init" (parse-init opts dnode)
                       "uninstall" (parse-uninstall-method opts dnode))))
      info {:classname clsname
-           :prev-node node}
+           :prev-node (update node :node/env assoc :self-classname clsname)}
      info (assoc info :class (make-class info))
      info
      (reduce
@@ -420,10 +456,19 @@
             info)
      info (assoc info :class (make-class info))
      prev-node (:prev-node info)
-     info (dissoc info :prev-node)]
+     info (dissoc info :prev-node)
+     verify-methods (fn [methods]
+                      (doseq [m methods]
+                        (when (nil? (:body m))
+                          (throw (ex-info (str (:name m) " has no body")
+                                   (select-keys m [:ret-classname :param-classnames]))))))]
+    (verify-methods (:class-methods info))
+    (verify-methods (:instance-methods info))
     (assoc (ana/new-void-node)
       :node/locals (:node/locals node)
-      :node/env (assoc-in (:node/env prev-node) [:new-classes clsname] info))))
+      :node/env (-> (:node/env prev-node)
+                  (assoc :self-classname (:self-classname env))
+                  (assoc-in [:new-classes clsname] info)))))
 
 (defn anasf-reify [{:keys [children node/env] :as node}]
   ;; TODO - match methods with interfaces; allow extra methods if marked private

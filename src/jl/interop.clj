@@ -162,6 +162,10 @@
   (or (identical? c1 c2)
     (= (-getName c1) (-getName c2))))
 
+#_(defn map->unreal-method [m]
+  ; (assert (some? (:ret-type m)))
+  (map->UnrealMethod m))
+
 (defn new-unreal-class
   ([name super interfaces]
    (->UnrealClass name super (object-array interfaces) 0 nil nil))
@@ -261,6 +265,7 @@
       c)))
 
 (defn resolve-class [env classname]
+  {:post [(some? %)]}
   (let [[ndims el-classname] (split-classname classname)
         el-class (resolve-obj-class env el-classname)]
     (if (= 0 ndims)

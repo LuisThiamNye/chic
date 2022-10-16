@@ -1,5 +1,6 @@
 (ns jl.kickstart
   (:require
+    [taoensso.encore :as enc]
     [jl.compiler.sforms]
     [jl.compiler.math]
     [jl.compiler.core :as compiler]
@@ -94,6 +95,14 @@
     "chic.window.i.PaintAndEventHandler"
     "chic.window.StdWinEventListener"]
    
+   "src3/sq/compiler/reader.sq"
+   ["sq.compiler.reader.IFormVisitor"
+    "sq.compiler.reader.Reader"
+    "sq.compiler.reader.Util"
+    "sq.compiler.reader.TrackedCharReader"
+    "sq.compiler.reader.IChReader"
+    "sq.compiler.reader.Stock"]
+   
    "src2/sqeditor.sq"
    ["chic.sqeditor.RectTools"
     "chic.sqeditor.IntrMgr"
@@ -158,11 +167,15 @@
     (find-hidden-class (str "_." (.replace classname \. \,)))
     (find-class classname)))
 
+(def get-file-asts
+  (enc/memoize 500
+    (fn [filename]
+      (let [_ (assert (string? filename) "defclass file not found")
+            contents (slurp filename)]
+        (ana/str->ast contents)))))
+
 (defn analyse-defclass-node [opts clsname]
-  (let [filename (classname->file clsname)
-        _ (assert (string? filename) "defclass file not found")
-        contents (slurp filename)
-        asts (ana/str->ast contents)
+  (let [asts (get-file-asts (classname->file clsname))
         [dc-node class-aliases]
         (reduce (fn [[_ class-aliases :as acc] node]
                   (let [[sym & args]
@@ -190,22 +203,21 @@
                                            (map #(vector % (expand (str pkg "." %))) names))))
                                args)]
                         :else acc))))
-          [nil (into {}
+          [nil (into (cond-> {} (:hidden? opts)
+                       (assoc clsname
+                         (str "_." (.replace clsname \. \,))))
                  (map (fn [classname]
                         [(.replace (.replace classname \, \.) "_." "")
                          classname]))
                  (keys *meta-classes))]
           asts)]
-    _ (assert (some? dc-node) "defclass form not found")
+    (assert (some? dc-node) "defclass form not found")
     (ana/-analyse-node
       (update (ana/inject-default-env dc-node)
         :node/env
         (fn [env]
           (-> env
             (update :class-aliases into class-aliases)
-            (cond-> (:hidden? opts)
-              (update :class-aliases assoc clsname
-                (str "_." (.replace clsname \. \,))))
             (assoc :class-resolver
               (fn [classname]
                 (or (.get *meta-classes classname)
@@ -412,6 +424,19 @@
   
   (load-class "sq.lang.KeywordFactory")
   
+  ;; READER
+  
+  (load-class "sq.compiler.reader.IFormVisitor")
+  (load-class "sq.compiler.reader.IChReader")
+  (load-hidden "sq.compiler.reader.Util")
+  (load-hidden "sq.compiler.reader.Reader")
+  (load-hidden "sq.compiler.reader.TrackedCharReader")
+  (load-hidden "sq.compiler.reader.Stock")
+  
+  
+  
+  ;; SQEDITOR
+  
   (.put (get-globalchm) "chic.window"
     (new java.util.concurrent.ConcurrentHashMap))
   (.put (.get (get-globalchm) "chic.window") "windows"
@@ -444,7 +469,7 @@
   (load-hidden "chic.sqeditor.Window")
   
   (io.github.humbleui.skija.Typeface/makeFromName
-    "InputSansCondensed" io.github.humbleui.skija.FontStyle/NORMAL)
+    "Input SansCondensed" io.github.humbleui.skija.FontStyle/NORMAL)
 
   (chic.windows/dosendui
     (try (rcall (cof "chic.sqeditor.Window") 'spawn)

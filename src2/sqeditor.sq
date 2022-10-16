@@ -20,7 +20,8 @@
   (io.github.humbleui.jwm.skija
     EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
   (io.github.humbleui.skija
-    Canvas Paint PaintMode Font TextLine Typeface FontStyle)
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
   (com.ibm.icu.text BreakIterator)
   (chic.sqeditor
     RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
@@ -1174,9 +1175,10 @@
           nil))))
   
   (defi on-text-input ^void [self ^EventTextInput evt]
-    (.perform-edit! self
-      (jc SelectionOps insert-text (jfi view :selection)
-        (jfi (jfi view :buffer) :rope) (.getText evt))))
+    (when (not (.equals "\r" (.getText evt)))
+      (.perform-edit! self
+        (jc SelectionOps insert-text (jfi view :selection)
+          (jfi (jfi view :buffer) :rope) (.getText evt)))))
   
   (defn scroll-offset ^int [^int prev ^int content-length ^int visible-length
                             ^int delta]
@@ -1264,10 +1266,13 @@
     (.add views view)
     (jc SelectionOps add (jfi view' :selection) (nw Region 0 0))
     
-    (set! font (nw Font (jc Typeface makeFromName "InputSansCondensed"
-                          (jf FontStyle NORMAL))
-                 30f))
-    (set! ui-font (.makeWithSize font 28f))
+    (set! font (nw Font (jc Typeface makeFromName "Input Sans"
+                          (nw FontStyle
+                            (jf FontWeight NORMAL)
+                            (jf FontWidth CONDENSED)
+                            (jf FontSlant UPRIGHT)))
+                 24f))
+    (set! ui-font (.makeWithSize font 22f))
     (set! line-height (jc Math round (.getSpacing font)))
     (set! text-paint (nw Paint))
     (.setColor text-paint 0xFF000000)
@@ -1377,7 +1382,7 @@
       (try
         (.set-window self jwin)
         (.setEventListener jwin (nw chic.window.StdWinEventListener self))
-        (.setWindowPosition jwin -1800 50)
+        ;(.setWindowPosition jwin -1800 50)
         (.setVisible jwin true)
         (.focus jwin)
         (jc chic.window.Main reg-window! self)

@@ -1,0 +1,358 @@
+
+(Refer-Classes
+  (sq.compiler.reader
+    IFormVisitor Reader Util TrackedCharReader IChReader))
+
+(defclass sq.compiler.reader.IFormVisitor
+  :tag [:interface]
+  (defabstract visitNumber ^void [^String numstr])
+  (defabstract visitKeyword ^void [^String kwstr])
+  (defabstract visitSymbol ^void [^String symstr])
+  (defabstract visitChar ^void [^String token])
+  (defabstract visitCharLiteral ^void [^int c])
+  (defabstract visitString ^void [^String s])
+  (defabstract visitList ^Self [])
+  (defabstract visitVector ^Self [])
+  (defabstract visitMap ^Self [])
+  (defabstract visitSet ^Self [])
+  (defabstract visitDiscard ^Self [])
+  (defabstract visitMeta ^Self []) ;; -> [meta-vtor value-vtor]
+  (defabstract visitEnd ^void [])
+  )
+
+(defclass sq.compiler.reader.Util
+  
+  (defn noop-visitor ^IFormVisitor [^IFormVisitor dv]
+    (reify IFormVisitor
+      (visitNumber [_ ^String _])
+      (visitKeyword [_ ^String _])
+      (visitSymbol [_ ^String _])
+      (visitChar [_ ^String _])
+      (visitCharLiteral [_ ^int _])
+      (visitString [_ ^String _])
+      (visitList [self] (jc Util noop-visitor self))
+      (visitVector [self] (jc Util noop-visitor self))
+      (visitMap [self] (jc Util noop-visitor self))
+      (visitSet [self] (jc Util noop-visitor self))
+      (visitDiscard [self] dv)
+      (visitMeta [self] (jc Util noop-visitor self))
+      (visitEnd [_])))
+  
+  (defn noop-visitor []
+    (jc Util noop-visitor (ct IFormVisitor nil)))
+  
+  (defn anom! [^IChReader rdr category ^String msg]
+    (throw (nw RuntimeException
+             (.concat "Reader error: "
+               (.concat msg
+                 (.toString
+                   {:line (.getLine rdr)
+                    :col (.getCol rdr)
+                    :category category}))))))
+  )
+
+(defclass sq.compiler.reader.IChReader
+  :tag [:interface]
+  (defabstract read ^int [])
+  (defabstract unread ^void [])
+  (defabstract eof? ^boolean [])
+  (defabstract getLine ^int [])
+  (defabstract getCol ^int [])
+  )
+
+(defclass sq.compiler.reader.Reader
+  
+  (defn whitespace? ^boolean [^int c]
+    (or (jc Character isWhitespace c) (= c 44)))
+  
+  (defn macro? [^int c]
+    ;(and (< c (alength macros)) (< 0 (aget macros c)))
+    (case c
+      [\"
+       \;
+       \'
+       \^
+       \(
+       \)
+       \[
+       \]
+       \{
+       \}
+       \\
+       \#] true
+      false))
+  
+  (defn terminating-macro? [^int c]
+    (and (not (or (= c \#) (= c \') (= c \%)))
+      (jc Self macro? c)))
+
+  
+  (defn read-str-escape [^IChReader rdr]
+    (=: c (.read rdr))
+    (when (= -1 c)
+      (throw (nw RuntimeException "EOF reading string")))
+    (case c
+      \t \tab
+      \r \return
+      \n \newline
+      \\ \\
+      \" \"
+      \b \backspace
+      \f \formfeed
+      \u (let c (.read rdr)
+           (if (= -1 (jc Character digit c 16))
+             (throw (nw RuntimeException
+                      (.concat "Invalid unicode escape: " (jc String valueOf c))))
+             (throw (nw UnsupportedOperationException
+                      "Unicode not implemented"))))
+      (throw (nw RuntimeException
+               (.concat "Unsupported escape sequence: " (jc String valueOf c))))))
+  
+  (defn read-nws [^IChReader rdr]
+    (loop []
+      (let c (.read rdr)
+        (if (jc Self whitespace? c)
+          (recur)
+          c))))
+
+  (defn read-token
+    ;"Always returns valid token string"
+    [^IChReader rdr ^int c1]
+    (=: sb (nw StringBuilder))
+    (.appendCodePoint sb c1)
+    (loop []
+      (let c (.read rdr)
+        (when (not (= -1 c))
+          (if (or (jc Self whitespace? c) (jc Self terminating-macro? c))
+            (.unread rdr)
+            (do (.appendCodePoint sb c)
+              (recur))))))
+    (.toString sb))
+  
+  ;; Macro readers
+
+  (defn mread-string [^IFormVisitor vtor ^IChReader rdr ^int _doublequote]
+    (=: sb (nw StringBuilder))
+    (loop []
+      (let c (.read rdr)
+        (when (not (= c \"))
+          (when (= -1 c)
+            (throw (nw RuntimeException "EOF reading string")))
+          (if (= \\ c)
+            (let se (jc Self read-str-escape rdr)
+              (when (<= 0 se) 
+                (.appendCodePoint sb se)))
+            (.appendCodePoint sb c))
+          (recur))))
+    (.visitString vtor (.toString sb)))
+  
+  (defn mread-comment [^IFormVisitor vtor ^IChReader rdr ^int _semicolon]
+    (loop []
+      (let c (.read rdr)
+        (when (not (or (= c -1) (= \newline c)))
+          (recur)))))
+
+  (defn mread-char [^IFormVisitor vtor ^IChReader rdr ^int _backslash]
+    (let
+      c (.read rdr)
+      _ (when (= -1 c) (throw (nw RuntimeException "EOF reading char")))
+      token (jc Self read-token rdr c)
+      (if (= 1 (.length token))
+        (.visitCharLiteral vtor (.charAt token 0))
+        (.visitChar vtor token))))
+  
+  (declare-fn read-next-form ^boolean [^IFormVisitor vtor ^IChReader rdr])
+  (declare-fn read-next-form* ^void [^IFormVisitor vtor ^IChReader rdr ^int c])
+
+  (defn mread-quote  [^IFormVisitor vtor ^IChReader rdr ^int _quote]
+    (let
+      symname "_§!S_quote"
+      lv (.visitList vtor)
+      (do
+        (.visitSymbol lv symname)
+        ; (jc Self read-next-form lv rdr)
+        (.visitEnd lv))))
+
+  (defn mread-meta [^IFormVisitor vtor ^IChReader rdr ^int _caret]
+    (let
+      v (.visitMeta vtor)
+      (do
+        (jc Self read-next-form v rdr)
+        (jc Self read-next-form v rdr)
+        (.visitEnd v))))
+
+  (defn read-delimited-list [^IFormVisitor vtor ^IChReader rdr ^int endc]
+    (loop []
+      (let c (jc Self read-nws rdr)
+        (<-
+          (if (= c endc) nil)
+          (if (< c 0) (throw (nw RuntimeException
+                               (.concat "EOF reading list: " (jc String valueOf endc)))))
+          (do (jc Self read-next-form* vtor rdr c)
+            (recur)))))
+    (.visitEnd vtor))
+
+  (defn mread-list [^IFormVisitor vtor ^IChReader rdr ^int  _openbracket]
+    (jc Self read-delimited-list (.visitList vtor) rdr \)))
+
+  (defn mread-vector [^IFormVisitor vtor ^IChReader rdr ^int  _openbracket]
+    (jc Self read-delimited-list (.visitVector vtor) rdr \]))
+
+  (defn mread-map [^IFormVisitor vtor ^IChReader rdr ^int  _openbracket]
+    (jc Self read-delimited-list (.visitMap vtor) rdr \}))
+  
+  (defn mread-set [^IFormVisitor vtor ^IChReader rdr ^int  _openbracket]
+    (jc Self read-delimited-list (.visitSet vtor) rdr \}))
+
+  (defn mread-unmatched-delim [_vtor ^IChReader rdr ^int delim]
+    (jc Util anom! rdr :incorrect (.concat "Unmatched delimiter: " (jc String valueOf delim))))
+
+  (defn mread-discard ^void [^IFormVisitor vtor ^IChReader rdr ^int _underscore]
+    (let
+      dv (.visitDiscard vtor)
+      (if (not (nil? dv))
+        (jc Self read-next-form dv rdr)
+        (do (jc Self read-next-form vtor rdr)
+          (jc Self read-next-form vtor rdr)))))
+
+  (defn mread-dispatch ^void [^IFormVisitor vtor ^IChReader rdr ^int _hash]
+    (let
+      c (.read rdr)
+      (do
+        (when (= -1 c) (throw (nw RuntimeException "EOF reading dispatch")))
+        (case c
+          \{ (jc Self mread-set vtor rdr c)
+          \_ (jc Self mread-discard vtor rdr c)
+          (throw (nw RuntimeException
+                   (.concat "No dispatch macro found for: " (jc String valueOf c))))))))
+  
+  (def NOMACRO -2)
+  
+  (defn read-macro ^int [^IFormVisitor vtor ^IChReader rdr ^int c]
+    (=: res 0)
+    (case c
+      \" (jc Self mread-string vtor rdr c)
+      \; (jc Self mread-comment vtor rdr c)
+      \' (jc Self mread-quote vtor rdr c)
+      \^ (jc Self mread-meta vtor rdr c)
+      \( (jc Self mread-list vtor rdr c)
+      \) (jc Self mread-unmatched-delim vtor rdr c)
+      \[ (jc Self mread-vector vtor rdr c)
+      \] (jc Self mread-unmatched-delim vtor rdr c)
+      \{ (jc Self mread-map vtor rdr c)
+      \} (jc Self mread-unmatched-delim vtor rdr c)
+      \\ (jc Self mread-char vtor rdr c)
+      \# (jc Self mread-dispatch vtor rdr c)
+      (set! res NOMACRO))
+    res)
+
+  (defn read-number
+    ;"Always returns valid number string"
+    ^String [^IChReader rdr ^int c1]
+    (let
+      sb (nw StringBuilder)
+      (do (.appendCodePoint sb c1)
+        (loop []
+          (let
+            c (.read rdr)
+            (when (<= 0 c)
+              (if (or (jc Self macro? c) (jc Self whitespace? c))
+                (.unread rdr)
+                (do (.appendCodePoint sb c)
+                  (recur))))))
+        (.toString sb))))
+
+  (defn read-next-form* ^void [^IFormVisitor vtor ^IChReader rdr ^int c]
+    (<-
+      (if (jc Character isDigit c)
+        (.visitNumber vtor (jc Self read-number rdr c)))
+          
+      (let
+        res (jc Self read-macro vtor rdr c))
+      (if (not (= res NOMACRO))
+        res nil)
+      #_#_
+      (or (when (or (= c \+) (= c \-))
+            (let
+              c2 (.read rdr)
+              num? (jc Character isDigit c2)
+              (do (if num?
+                    (do (.unread rdr)
+                      (.visitNumber vtor (jc Self read-number rdr c)))
+                    (.unread rdr))
+                num?))))
+          
+      (let token (jc Self read-token rdr c)
+        (if (and (< 0 (.length token))
+              (= (.charAt token 0) \:))
+          (.visitKeyword vtor token)
+          (.visitSymbol vtor token)))))
+
+  (defn read-next-form ^boolean [^IFormVisitor vtor ^IChReader rdr]
+    (when (not (.eof? rdr))
+      (let
+        c (jc Self read-nws rdr)
+        (when (<= 0 c)
+          (jc Self read-next-form* vtor rdr c)
+          true))))
+
+  (defn read-all-forms ^void [^IFormVisitor vtor ^IChReader rdr]
+    (loop []
+      (when (jc Self read-next-form vtor rdr)
+        (recur))))
+  )
+
+(defclass sq.compiler.reader.TrackedCharReader
+  :interfaces IChReader
+  [^java.io.Reader rdr
+   ^:mut ^int line
+   ^:mut ^int col
+   ^:mut ^int prev-col
+   ^:mut ^int current
+   ^:mut ^int next]
+  
+  (defi read ^int [_]
+    (let
+      r (.read rdr)
+      (do
+        (set! prev-col col)
+        (<-
+          (if (= r 10)
+           (do
+             (set! line (inc line))
+             (set! col 1)))
+          (if (not (or (= r 13) (= r -1)))
+            (set! col (inc col))
+            nil))
+        r)))
+  
+  (defi unread ^void [_]
+    (<-
+      (if (= prev-col col) nil)
+      (if (= 1 col) (set! line (dec line)))
+      (set! col (dec col)))
+    (set! next current)
+    (set! current -1))
+  
+  (defi eof? ^boolean [_] (or (= -1 current) (= -1 next)))
+  (defi getLine [_] line)
+  (defi getCol [_] col)
+  
+  (defn make [^java.io.Reader rdr]
+    (nw Self rdr 1 1 1 -1 -2))
+  )
+
+(defclass sq.compiler.reader.Stock
+  
+  (defn file-reader-default 
+    ;"Acceps File, FileDescriptor or String"
+    [f]
+    (jc TrackedCharReader make
+      (nw java.io.FileReader (ct String f))))
+  
+  (defn str-reader-default [^String s]
+    (jc TrackedCharReader make
+      (nw java.io.StringReader s)))
+  )
+
+

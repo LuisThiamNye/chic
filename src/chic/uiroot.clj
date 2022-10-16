@@ -153,5 +153,7 @@
 
 (defn start-ui []
   (debugger/install-debug-ctx!)
-  (App/start make-main-window))
+  ;(App/start make-main-window)
+  (App/start (fn []))
+  )
 

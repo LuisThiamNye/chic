@@ -67,7 +67,7 @@
             :extra-deps  {nrepl/nrepl {:mvn/version "0.9.0"}
                           com.bhauman/rebel-readline {:mvn/version "0.1.4"}
                           philoskim/debux {:mvn/version "0.8.2"}}
-            :jvm-opts ["-Xmx8G" ;; max heap size
+            :jvm-opts ["-Xmx24G" ;; max heap size
                        "--enable-preview"
                        "--enable-native-access=ALL-UNNAMED"
                        "-XX:+UseShenandoahGC"
