@@ -27,6 +27,24 @@
     [^MHLookup lk ^String target-classname ^boolean static?
      ^String method-name ^"[LString;" param-classnames]))
 
+(defclass sq.lang.dev.MethodHandleFinderLk
+  :interfaces sq.lang.i.MethodHandleFinderLk
+  []
+  (def *find-method-handle-lk
+    (.findInternedVar
+      (jc clojure.lang.Namespace find
+        (jc clojure.lang.Symbol intern "jl.kickstart"))
+      (jc clojure.lang.Symbol intern "find-method-handle-lk")))
+  
+  (def INSTANCE (nw Self))
+  
+  (defi apply ^MethodHandle
+    [_ ^MHLookup lk ^String target-classname ^boolean static?
+     ^String method-name ^"[LString;" param-classnames]
+    (ct MethodHandle
+      (.invoke *find-method-handle-lk
+        lk target-classname static? method-name param-classnames))))
+
 (defclass sq.lang.DynClassMethodCallSite
   :super MutableCallSite
   [^MHLookup lk ^String method-name ^String target-classname ^"[LString;" arg-classnames]

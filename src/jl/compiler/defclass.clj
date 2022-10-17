@@ -111,31 +111,35 @@
           (map-indexed
             (fn [i {:keys [string] :as arg-node}]
               (assert (= :symbol (:node/kind arg-node)))
-              [string {:arg-idx i
-                       :spec (if (and (not static?) (= 0 i))
-                               ;; first arg is self
-                               (spec/of-class (:classname clsinfo))
-                               (if-some [cn (class-tag (assoc arg-node :node/env env))]
-                                 (spec/of-class cn)
-                                 (spec/of-class "java.lang.Object")))}]))
+              [string (assoc
+                        (ana/make-local-info string
+                          (if (and (not static?) (= 0 i))
+                            ;; first arg is self
+                            (spec/of-class (:classname clsinfo))
+                            (if-some [cn (class-tag (assoc arg-node :node/env env))]
+                              (spec/of-class cn)
+                              (spec/of-class "java.lang.Object"))))
+                        :arg-idx i)]))
           params)
         _ (when (and retc tagged-ret)
             (println "WARNING - ineffective return type tag " tagged-ret
               ", predetermined " retc))
         preknown-ret-classname (or retc tagged-ret)
         varargs? (= :exact-array
-                   (:spec/kind (:spec (peek (last param-pairs)))))]
+                   (:spec/kind (:spec (peek (last param-pairs)))))
+        apparent-param-pairs (if static? param-pairs (drop 1 param-pairs))]
     {:name mn
      :flags (cond-> #{:public} 
               varargs? (conj :varargs)
               static? (conj :static))
      :ret-classname preknown-ret-classname
      :param-names (mapv :string params)
+     :param-ids (mapv (comp :id peek) param-pairs)
      :node/locals (into {} param-pairs)
      :param-classnames
      (mapv (fn [[_ {:keys [spec]}]]
              (spec/get-exact-class spec))
-       (if static? param-pairs (drop 1 param-pairs)))}))
+       apparent-param-pairs)}))
 
 (defn analyse-method-body
   [prev-node clsinfo static? mn paramdecl bodydecl retc]
@@ -167,7 +171,7 @@
     [clsexpr (nth children 1)
      _ (assert (= :symbol (:node/kind clsexpr)))
      clsname (ana/expand-classname env (:string clsexpr))
-     make-class (fn [info] (classinfo->class env info))
+     make-class (fn [info] (classinfo->class (:node/env (:prev-node info)) info))
      iface-parser
      (fn [opts {:keys [node/kind] :as x}]
        (when (= :symbol kind)
@@ -400,9 +404,10 @@
                                       :spec {:spec/kind :exact-class
                                              :classname clsname}}}
                        (map-indexed (fn [i {:keys [name classname]}]
-                                      [name {:arg-idx (inc i)
-                                             :spec {:spec/kind :exact-class
-                                                    :classname classname}}]))
+                                      [name (assoc (ana/make-local-info name
+                                                     {:spec/kind :exact-class
+                                                      :classname classname})
+                                              :arg-idx (inc i))]))
                        (:fields clsinfo))}
                     (subvec children 2))
              auto-idx (first (keep-indexed #(when (:auto %2) %)
@@ -412,10 +417,11 @@
            (update-in [:constructors auto-idx] assoc :body body))))
      parse-decl (fn [opts {:keys [children] :as dnode}]
                   (assert (<= 2 (count children)))
-                  (comp/create-stub-class opts)
                   (let [decl (nth children 0)
                         _ (assert (= :symbol (:node/kind decl)))
-                        dname (:string decl)]
+                        dname (:string decl)
+                        opts (assoc-in opts [:prev-node :node/env :new-classes clsname]
+                               (assoc opts :class (comp/create-stub-class opts)))]
                     (condp = dname
                       "defi" (parse-imethod opts dnode)
                       "defn" (parse-cmethod opts dnode)
@@ -426,6 +432,7 @@
                       "init" (parse-init opts dnode)
                       "uninstall" (parse-uninstall-method opts dnode))))
      info {:classname clsname
+           :flags #{:public}
            :prev-node (update node :node/env assoc :self-classname clsname)}
      info (assoc info :class (make-class info))
      info
@@ -459,8 +466,9 @@
      info (dissoc info :prev-node)
      verify-methods (fn [methods]
                       (doseq [m methods]
-                        (when (nil? (:body m))
-                          (throw (ex-info (str (:name m) " has no body")
+                        (when (and (nil? (:body m))
+                                (not (contains? (:flags m) :abstract)))
+                          (throw (ex-info (str "method '" (:name m) "' has no body")
                                    (select-keys m [:ret-classname :param-classnames]))))))]
     (verify-methods (:class-methods info))
     (verify-methods (:instance-methods info))
@@ -548,10 +556,11 @@
      :classname reify-classname
      :method-type (Type/getMethodType Type/VOID_TYPE
                     (into-array Type (mapv type/classname->type captured-local-classnames)))
-     :args (mapv (fn [name {:keys [spec]}]
+     :args (mapv (fn [name {:keys [spec id]}]
                    {:node/kind :local-use
                     :node/spec spec
-                    :local-name name})
+                    :local-name name
+                    :local-id id})
              captured-local-names captured-locals)
      :node/locals (:node/locals node)
      :node/env (assoc-in (:node/env final-node)

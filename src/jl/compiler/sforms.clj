@@ -319,36 +319,39 @@
           exceptable? (not= 0 ntry)
           try-body (ana/analyse-body node (subvec children 1 (inc ntry)))
           catch-prev try-body
-          catches (reduce
-                    (fn [acc {:keys [children] :as child}]
-                      (if (list-of? "catch" child)
-                        (do (assert (<= 3 (count children)))
-                          (let [cs (nth children 1)
-                                sym (nth children 2)
-                                _ (assert (= :symbol (:node/kind sym)))
-                                symname (:string sym)
-                                classnames
-                                (condp = (:node/kind cs)
-                                 :symbol [(:string cs)]
-                                 :vector (mapv (fn [x]
-                                                 (assert (= :symbol (:node/kind x))
-                                                   "Invalid catch union")
-                                                 (:string x))
-                                           (:children cs)))
-                                classnames (mapv (partial ana/expand-classname env) classnames)]
-                            (conj acc
-                              {:classnames classnames
-                               :local-name symname
-                               :body (ana/analyse-body
-                                       (assoc-in catch-prev [:node/locals symname :spec]
-                                         {:spec/kind :exact-class
-                                          :classname (if (= 1 (count classnames))
-                                                       (first classnames)
-                                                       ;; TODO ideally common ancestor
-                                                       "java.lang.Throwable")})
-                                       (subvec children 3))})))
-                        (reduced acc)))
-                    [] (when exceptable? (subvec children (inc ntry))))
+          catches
+          (reduce
+            (fn [acc {:keys [children] :as child}]
+              (if (list-of? "catch" child)
+                (do (assert (<= 3 (count children)))
+                  (let [cs (nth children 1)
+                        sym (nth children 2)
+                        _ (assert (= :symbol (:node/kind sym)))
+                        symname (:string sym)
+                        classnames
+                        (condp = (:node/kind cs)
+                          :symbol [(:string cs)]
+                          :vector (mapv (fn [x]
+                                          (assert (= :symbol (:node/kind x))
+                                            "Invalid catch union")
+                                          (:string x))
+                                    (:children cs)))
+                        classnames (mapv (partial ana/expand-classname env) classnames)
+                        local-info (ana/make-local-info symname
+                                     {:spec/kind :exact-class
+                                      :classname (if (= 1 (count classnames))
+                                                   (first classnames)
+                                                   ;; TODO ideally common ancestor
+                                                   "java.lang.Throwable")})]
+                    (conj acc
+                      {:classnames classnames
+                       :local-id (:id local-info)
+                       :body (ana/analyse-body
+                               (assoc-in catch-prev [:node/locals symname]
+                                 local-info)
+                               (subvec children 3))})))
+                (reduced acc)))
+            [] (when exceptable? (subvec children (inc ntry))))
           nrest (- (count children) (count catches) ntry 1)
           _ (assert (<= nrest 1))
           finally-body (when (= 1 nrest)
@@ -416,8 +419,8 @@
                                :val init
                                :statement? true
                                :node/locals
-                               (assoc-in (:node/locals init)
-                                 [nam :spec] (:node/spec init))}))))
+                               (assoc (:node/locals init)
+                                 nam (ana/make-local-info nam (:node/spec init)))}))))
                 [] pairs)
         id (random-uuid)
         prev (or (peek decls) node)
@@ -439,9 +442,9 @@
   (let [jump-target (peek (:restart-targets (:node/env node)))
         jump-id (:id jump-target)
         _ (when (nil? jump-id)
-            (throw (RuntimeException.
-                     (str "Could not find recur target"
-                       "\nEnv: " (:node/env node)))))
+            (throw (ex-info
+                     (str "Could not find recur target")
+                     (select-keys (:node/env node) [:restart-targets]))))
         locals (:locals jump-target)
         recur-args (subvec children 1)
         _ (when (not= (count locals) (count recur-args))

@@ -210,14 +210,20 @@ JLS:
 (defn emit-assign-local [ctx {:keys [statement? local-name val] :as node}]
   (let [prim (spec/prim? (:node/spec val))
         typ (if prim (keyword prim) :ref)
-        id (get-in node [:node/locals local-name :id] local-name)]
+        id (get-in node [:node/locals local-name :id])]
+    (assert (some? id))
     (emit-ast-node ctx val)
     (-emitStoreLocal ctx typ id)
     (when-not statement?
       (-emitLoadLocal ctx id))))
 
-(defn emit-local-use [ctx {:keys [local-name] :as node}]
-  (-emitLoadLocal ctx (get-in node [:node/locals local-name :id] local-name)))
+(defn emit-local-use [ctx {:keys [local-name local-id] :as node}]
+  (let [id local-id #_(get-in node [:node/locals local-name :id])]
+    (assert (some? id) {:local-name local-name
+                        :local-id local-id
+                        :local (get-in node [:node/locals local-name])
+                        :locals (keys (:node/locals node))})
+    (-emitLoadLocal ctx id)))
 
 ;; TODO get-ret-node to specialise to iinc
 ;; TODO specialise to neg if (- 0 x)
@@ -374,6 +380,7 @@ JLS:
   (assert (#{:enum :int} mode))
   (emit-ast-node ctx test)
   (let [case-labels (mapv (fn [_] (Label.)) cases)
+        key->label #(nth case-labels (get keymap %))
         fb-label (Label.)
         end-label (Label.)
         ncases (count keymap)
@@ -401,20 +408,20 @@ JLS:
     (if table-switch?
       (-emitTableSwitch ctx min-n max-n fb-label
         (if (= :enum mode)
-          case-labels
-          (loop-zip [k ^Iterable case-keys
-                     label ^Iterable case-labels]
+          (mapv key->label case-keys)
+          (loop-zip [k ^Iterable case-keys]
             [i (first case-keys)
              labels []]
-            (recur
-              (inc k)
-              (conj (into labels (mapv (constantly fb-label) (range i k)))
-                label))
+            (let [label (key->label k)]
+              (recur
+                (inc k)
+                (conj (into labels (mapv (constantly fb-label) (range i k)))
+                  label)))
             labels)))
       (-emitLookupSwitch ctx fb-label (if (= :enum mode)
                                         (range min-n (inc max-n))
                                         case-keys)
-        case-labels))
+        (mapv key->label case-keys)))
     (doseq [[label c] (map vector case-labels cases)]
       (-emitLabel ctx label)
       (emit-ast-node ctx c)
@@ -463,14 +470,14 @@ JLS:
         try-end (Label.)
         done-label (Label.)
         [catchall? catches]
-        (reduce (fn [[catchall? catches] {:keys [classnames local-name] :as catch}]
+        (reduce (fn [[catchall? catches] {:keys [classnames local-id] :as catch}]
                   (let [label (Label.)]
                     (doseq [in (mapv type/classname->type classnames)]
                       (-emitTryCatch ctx start-label try-end label in))
                     [(or catchall? (boolean (some #{"java.lang.Throwable"} classnames)))
                      (conj catches
                        (assoc catch :label label
-                         :local-id local-name))]))
+                         :local-id local-id))]))
           [false []] catches)
         catch-finally-label (Label.)
         uncaught-finally (and (not catchall?) finally-body (Label.))
@@ -871,7 +878,7 @@ JLS:
   (-emitLoadLocal [_ id]
     (let [l (.get locals id)
           _ (when (nil? l)
-              (throw (ex-info (str "Can't load local: " id) {:locals locals})))
+              (throw (ex-info (str "Can't load local id: " id) {:locals locals})))
           ts (:type-sort l)
           _ (assert (some? ts))
           insn (type-sort->load-op ts)]
@@ -936,15 +943,15 @@ JLS:
     (or (.get jump-targets id)
       (throw (RuntimeException. (str "Could not find jump target " id))))))
 
-(defn new-mcctx [mv {:keys [param-types param-names instance? class-type]}]
+(defn new-mcctx [mv {:keys [param-types param-ids instance? class-type]}]
   (assert (some? class-type))
   (assert (if instance?
-            (= (count param-types) (dec (count param-names)))
-            (= (count param-types) (count param-names)))
-    [(vec param-types) (vec param-names)])
+            (= (count param-types) (dec (count param-ids)))
+            (= (count param-types) (count param-ids)))
+    [(vec param-types) (vec param-ids)])
   (let [local-map (java.util.HashMap.)
         _ (when instance?
-            (.put local-map (first param-names) {:type-sort Type/OBJECT :idx 0}))
+            (.put local-map (first param-ids) {:type-sort Type/OBJECT :idx 0}))
         [nslots _]
         (reduce (fn [[nslots idx] [name p]]
                   (let [sort (.getSort p)
@@ -955,7 +962,7 @@ JLS:
                     (.put local-map name {:type-sort sort :idx nslots})
                     [nslots' nil]))
           (if instance? [1 1] [0 0])
-          (map vector (if instance? (drop 1 param-names) param-names) param-types))]
+          (map vector (if instance? (drop 1 param-ids) param-ids) param-types))]
     (->MethodCompilerCtx mv class-type
       local-map
       (java.util.TreeSet.) nslots
@@ -1049,7 +1056,7 @@ JLS:
     (if body
       (let [ctx (new-mcctx mv
                   {:class-type class-type :instance? true
-                   :param-names (into [self-bindname] (map :name) fields)
+                   :param-ids (into [self-bindname] (map :name) fields)
                    :param-types (mapv :type fields)})]
         (emit-ast-node ctx body)
         (emit-discard-return ctx body)
@@ -1066,6 +1073,14 @@ JLS:
         (.visitMaxs mv 1 (inc (count fields)))))
     (.visitEnd mv)))
 
+(defn cl-define-class [classloader classname ba]
+  (if (instance? clojure.lang.DynamicClassLoader classloader)
+    (.defineClass classloader classname
+      ba nil)
+    (.defineClassFromBytes classloader classname ba)))
+
+(def *stub-classloader-ctor (atom #(clojure.lang.RT/makeClassLoader)))
+
 ;; ideally override getCommonClass, for now create stub for reflection
 (defn create-stub-class [{:keys [interfaces flags super classname]}]
   (let [ciname (.replace classname \. \/)
@@ -1075,9 +1090,8 @@ JLS:
                     ciname nil super-in
                     (when (seq interfaces)
                       (into-array String (map #(.replace % \. \/) interfaces)))))
-        cl (clojure.lang.RT/makeClassLoader)]
-    (.defineClass cl
-      classname (.toByteArray cv-stub) nil)
+        cl (@*stub-classloader-ctor)]
+    (cl-define-class cl classname (.toByteArray cv-stub))
     (Class/forName classname true cl)))
 
 (defn classinfo->bytes
@@ -1113,7 +1127,7 @@ JLS:
                  (.getDescriptor (as-impl-type env type))
                  nil nil)]))
     ;; METHODS
-    (doseq [{:keys [name body ret-classname param-names param-classnames
+    (doseq [{:keys [name body ret-classname param-ids param-classnames
                     flags]} (into instance-methods (map #(update % :flags conj :static))
                               class-methods)]
       (let [param-types (into-array Type
@@ -1129,7 +1143,7 @@ JLS:
           (let [ctx (new-mcctx mv
                       {:class-type class-type
                        :instance? (not (contains? flags :static))
-                       :param-names param-names
+                       :param-ids param-ids
                        :param-types param-types})]
             (emit-ast-node ctx body)
             (.visitInsn mv (type-sort->return-op (.getSort ret-type)))
@@ -1145,7 +1159,7 @@ JLS:
                 nil (into-array String ["java/lang/Exception"]))
            ctx (new-mcctx mv
                  {:class-type class-type :instance? false
-                  :param-names [] :param-types []})]
+                  :param-ids [] :param-types []})]
        (doseq [{:keys [val name type]} field-inits]
          (emit-ast-node ctx val)
          (-emitFieldInsn ctx :putstatic (Type/getObjectType ciname) name type))
@@ -1153,7 +1167,7 @@ JLS:
        (.visitMaxs mv -1 -1)
        (.visitEnd mv)))
     ;; CONSTRUCTOR
-    (doseq [{:keys [param-classnames param-names auto body flags] :as ctor} constructors]
+    (doseq [{:keys [param-classnames param-ids auto body flags] :as ctor} constructors]
       (if auto ;; TODO ctor
         (visit-positional-ctor env cv super-in class-type instance-fields
           (first param-classnames) body)
@@ -1167,7 +1181,7 @@ JLS:
                    nil nil)
               ctx (new-mcctx mv
                     {:class-type class-type :instance? true
-                     :param-names param-names
+                     :param-ids param-ids
                      :param-types param-types})]
           (when (= super-in "java/lang/Object")
             (.visitVarInsn mv Opcodes/ALOAD 0)
@@ -1266,8 +1280,9 @@ JLS:
                      (throw (ex-cause e))))
          eval-class
          (try (if classloader
-                (do (.defineClass classloader classname
-                      eval-ba nil)
+                (do
+                  #_(.defineClass (or lookup (MethodHandles/lookup)) eval-ba)
+                  (cl-define-class classloader classname eval-ba)
                   (Class/forName classname true classloader))
                 (.lookupClass
                   (.defineHiddenClass lookup eval-ba
@@ -1281,12 +1296,12 @@ JLS:
                                 (vals new-classes))]
      
      (doseq [[name bytes] new-compiled-classes]
-       (let [cl (or classloader #_(clojure.lang.RT/makeClassLoader)
+       (let [cl (or classloader
                   (clojure.lang.DynamicClassLoader.
                     (ClassLoader/getSystemClassLoader)))]
          (when-not (.startsWith name "_")
            (writeout name bytes))
-         (.defineClass cl name bytes nil)
+         (cl-define-class cl name bytes)
          ;; Force initialise the class with the defining loader
          (Class/forName name true cl)))
      

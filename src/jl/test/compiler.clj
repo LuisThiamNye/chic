@@ -1,5 +1,8 @@
 (ns jl.test.compiler
   (:require
+    [jl.kickstart :as kickstart]
+    [jl.test.util :as test.util :refer [with-test-deps]]
+    [clojure.test :refer [deftest is testing] :as test]
     [jl.compiler.core :as compiler]
     [jl.compiler.analyser :as ana]
     [jl.interop :as interop]))
@@ -17,8 +20,9 @@
     (ana/inject-default-env ast)))
 
 (defn eval-ast-node [ast]
-  (try (compiler/eval-ast (analyse-ast-node ast))
-    (catch Throwable e (.printStackTrace e) :ERROR)))
+  (try (compiler/eval-ast {:classloader (kickstart/new-dcl)}
+         (kickstart/analyse-node {} ast))
+    #_(catch Throwable e (.printStackTrace e) :ERROR)))
 
 (defn eval-str [s]
   (eval-ast-node (first (ana/str->ast s))))
@@ -29,54 +33,81 @@
       (do (load-samples) (get samples n))
       (throw (ex-info "Sample not found" {:name n})))))
 
-(= [] (ana/str->ast "#_#_(+) (-)"))
-(= [] (ana/str->ast "#_(+ 1 #_2)"))
+;; Tests
 
-(eval-str "(= 10 \\newline)")
+(deftest test-discard
+  (is (= [] (ana/str->ast "#_#_(+) (-)")))
+  (is (= [] (ana/str->ast "#_(+ 1 #_2)"))))
 
-(= 2 (count (:children(:tag(:node/meta (first (ana/str->ast "^a ^b x")))))))
+(deftest test-metadata
+  (is (= 2 (count (:children(:tag(:node/meta (first (ana/str->ast "^a ^b x")))))))))
 
-(= 3 (eval-str "(+ 1 2)"))
-(= 7 (eval-str "(do (l= x 4) (+ x 3))"))
+(deftest test-arithmetic
+  (is (= 3 (eval-str "(+ 1 2)"))))
 
-(= 568995840 (eval-sample "euler-8"))
+(deftest test-let
+  (is (= 3 (eval-str "(let x 1 y 2 (+ x y))")))
+  (is (nil? (eval-str "(let)")))
+  (is (= 3 (eval-str "(let x 1 y (+ x 2))"))))
 
-(= 1 (eval-str "(loop [i 1] i)"))
-(= 6 (eval-str "(loop [i 0] (if (<= i 5) (recur (inc i)) i))"))
-(true? (eval-sample "adjacent-loop-recur"))
-(true? (eval-sample "closest-loop-recur"))
+(deftest test-imperative-local-bind
+  (is (= 3 (eval-str "(do (=: x \"x\") (=: x 2) (+ x 1))")))
+  (is (= 1 (eval-str "(do (=: x 1) (let x 2 nil) x)")))
+  (is (= 1 (eval-str "(=: x 1)")))
+  (is (eval-str "(and (=: x true) x)"))
+  ;; context - expressions and statements
+  (is (eval-str "(do (< 2 (=: x 1)) true)"))
+  (is (eval-str "(do (if (= 1 (=: x 1)) (set! x 2) nil) true)")))
 
-(true? (eval-sample "exception-catch"))
-(true? (eval-sample "exception-catch-union"))
-(true? (eval-sample "exception-catch-nested-rethrow"))
-(true? (eval-sample "exception-catch-order"))
-(true? (eval-sample "exception-finally"))
-(true? (eval-sample "exception-catch-finally"))
+(deftest test-and
+  (is (true? (eval-str "(and true)")))
+  (is (false? (eval-str "(and true false)")))
+  (is (true? (eval-str "(and true true)"))))
 
-(true? (eval-sample "loop-recur-across-try"))
-(true? (eval-sample "loop-recur-across-catch"))
-(try (eval-sample "loop-recur-across-finally") false
-  (catch RuntimeException _ true))
-(true? (eval-sample "loop-recur-within-finally"))
+; (= 568995840 (eval-sample "euler-8"))
 
-(nil? (eval-sample "hello-world"))
+;(nil? (eval-sample "hello-world"))
 
-(instance? Exception (eval-str "(nw java.lang.Exception \"hello\")"))
+(deftest test-loop
+  (is (= 1 (eval-str "(loop [i 1] i)")))
+  (is (= 6 (eval-str "(loop [i 0] (if (<= i 5) (recur (inc i)) i))")))
+  (is (true? (eval-sample "adjacent-loop-recur")))
+  (is (true? (eval-sample "closest-loop-recur"))))
 
-(= "[Ljava.lang.String;"
-  (.getName (class (eval-str "(na java.lang.String 0)"))))
-(= "[S"(.getName (class (eval-str "(na short 0)"))))
+(deftest test-trycatch
+  (is (true? (eval-sample "exception-catch")))
+  (is (true? (eval-sample "exception-catch-union")))
+  (is (true? (eval-sample "exception-catch-nested-rethrow")))
+  (is (true? (eval-sample "exception-catch-order")))
+  (is (true? (eval-sample "exception-finally")))
+  (is (true? (eval-sample "exception-catch-finally"))))
 
-(java.util.Arrays/equals (short-array [5])
-  (eval-str "(do (l= a (na short 1)) (sa a 0 5) a)"))
-(= 5 (eval-str "(do (l= a (na short 1)) (sa a 0 5) (aa a 0))"))
+(deftest test-loop-trycatch
+  (is (true? (eval-sample "loop-recur-across-try")))
+  (is (true? (eval-sample "loop-recur-across-catch")))
+  (is (true? (try (eval-sample "loop-recur-across-finally") false
+               (catch RuntimeException _ true))))
+  (is (true? (eval-sample "loop-recur-within-finally")))
+  (is (instance? Exception (eval-str "(nw java.lang.Exception \"hello\")"))))
 
+
+(deftest test-arrays
+  (is (= "[Ljava.lang.String;"
+    (.getName (class (eval-str "(na java.lang.String 0)")))))
+  (is (= "[S"(.getName (class (eval-str "(na short 0)")))))
+
+  (is (true? (java.util.Arrays/equals (short-array [5])
+               (eval-str "(do (=: a (na short 1)) (sa a 0 5) a)"))))
+  (is (= 5 (eval-str "(do (=: a (na short 1)) (sa a 0 5) (aa a 0))"))))
+
+#_
 (let [cl (clojure.lang.RT/makeClassLoader)]
   (-> (ana/str->ast "(defclass repl.Tmp)")
     first (ana/-analyse-node)
     (->> (compiler/eval-ast cl)))
   (identical? cl (.getClassLoader (Class/forName "repl.Tmp"))))
 
+#_
 (let [cl (clojure.lang.RT/makeClassLoader)]
   (-> (ana/str->ast "
 (defclass repl.Tmp
@@ -106,125 +137,112 @@
         (:parameter-types (first (get fs 'repl.Tmp))))
       (= 1 (.run obj)))))
 
-(= "sq.lang.Keyword"
-  (.getName (class (eval-str ":x"))))
+(deftest test-case-int
+  ;; tableswitch
+  (is (true? (eval-str "(case 2 1 false 2 true 3 false false)")))
+  (is (true? (eval-str "(case 2 1 false 2 true 5 false false)")))
+  ;; tableswitch fail
+  (is (true? (eval-str "(case 0 1 false 2 false 3 false true)")))
+  ;; lookupswitch
+  (is (true? (eval-str "(case 2 1 false 2 true false)")))
+  (is (true? (eval-str "(case 20 1 false 20 true false)")))
+  ;; lookupswitch fail
+  (is (true? (eval-str "(case 3 1 false 2 false true)"))))
 
-(identical? io.lacuna.bifurcan.Map/EMPTY
-  (eval-str "{}"))
+(deftest test-reify
+  (is (= Object (.getSuperclass (class (eval-str "(reify Object)")))))
+  (is (= "string" (str (eval-str "(reify Object (toString [_] \"string\"))"))))
+  (let [o (eval-str "(reify java.util.function.Supplier (get ^Object [_] \"x\"))")]
+    (is (instance? java.util.function.Supplier o))
+    (is (= "x" (str (.get o)))))
 
-(= "{:x v}" (str (eval-str "{:x \"v\"}")))
-(contains? #{"{:x v, :y v}" "{:y v, :x v}"}
-  (str (eval-str "{:x \"v\" :y \"v\"}")))
+  (is (= "x" (str (.get
+                 (eval-str "
+(let x \"x\"
+  (reify java.util.function.Supplier
+    (get ^Object [_] x)))")))))
+  
+  (is (thrown? Exception (eval-str "
+(reify Object (egg [_]))"))))
 
-(identical? io.lacuna.bifurcan.List/EMPTY
-  (eval-str "[]"))
+(deftest test-keyword
+  (is (= "sq.lang.Keyword"
+        (.getName (class (eval-str ":x"))))))
 
-(= "[:x, v]" (str (eval-str "[:x \"v\"]")))
+(deftest test-collection-literals
+  (with-test-deps [test-keyword]
+    (is (identical? io.lacuna.bifurcan.Map/EMPTY
+          (eval-str "{}")))
+  
+    (is (= "{:x v}" (str (eval-str "{:x \"v\"}"))))
+    (is (contains? #{"{:x v, :y v}" "{:y v, :x v}"}
+          (str (eval-str "{:x \"v\" :y \"v\"}"))))
+  
+    (is (identical? io.lacuna.bifurcan.List/EMPTY
+          (eval-str "[]")))
+  
+    (is (= "[:x, v]" (str (eval-str "[:x \"v\"]"))))
+  
+    (is (identical? io.lacuna.bifurcan.Set/EMPTY
+          (eval-str "#{}")))
+  
+    (is (contains? #{"{v, :x}" "{:x, v}"} (str (eval-str "#{:x \"v\"}"))))))
 
-(identical? io.lacuna.bifurcan.Set/EMPTY
-  (eval-str "#{}"))
+(deftest test-conversions
+  (testing "coercsions"
+    (is (= 1.0 (eval-str "(jc Double valueOf 1)")))
+    (is (= "x" (str (eval-str "(.nth [\"x\"] 0)")))))
+  (testing "boxing"
+    (is (some? (eval-str "[0]")))
+    (is (some? (eval-str "#{\\x}")))
+    (is (some? (eval-str "{1 true}"))))
+  (testing "unboxing"
+    (is (= 0 (eval-str "(jc Integer valueOf (jc Integer valueOf 0))")))
+    (is (true? (eval-str "(< 1. 2)")))
+    (is (= 2. (eval-str "(+ 1. 1)"))))
 
-(contains? #{"{v, :x}" "{:x, v}"} (str (eval-str "#{:x \"v\"}")))
+  (is (true? (eval-str "(= 10 \\newline)"))))
 
-;; tableswitch
-(= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
+(deftest test-case-enum
+  ;; tableswitch
+  (is (= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
 ARABIC 1
 GREEK 2
 LATIN 3
-4)"))
-
-(eval-str "(case 2 1 false 2 true 3 false false)")
-(eval-str "(case 2 1 false 2 true 5 false false)")
-
-;; tableswitch fail
-(= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
+4)")))
+  (testing "non-alphabetical order"
+    (is (= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
+  ARABIC 1
+  LATIN 3
+  GREEK 2
+  4)"))))
+  ;; tableswitch fail
+  (is (= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
 ARABIC 1
 GREEK 2
 LATIN 3
-4)"))
-
-(eval-str "(case 0 1 false 2 false 3 false true)")
-
-;; lookupswitch
-(= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
+4)")))
+  ;; lookupswitch
+  (is (= 2 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript :GREEK)
 GREEK 2
-4)"))
-
-(eval-str "(case 2 1 false 2 true false)")
-(eval-str "(case 20 1 false 20 true false)")
-
-;; lookupswitch fail
-(= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
+4)")))
+  ;; lookupswitch fail
+  (is (= 4 (eval-str "(case-enum (jf java.lang.Character$UnicodeScript HEBREW)
 GREEK 2
-4)"))
-
-(eval-str "(case 3 1 false 2 false true)")
-
-;; no match
-(true? (eval-str "(try (case-enum (jf java.lang.Character$UnicodeScript HEBREW))
-(catch java.lang.Error _ true))"))
-
-(= 3 (eval-str "(let x 1 y 2 (+ x y))"))
-(nil? (eval-str "(let)"))
-(= 3 (eval-str "(let x 1 y (+ x 2))"))
-
-(= Object (.getSuperclass (class (eval-str "(reify Object)"))))
-(= "string" (str (eval-str "(reify Object (toString [_] \"string\"))")))
-(let [o (eval-str "(reify java.util.function.Supplier (get ^Object [_] :x))")]
-  (and (instance? java.util.function.Supplier o)
-    (= ":x" (str (.get o)))))
-
-(= ":x" (str (.get
-  (eval-str "
-(let x :x
-(reify java.util.function.Supplier
-(get ^Object [_] x)))"))))
-
-(= :ERROR (eval-str "
-(reify Object (egg [_]))"))
-
-(true? (eval-str "(<- (if false false) (if true true) (if false false false))"))
-(eval-str "(defclass tmp.Tmp (defn f ^void [] (<- (if false nil) (let x true y x) x)))")
-
-(true? (eval-str "(and true)"))
-(false? (eval-str "(and true false)"))
-(true? (eval-str "(and true true)"))
-
-(= 3 (eval-str "(do (=: x :x) (=: x 2) (+ x 1))"))
-(= 1 (eval-str "(do (=: x 1) (let x 2 nil) x)"))
-
-(= 1 (eval-str "(=: x 1)"))
-(eval-str "(and (=: x true) x)")
-;; context - expressions and statements
-(eval-str "(do (< 2 (=: x 1)) true)")
-(eval-str "(do (if (= 1 (=: x 1)) (set! x 2) nil) true)")
-
-(eval-str "(do (if true 1 :x) true)")
-
-(true? (eval-str "(do (case-enum (jf java.lang.Character$UnicodeScript HEBREW)
-GREEK (jc Math min 1 2)
-nil) true)"))
-
-;; coercions
-(eval-str "(jc Double valueOf 1)")
-(= ":x" (str (eval-str "(.nth [:x] 0)")))
-;; boxing
-(eval-str "[0]")
-(eval-str "#{\\x}")
-(eval-str "{1 true}")
-;; unboxing
-(= 0 (eval-str "(jc Integer valueOf (jc Integer valueOf 0))"))
-
-(eval-str "(< 1. 2)")
-(= 2. (eval-str "(+ 1. 1)"))
-
-(eval-str "(- (jc System currentTimeMillis)
-             (+ 1 (jc System currentTimeMillis)))")
-
+4)")))
+  ;; no match
+  (true? (eval-str "(try (case-enum (jf java.lang.Character$UnicodeScript HEBREW))
+(catch java.lang.Error _ true))")))
 
 ;; TODO
 ; (eval-str "(when (not (or false (=: x true))) x)")
 ; (eval-str "(when (and (=: x true)) x)")
+
+(comment
+  (test.util/run-tests *ns*)
+  
+  (test/run-test test-keyword)
+  )
 
 (comment
   (defn --cleanast [ast]
@@ -311,5 +329,3 @@ nil) true)"))
   ;; TODO use Constable interface for constant folding & propagation using ConstantDynamic
   ;; TODO use ClassValue for dynamic method dispatch
   )
-
-

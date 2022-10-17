@@ -10,9 +10,21 @@
     [io.github.humbleui.core :as hui]
     [io.github.humbleui.core :as core])
   (:import
+    (clojure.lang DynamicClassLoader)
     (java.util.concurrent ConcurrentHashMap)
     (org.objectweb.asm ClassWriter Opcodes)
     (java.lang.invoke MethodHandles MethodHandle MethodHandles$Lookup)))
+
+(defmacro with-thread-classloader [cl & body]
+  `(let [th# (Thread/currentThread)
+         cl# ~cl
+         pcl# (.getContextClassLoader th#)]
+     (with-bindings {clojure.lang.Compiler/LOADER cl#}
+       (try
+         (.setContextClassLoader th# cl#)
+         ~@body
+         (finally
+           (.setContextClassLoader th# pcl#))))))
 
 (defn reflect-find-field* [fld flds]
   (reduce (fn [_ ^java.lang.reflect.Field f]
@@ -80,6 +92,7 @@
     "sq.lang.DynConstructorCallSite"
     "sq.lang.EnumSwitchMapCallSite"
     "sq.lang.i.MethodHandleFinderLk"
+    "sq.lang.dev.MethodHandleFinderLk"
     "sq.lang.DynGetFieldCallSite"
     "sq.lang.DynSetFieldCallSite"]
    
@@ -174,6 +187,19 @@
             contents (slurp filename)]
         (ana/str->ast contents)))))
 
+(defn analyse-node [{:keys [class-aliases]} node]
+  (ana/-analyse-node
+    (update (ana/inject-default-env node)
+      :node/env
+      (fn [env]
+        (-> env
+          (update :class-aliases into class-aliases)
+          (assoc :class-resolver
+            (fn [classname]
+              (or (.get *meta-classes classname)
+                (try (find-class classname)
+                  (catch ClassNotFoundException _))))))))))
+
 (defn analyse-defclass-node [opts clsname]
   (let [asts (get-file-asts (classname->file clsname))
         [dc-node class-aliases]
@@ -203,26 +229,21 @@
                                            (map #(vector % (expand (str pkg "." %))) names))))
                                args)]
                         :else acc))))
-          [nil (into (cond-> {} (:hidden? opts)
-                       (assoc clsname
-                         (str "_." (.replace clsname \. \,))))
-                 (map (fn [classname]
-                        [(.replace (.replace classname \, \.) "_." "")
-                         classname]))
-                 (keys *meta-classes))]
+          [nil (-> {}
+                 (into
+                   (keep (fn [classname]
+                           (let [unhidden-classname
+                                 (.replace (.replace classname \, \.) "_." "")]
+                             (when (not= clsname unhidden-classname)
+                               [unhidden-classname
+                                classname]))))
+                   (keys *meta-classes))
+                 (cond-> (:hidden? opts)
+                   (assoc clsname
+                     (str "_." (.replace clsname \. \,)))))]
           asts)]
     (assert (some? dc-node) "defclass form not found")
-    (ana/-analyse-node
-      (update (ana/inject-default-env dc-node)
-        :node/env
-        (fn [env]
-          (-> env
-            (update :class-aliases into class-aliases)
-            (assoc :class-resolver
-              (fn [classname]
-                (or (.get *meta-classes classname)
-                  (try (find-class classname)
-                    (catch ClassNotFoundException _)))))))))))
+    (analyse-node {:class-aliases class-aliases} dc-node)))
 
 (def ^java.util.WeakHashMap classloader-lookups (java.util.WeakHashMap.))
 
@@ -247,39 +268,70 @@
     (get-classloader-lookup (.getClassLoader cls)
       (str (.getName (.getPackage cls)) ".(LookupInit)"))))
 
+(def *dcl-ctor (atom nil))
+
+(defn remove-dcl! []
+  (reset! compiler/*stub-classloader-ctor #(clojure.lang.RT/makeClassLoader))
+  (reset! *dcl-ctor nil))
+
+(defn reset-dcl-ctor! []
+  (let [ctor (first (.getConstructors (cof "sq.lang.DynamicClassLoader")))]
+    (reset! compiler/*stub-classloader-ctor
+      #(.newInstance ctor (object-array [(.getContextClassLoader (Thread/currentThread))])))
+    (reset! *dcl-ctor ctor)))
+
+(defn new-dcl []
+  (if-some [ctor @*dcl-ctor]
+    (.newInstance ctor
+      (object-array [(.getContextClassLoader (Thread/currentThread))]))
+    (throw (throw (ClassNotFoundException. "sq.lang.DynamicClassLoader")))))
+
 (def *current-hidden-class-loader (atom nil))
 
-(defn refresh-hidden-class-loader! []
-  (locking classloader-lookups
-    (let [classname "_.LookupInit"
-          ba (compiler/ir->eval-bytes
-               {:classname classname}
-               (ana/-analyse-node
-                 (ana/inject-default-env
-                   (first
-                     (ana/str->ast "
-(jc java.lang.invoke.MethodHandles lookup)")))
-                 ))
-          cl (clojure.lang.RT/makeClassLoader)
-          cls (.defineClass cl classname ba nil)]
-      (.put classloader-lookups cl (rcall cls 'run))
-      (reset! *current-hidden-class-loader cl))))
+(defn refresh-hidden-class-loader!
+  ([] (refresh-hidden-class-loader! (new-dcl)))
+  ([cl]
+   (locking classloader-lookups
+     (let [classname "_.LookupInit"
+           ba (compiler/ir->eval-bytes
+                {:classname classname}
+                (ana/-analyse-node
+                  (ana/inject-default-env
+                    (first
+                      (ana/str->ast "
+(jc java.lang.invoke.MethodHandles lookup)")))))
+           cls (if (instance? DynamicClassLoader cl)
+                 (.defineClass ^DynamicClassLoader cl classname ba nil)
+                 (.defineClassFromBytes cl classname ba))]
+       (.put classloader-lookups cl (rcall cls 'run))
+       (reset! *current-hidden-class-loader cl)))))
 
-(refresh-hidden-class-loader!)
+(refresh-hidden-class-loader! (clojure.lang.RT/makeClassLoader))
 
 (defn get-hidden-class-host-lookup []
   (.get classloader-lookups @*current-hidden-class-loader))
 
 (defn load-class [clsname]
   (try (when-some [cold (try (find-class clsname)
-                              (catch Throwable _))]
+                          (catch Throwable _))]
              (uninstall-class cold))
       (let [ir (analyse-defclass-node {} clsname)
-            ret (compiler/eval-ast ir)
+            classloader (try (new-dcl)
+                          (catch ClassNotFoundException _ nil))
+            ret (compiler/eval-ast
+                  {:classloader classloader}
+                  ir)
             mc (get-in ir [:node/env :new-classes clsname :class])]
-        (assert (some? mc))
-        (refresh-hidden-class-loader!)
-        (.put *meta-classes clsname (assoc mc :impl-class (find-class clsname)))
+        (assert (some? mc)
+          {:new-classes (keys (:new-classes (:node/env ir)))})
+        (refresh-hidden-class-loader!
+          (try (new-dcl)
+            (catch ClassNotFoundException _
+              (clojure.lang.RT/makeClassLoader))))
+        (.put *meta-classes clsname (assoc mc :impl-class
+                                      (if classloader
+                                        (.loadClass classloader clsname false)
+                                        (find-class clsname))))
         ret)
       (catch Throwable e (.printStackTrace e) :error)))
 
@@ -291,14 +343,17 @@
     (java.lang.invoke.SwitchPoint/invalidateAll
       (into-array java.lang.invoke.SwitchPoint [sw]))))
 
+(defn find-sq-class [classname]
+  (or (find-hidden-class classname)
+    (find-class classname)))
+
 (defn load-hidden-as [host clsname]
-  (try (when-some [c (try (or (find-hidden-class clsname)
-                             (find-class clsname))
+  (try (when-some [c (try (find-sq-class clsname)
                         (catch Exception _))]
          (uninstall-class c)
          (.remove *meta-classes clsname))
       (let [lookup (if host
-                     (get-class-lookup (find-class host))
+                     (get-class-lookup (find-sq-class host))
                      (get-hidden-class-host-lookup))
             ir (analyse-defclass-node
                  {:hidden? (not host)}
@@ -319,7 +374,15 @@
   (load-hidden-as nil classname))
 
 (defn get-globalchm []
-  (rfield (find-class "sq.lang.GlobalCHM") 'map))
+  (rfield (find-sq-class "sq.lang.GlobalCHM") 'map))
+
+(defn find-cached-class [classname]
+  (find-hidden-class classname))
+
+(def cachedClassFinder
+  (reify java.util.function.Function
+    (apply [_ classname]
+      (find-cached-class classname))))
 
 (defn find-class-lk [lk classname]
   (or (when-some [h(find-hidden-class classname)]
@@ -380,23 +443,31 @@
                         :lookup-class lookup-class})))))]
     (.unreflect lk method)))
 
-(load-class "sq.lang.i.MethodHandleFinderLk")
+(defn eval-with-dcl [expr]
+  (with-thread-classloader (new-dcl)
+    (clojure.lang.Compiler/eval expr))
+  )
 
-(def methodHandleFinderLk
-  (reify sq.lang.i.MethodHandleFinderLk
-    (apply [_ lk target-cn static? method-name param-cns]
-      (find-method-handle-lk lk target-cn static? method-name param-cns))))
+(defmacro evl [& body]
+ (let [expr `(do ~@body)]
+   `(eval-with-dcl ~expr)))
 
 (comment
+  (remove-dcl!)
   (load-class "sq.lang.InternalDataContainer")
-  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+  (.put (rfield (find-sq-class "sq.lang.InternalDataContainer") 'map)
     "classFinderLk" classFinderLk)
-  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
-    "methodHandleFinderLk" methodHandleFinderLk)
-  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
+  (.put (rfield (find-sq-class "sq.lang.InternalDataContainer") 'map)
     "dynclsSwitchPoint" (java.lang.invoke.SwitchPoint.))
-  (.put (rfield (find-class "sq.lang.InternalDataContainer") 'map)
-    "clsCache" (ConcurrentHashMap.))
+  (.put (rfield (find-sq-class "sq.lang.InternalDataContainer") 'map)
+    "cachedClassFinder" cachedClassFinder)
+  
+  (load-class "sq.lang.LoadedClassLookup")
+  (load-class "sq.lang.DynamicClassLoader")
+  (reset-dcl-ctor!)
+  (refresh-hidden-class-loader!)
+  
+  (find-class "sq.lang.LoadedClassLookup")
   
   (load-class "sq.lang.util.TrimRefValueMapLoopRunner")
   (load-class "sq.lang.util.SilentThreadUncaughtExceptionHandler")
@@ -409,6 +480,12 @@
   (load-hidden "sq.lang.util.EmptyCharacterIterator")
   (load-hidden "sq.lang.util.RopeUtil")
   (load-hidden "sq.lang.util.IteratorIterable")
+
+  (load-class "sq.lang.i.MethodHandleFinderLk")
+  (load-class "sq.lang.dev.MethodHandleFinderLk")
+  
+  (.put (rfield (find-sq-class "sq.lang.InternalDataContainer") 'map)
+    "methodHandleFinderLk" (rfield (cof "sq.lang.dev.MethodHandleFinderLk") 'INSTANCE))
   
   (load-class "sq.lang.DynClassMethodCallSite")
   (load-class "sq.lang.DynInstanceMethodCallSite")
@@ -467,12 +544,9 @@
   
   (load-hidden "chic.sqeditor.UiRoot")
   (load-hidden "chic.sqeditor.Window")
-  
-  (io.github.humbleui.skija.Typeface/makeFromName
-    "Input SansCondensed" io.github.humbleui.skija.FontStyle/NORMAL)
 
   (chic.windows/dosendui
-    (try (rcall (cof "chic.sqeditor.Window") 'spawn)
+    (try (do (rcall (cof "chic.sqeditor.Window") 'spawn))
       (catch Throwable e
         (.printStackTrace e))))
   

@@ -157,3 +157,6 @@
   (App/start (fn []))
   )
 
+(comment
+  (chic.windows/dosendui (make-main-window)))
+

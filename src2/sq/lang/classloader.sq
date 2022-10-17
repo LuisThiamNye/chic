@@ -18,27 +18,34 @@ For initialising classes:
 
 (defclass sq.lang.LoadedClassLookup
   ;; string->weakref<class>
-  (def ^:priv class-cache
-    (ct ConcurrentHashMap
-      (.get (jf InternalDataContainer map) "clsCache")))
-  (def ^:priv refqueue (nw java.lang.ref.ReferenceQueue))
-  (def ^:priv rqthread
-    (ji (ji (jc java.lang.Thread ofVirtual)
-          uncaughtExceptionHandler
-          (jf sq.lang.util.SilentThreadUncaughtExceptionHandler :instance))
-      start
-      (nw sq.lang.util.TrimRefValueMapLoopRunner
-        refqueue class-cache)))
+  ; (def ^:priv class-cache
+  ;   (ct ConcurrentHashMap
+  ;     (.get (jf InternalDataContainer map) "clsCache")))
+  ; (def ^:priv refqueue (nw java.lang.ref.ReferenceQueue))
+  ; (def ^:priv rqthread
+  ;   (ji (ji (jc java.lang.Thread ofVirtual)
+  ;         uncaughtExceptionHandler
+  ;         (jf sq.lang.util.SilentThreadUncaughtExceptionHandler :instance))
+  ;     start
+  ;     (nw sq.lang.util.TrimRefValueMapLoopRunner
+  ;       refqueue class-cache)))
 
-  (uninstall []
-    (ji rqthread interrupt))
+  ; (uninstall []
+  ;   (ji rqthread interrupt))
+  
+  (def ^:priv class-finder
+    (ct java.util.function.Function
+      (.get (jf sq.lang.InternalDataContainer :map)
+        "cachedClassFinder")))
   
   (defn find ^Class [^String name]
-    (ct Class (.get (ct java.lang.ref.WeakReference
-                      (.get class-cache name)))))
+    (ct Class (.apply class-finder name))
+    #_(let ref (.get class-cache name)
+      (when (not (nil? ref))
+        (ct Class (.get (ct java.lang.ref.WeakReference ref))))))
   
-  (defn add ^void [^String name ^Class class]
-    (.put class-cache name class))
+  ; (defn add ^void [^String name ^Class class]
+  ;   (.put class-cache name class))
   )
 
 (defclass sq.lang.OnceInitialisingClassLoader
@@ -70,20 +77,25 @@ For initialising classes:
   (init [_ ^ClassLoader parent]
     (init-super parent))
   
+  (defi defineClassFromBytes ^Class [self ^String name ^"[B" ba]
+    (.defineClass self name ba 0 (alength ba)))
+  
   (defi findClass ^Class [self ^String name]
     (let c (jc LoadedClassLookup find name)
       (if (nil? c)
-        (.findClass ^Super self name)
+        (^Super .findClass self name)
         c)))
   
   (defi loadClass ^Class [self ^String name ^boolean resolve]
-    ;; do not permit initialisation of classes in this loader
-    (let c (jc LoadedClassLookup find name)
-      (if (nil? c)
-        (.loadClass (.getParent self) name resolve)
-        (do (when resolve
-              (.resolveClass (.getParent self) c))
-          c))))
+    (=: c (.findLoadedClass self name))
+    (when (nil? c)
+      (set! c (jc LoadedClassLookup find name))
+      (when (nil? c)
+        (set! c (^Super .loadClass self name false))))
+        
+    (when resolve
+      (.resolveClass self c))
+    c)
   )
 
   "

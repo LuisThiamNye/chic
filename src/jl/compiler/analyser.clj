@@ -288,6 +288,10 @@
                    (:children symvec))]
       (analyse-body {:node/locals locals} (subvec children 2)))))
 
+(defn make-local-info [name init-spec]
+  {:spec init-spec
+   :id (str (gensym name))})
+
 (defn anasf-introduce-local [{:keys [children node/env] :as node}]
   (assert (<= 3 (count children)))
   (let [nam (:string (nth children 1))
@@ -304,8 +308,8 @@
      :val init
      :statement? statement?
      :node/env (:node/env init)
-     :node/locals (assoc-in (:node/locals init) [nam :spec]
-                    init-spec)}))
+     :node/locals (assoc (:node/locals init) nam
+                    (make-local-info nam init-spec))}))
 
 (defn anasf-let [{:keys [children] :as node}]
   (if (= 1 (count children))
@@ -316,25 +320,25 @@
           [pairs tail] (if tail [pairs tail]
                          [(do (assert (= :symbol (:node/kind (first (peek pairs)))))
                             (pop pairs)) (peek (peek pairs))])
-          assigns (reduce
-                    (fn [acc [sym val]]
-                      (assert (= :symbol (:node/kind sym)))
-                      (let [prev (or (peek acc) node)
-                            aval (analyse-expr prev val)
-                            nam (:string sym)]
-                        (conj acc
-                          (transfer-branch-env aval
-                            (if (spec/void? (:node/spec aval))
-                              aval
-                              {:node/kind :assign-local
-                               :local-name nam
-                               :val aval
-                               :statement? true
-                               :node/spec (spec/of-class "void")
-                               :node/locals (assoc (:node/locals aval) nam
-                                              {:spec (:node/spec aval)
-                                               :id (str (gensym nam))})})))))
-                    [] pairs)
+          assigns
+          (reduce
+            (fn [acc [sym val]]
+              (assert (= :symbol (:node/kind sym)))
+              (let [prev (or (peek acc) node)
+                    aval (analyse-expr prev val)
+                    nam (:string sym)]
+                (conj acc
+                  (transfer-branch-env aval
+                    (if (spec/void? (:node/spec aval))
+                      aval
+                      {:node/kind :assign-local
+                       :local-name nam
+                       :val aval
+                       :statement? true
+                       :node/spec (spec/of-class "void")
+                       :node/locals (assoc (:node/locals aval) nam
+                                      (make-local-info nam (:node/spec aval)))})))))
+            [] pairs)
           tail (analyse-after (or (peek assigns) node) tail)]
       (transfer-branch-env tail
         {:node/kind :do
@@ -373,10 +377,13 @@
       "false" (new-const-prim-node node false)
       nil)
     (when-some [local (get (:node/locals node) string)]
+      (assert (some? (:id local)) [string local])
       (transfer-branch-env node
         {:node/kind :local-use
          :node/spec (:spec local)
-         :local-name string}))
+         ; :local-name string
+         :local-id (:id local)
+         }))
     (when-some [local (get (:external-locals (:node/env node)) string)]
       (transfer-branch-env (update-in node [:node/env :captured-locals]
                              (fnil conj #{}) string)
