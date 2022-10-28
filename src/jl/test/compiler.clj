@@ -1,9 +1,7 @@
 (ns jl.test.compiler
   (:require
-    [jl.kickstart :as kickstart]
-    [jl.test.util :as test.util :refer [with-test-deps]]
+    [jl.test.util :as test.util :refer [with-test-deps eval-str]]
     [clojure.test :refer [deftest is testing] :as test]
-    [jl.compiler.core :as compiler]
     [jl.compiler.analyser :as ana]
     [jl.interop :as interop]))
 
@@ -15,20 +13,8 @@
       (partitionv 2 (ana/str->ast (slurp "src2/test/samples.sq"))))))
 (load-samples)
 
-(defn analyse-ast-node [ast]
-  (ana/-analyse-node
-    (ana/inject-default-env ast)))
-
-(defn eval-ast-node [ast]
-  (try (compiler/eval-ast {:classloader (kickstart/new-dcl)}
-         (kickstart/analyse-node {} ast))
-    #_(catch Throwable e (.printStackTrace e) :ERROR)))
-
-(defn eval-str [s]
-  (eval-ast-node (first (ana/str->ast s))))
-
 (defn eval-sample [n]
-  (eval-ast-node
+  (test.util/eval-ast-node
     (or ;(get samples n)
       (do (load-samples) (get samples n))
       (throw (ex-info "Sample not found" {:name n})))))
@@ -48,12 +34,17 @@
 (deftest test-let
   (is (= 3 (eval-str "(let x 1 y 2 (+ x y))")))
   (is (nil? (eval-str "(let)")))
-  (is (= 3 (eval-str "(let x 1 y (+ x 2))"))))
+  (is (= 3 (eval-str "(let x 1 y (+ x 2))")))
+  (testing "shadowing"
+    (is (true? (eval-str "(let x false x true x)")))
+    (is (true? (eval-str "(let x false (let x true x))")))))
 
 (deftest test-imperative-local-bind
   (is (= 3 (eval-str "(do (=: x \"x\") (=: x 2) (+ x 1))")))
   (is (= 1 (eval-str "(do (=: x 1) (let x 2 nil) x)")))
   (is (= 1 (eval-str "(=: x 1)")))
+  (testing "shadowing"
+    (eval-str "(do (=: x false) (=: x true) x)"))
   (is (eval-str "(and (=: x true) x)"))
   ;; context - expressions and statements
   (is (eval-str "(do (< 2 (=: x 1)) true)"))
@@ -71,8 +62,15 @@
 (deftest test-loop
   (is (= 1 (eval-str "(loop [i 1] i)")))
   (is (= 6 (eval-str "(loop [i 0] (if (<= i 5) (recur (inc i)) i))")))
+  (testing "shadowing"
+    (is (true? (eval-str "(let x false (loop [x true] x))"))))
   (is (true? (eval-sample "adjacent-loop-recur")))
   (is (true? (eval-sample "closest-loop-recur"))))
+
+(eval-str "(loop [o true x false]
+(if o (do (=: x false) (recur false true)) x))")
+(eval-str "(loop [o true x false]
+(if o (let x false (recur false true)) x))")
 
 (deftest test-trycatch
   (is (true? (eval-sample "exception-catch")))
@@ -195,7 +193,8 @@
   (testing "boxing"
     (is (some? (eval-str "[0]")))
     (is (some? (eval-str "#{\\x}")))
-    (is (some? (eval-str "{1 true}"))))
+    (is (some? (eval-str "{1 true}")))
+    (is (some? (eval-str "(nw java.lang.ref.SoftReference 5)"))))
   (testing "unboxing"
     (is (= 0 (eval-str "(jc Integer valueOf (jc Integer valueOf 0))")))
     (is (true? (eval-str "(< 1. 2)")))
@@ -238,10 +237,97 @@ GREEK 2
 ; (eval-str "(when (not (or false (=: x true))) x)")
 ; (eval-str "(when (and (=: x true)) x)")
 
+(deftest test-vararg-spreading
+  (is (= "1 2" (eval-str "(jc String format \"%s %s\" \"1\" \"2\")")))
+  (is (= "1" (eval-str "(jc String format \"%s\" \"1\")")))
+  (testing "empty vararg"
+    (is (some? (eval-str "(jc java.nio.file.Path of \".\")")))))
+
+(deftest test-casting
+  (is (= 5 (eval-str "(ct Object 5)")))
+  (is (= 5 (eval-str "(ct int (jc Integer valueOf 5))")))
+  (is (= 5 (eval-str "(ct int (ct Object 5))")))
+  (is (true? (eval-str "(= 5 (jc Integer valueOf 5))")))
+  (testing "return type conversion"
+    (is (some? (eval-str "(reify java.util.function.Supplier (get ^Object [_] 5))")))))
+
+(deftest test-type-unification
+  (is (= 2 (eval-str "(if false 1 2)")))
+  (is (= 2 (eval-str "(if false (jc Integer valueOf 1) 2)")))
+  (is (= 1 (eval-str "(if false (throw (nw Error)) 1)")))
+  (is (true? (eval-str "(do nil true)")))
+  (is (true? (eval-str "(do (if true nil nil) true)")))
+  (is (true? (eval-str "(if false nil (jc Boolean valueOf true))")))
+  (testing "return context + nil"
+    (is (nil? (.get (eval-str "(reify java.util.function.Supplier (get ^Object [_]
+       (if true nil nil)))"))))
+    (is (= 5 (.get (eval-str "(reify java.util.function.Supplier (get ^Object [_]
+       (if true 5 nil)))"))))
+    (is (any? (eval-str "(defclass tmp.Tmp (defn f ^String [] (if true \"\" nil)))"))))
+  (is (nil? (eval-str "(if true (.close (nw java.io.StringWriter))
+ (.close (nw java.io.StringWriter)))")))
+  (testing "void"
+    (is (true?(eval-str "(if true true
+     (.close (nw java.io.StringWriter)))"))))
+  (testing "jump"
+    (is (true? (eval-str "(loop [] (if false (recur) true))")))
+    (is (= "x" (eval-str "(loop [] (if false (recur) \"x\"))")))
+    (is (true? (eval-str "(and true (loop [] (if false (recur) true)))")))
+    (is (true? (eval-str "(loop [] (if false (if true (recur) (recur)) true))")))
+    (is (some? (eval-str "(reify java.lang.Runnable
+ (run ^void [_] (loopr [i []] [] (recur) nil)))")))))
+
+(deftest test-case-char
+  (is (true? (eval-str "(case \\x \\x true \\w false)")))
+  (is (true? (eval-str "(case 10 \\newline true false)")))
+  (is (true? (eval-str "(case (jc Character valueOf \\x) \\x true false)"))))
+
+(deftest test-loopr
+  (is (true? (eval-str "
+(loopr [x []]
+  [] false true)")))
+  (is (true? (eval-str "
+(loopr [x [1 2]]
+  [] true false)")))
+  (is (true? (eval-str "
+(loopr [x [1 2]]
+  [] (recur) true)")))
+  (is (= 2 (eval-str "
+(loopr [x [1 2]]
+  [i 0] (recur (inc i)) i)")))
+  (is (= 3 (eval-str "
+(loopr [x [1 2]]
+  [i 0] (recur (+ i (ct int x))) i)")))
+  (is (= 1 (eval-str "
+(loopr [x [1 2]]
+  [] x false)")))
+  (is (true? (eval-str "
+(do
+(loopr [x []] []
+ (recur)
+ true)
+true)")))
+  (is (nil? (eval-str "(loopr [i [1 2]] [] (recur))"))))
+
+(deftest test-method-selection
+  (is (some? (eval-str "(io.lacuna.bifurcan.List/from {})"))))
+
+(deftest test-arrow-macro
+  (is (= 3 (eval-str "(-> 0 (+ 1) (+ 2))"))))
+
 (comment
   (test.util/run-tests *ns*)
   
-  (test/run-test test-keyword)
+  (test/run-test test-type-unification)
+
+  
+  
+  
+  
+  
+
+  
+  
   )
 
 (comment
@@ -302,11 +388,6 @@ GREEK 2
   ;; possible to batch process with thread loop
   
   (System/gc)
-  
-  ;; TODO shadowing
-  
-  (let [o (Object.)]
-    [(.hashCode o) (.hashCode o)])
   
 ;; TODO something like zig's anytype
   

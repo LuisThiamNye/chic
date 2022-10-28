@@ -1,0 +1,12 @@
+
+(Refer-Classes
+  (clojure.lang Var Namespace Symbol))
+
+(defclass sq.clj.CljUtil
+  
+  (defn find-var [^String namespace ^String name]
+    (.findInternedVar
+        (jc clojure.lang.Namespace find
+          (jc clojure.lang.Symbol intern namespace))
+        (jc clojure.lang.Symbol intern name)))
+  )

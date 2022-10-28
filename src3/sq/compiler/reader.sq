@@ -1,3 +1,6 @@
+"
+sq/compiler/parser
+"
 
 (Refer-Classes
   (sq.compiler.reader

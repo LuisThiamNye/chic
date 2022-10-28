@@ -6,7 +6,8 @@
     [jl.interop :as interop]
     [jl.compiler.type :as type]
     [jl.compiler.op :as op]
-    [jl.compiler.spec :as spec])
+    [jl.compiler.spec :as spec]
+    [jl.compiler.core :as compiler])
   (:import
     (java.lang.invoke MethodHandles MethodHandles$Lookup$ClassOption MethodHandles$Lookup)
     (org.objectweb.asm ClassVisitor MethodVisitor Opcodes ClassWriter Type Label
@@ -202,15 +203,14 @@ JLS:
 (defn emit-do [ctx {:keys [children]}]
   (when-some [lc (peek children)]
     (run! (fn [c]
-            (emit-ast-node ctx c)
-            (emit-discard-return ctx c))
+            (emit-ast-node ctx c))
       (pop children))
     (emit-ast-node ctx lc)))
 
-(defn emit-assign-local [ctx {:keys [statement? local-name val] :as node}]
+(defn emit-assign-local [ctx {:keys [statement? local-name local-id val] :as node}]
   (let [prim (spec/prim? (:node/spec val))
         typ (if prim (keyword prim) :ref)
-        id (get-in node [:node/locals local-name :id])]
+        id (or local-id (get-in node [:node/locals local-name :id]))]
     (assert (some? id))
     (emit-ast-node ctx val)
     (-emitStoreLocal ctx typ id)
@@ -563,20 +563,41 @@ JLS:
       (-emitInsn ctx (classname->ary-store-insn classname)))))
 
 (defn emit-jcall
-  [ctx {:keys [classname target interface? method-name args method-type dynamic node/env]}]
+  [ctx {:keys [classname target interface? spread
+               method-name args method-type dynamic node/env]}]
   (let [classname (or classname (spec/get-exact-class (:node/spec target)))
         method-name (interop/munge-method-name method-name)
         ; sig (conj (mapv (comp type/classname->type spec/get-exact-class :node/spec) args)
         ;       (type/classname->type (spec/get-exact-class (:node/spec node))))
-        interface? (interop/-interface? (interop/resolve-class env classname))
+        target-class (interop/resolve-class env classname)
+        interface? (interop/-interface? target-class)
+        method-arg-types (.getArgumentTypes method-type)
         method-type' (Type/getMethodType
                       (as-impl-type env (.getReturnType method-type))
                       (into-array Type (into []
                                          (map (partial as-impl-type env)
-                                           (.getArgumentTypes method-type)))))]
+                                           method-arg-types))))]
     (when target (emit-ast-node ctx target))
-    (doseq [a args]
-      (emit-ast-node ctx a))
+    (doseq [i (range (if spread (dec (count method-arg-types)) (count args)))]
+      (let [a (nth args i)]
+        (emit-ast-node ctx a)))
+    (when spread
+      (let [last-type (last method-arg-types)
+            vartype (.getElementType last-type)
+            nfixed (dec (count method-arg-types))
+            ndims (.getDimensions last-type)
+            dims (mapv (fn [i] {:node/kind :const-prim :value (int i)})
+                   (into [(- (count args) nfixed)] (repeat (dec ndims) 0)))
+            items (drop nfixed args)]
+        (emit-new-array ctx
+         {:classname (type/get-classname vartype)
+          :ndims ndims
+          :dims dims
+          :items items})))
+    (when-not dynamic
+      (when (interop/dynamic-class? env target-class)
+        (throw (ex-info "attempted to link to dynamic class"
+                 {:class target-class}))))
     (if dynamic
       (-emitInvokeDynamic ctx method-name
         (if target
@@ -640,7 +661,8 @@ JLS:
           false)
         [classname (type/get-classname field-type)])
       (-emitFieldInsn ctx (if target :getfield :getstatic)
-        (type/obj-classname->type classname) field-name field-type))))
+        (type/obj-classname->type classname) field-name
+        (as-impl-type env field-type)))))
 
 (defn emit-set-field
   [ctx {:keys [field-name target classname ^Type field-type node/env val statement?]}]
@@ -649,7 +671,8 @@ JLS:
         dynamic-field (interop/dynamic-class? env
                         (interop/resolve-class env (type/get-classname field-type)))
         dynamic-target (interop/dynamic-class? env
-                        (interop/resolve-class env classname))]
+                        (interop/resolve-class env classname))
+        field-type' (as-impl-type env field-type)]
     (when target (emit-ast-node ctx target))
     (emit-ast-node ctx val)
     (when-not statement?
@@ -672,8 +695,8 @@ JLS:
             ")Ljava/lang/invoke/CallSite;")
           false)
         [classname (type/get-classname field-type)])
-      (-emitFieldInsn ctx (if target :getfield :getstatic)
-        (type/obj-classname->type classname) field-name field-type))))
+      (-emitFieldInsn ctx (if target :putfield :putstatic)
+        (type/obj-classname->type classname) field-name field-type'))))
 
 (defn emit-self-get-field [ctx {:keys [field-name node/spec node/env]}]
   (let [class-type (-selfType ctx)
@@ -733,7 +756,7 @@ JLS:
     (let [from-prim' (:from-prim node)
           from-prim (case from-prim' (:byte :char :short :boolean) :int from-prim')
           to-prim (keyword (type/get-classname type))]
-      (when-not (= from-prim' to-prim)
+      (when-not (or (nil? from-prim') (= from-prim' to-prim))
         (let [insn (match [from-prim to-prim]
                      [:int :byte] :i2b
                      [:int :char] :i2c
@@ -976,7 +999,10 @@ JLS:
     [:method side ciname method-name desc]
     (-emitInvokeMethod ctx (case side :instance :virtual :class :static)
       (Type/getObjectType ciname) false
-      method-name desc)))
+      method-name desc)
+    [:do & cos]
+    (doseq [co cos]
+      (emit-coercion ctx co))))
 
 (defn emit-ast-node [ctx node]
   (when-some [line (:line (:node/source node))]
@@ -1189,9 +1215,14 @@ JLS:
           (emit-ast-node ctx body)
           (emit-discard-return ctx body)
           (.visitInsn mv Opcodes/RETURN)
-          (.visitMaxs mv -1 -1)
+          (try (.visitMaxs mv -1 -1)
+            (catch Exception e
+              (throw (ex-info (str "Could not computer maxs for ctor")
+                       {:bytes (.toByteArray cv)} e))))
           (.visitEnd mv))))
     [classname (.toByteArray cv)]))
+
+(def ^:dynamic *write-bytes* false)
 
 (defn load-ast-classes-hidden
   [{:keys [^MethodHandles$Lookup lookup]} {:keys [node/env] :as node}]
@@ -1205,11 +1236,14 @@ JLS:
             ba
             (make-array java.nio.file.OpenOption 0)))
         new-compiled-classes
-        (try (mapv (partial classinfo->bytes env) (vals new-classes))
-          (catch Exception e
-            (when-some [ba (:bytes (ex-data e))]
-              (writeout "eval" ba))
-            (throw e)))]
+        (mapv (fn [info]
+                (try 
+                  (classinfo->bytes env info)
+                  (catch Exception e
+                    (when-some [ba (:bytes (ex-data e))]
+                      (writeout (:classname info) ba))
+                    (throw e))))
+          (vals new-classes))]
     (into {}
       (map (fn [[name bytes]]
              (let [lk lookup]
@@ -1217,7 +1251,9 @@ JLS:
                [name
                 (try (.defineHiddenClass lk bytes false;true
                       (make-array MethodHandles$Lookup$ClassOption 0))
-                 #_(catch Verify))])))
+                 (catch Throwable e
+                   (throw (ex-info (str "Could not load hidden class " name)
+                            {} e))))])))
       new-compiled-classes)))
 
 (defn ir->eval-bytes
@@ -1256,7 +1292,7 @@ JLS:
 
 (defn eval-ast
   ([node] (eval-ast {} node))
-  ([{:keys [^ClassLoader ^ClassLoader classloader lookup package-name ^String classname]} node]
+  ([{:keys [^ClassLoader classloader lookup package-name ^String classname]} node]
    (let [classloader (if (and (nil? classloader) (nil? lookup))
                        (clojure.lang.RT/makeClassLoader)
                        classloader)
@@ -1271,13 +1307,15 @@ JLS:
              (java.nio.file.Path/of (str "tmp/" fn ".class") (make-array String 0))
              ba
              (make-array java.nio.file.OpenOption 0)))
-         eval-ba (try(ir->eval-bytes
-                       {:classname classname}
-                       node)
+         eval-ba (try (ir->eval-bytes
+                        {:classname classname}
+                        node)
                    (catch Exception e
                      (when-some [ba (:bytes (ex-data e))]
                        (writeout "eval" ba))
                      (throw (ex-cause e))))
+         _ (when *write-bytes*
+             (writeout "eval" eval-ba))
          eval-class
          (try (if classloader
                 (do
@@ -1299,7 +1337,7 @@ JLS:
        (let [cl (or classloader
                   (clojure.lang.DynamicClassLoader.
                     (ClassLoader/getSystemClassLoader)))]
-         (when-not (.startsWith name "_")
+         (when (or (not (.startsWith name "_")) *write-bytes*)
            (writeout name bytes))
          (cl-define-class cl name bytes)
          ;; Force initialise the class with the defining loader

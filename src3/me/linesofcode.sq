@@ -1,0 +1,18 @@
+(->
+  (jc java.nio.file.Files
+    walk (jc java.nio.file.Path of "."))
+  (.reduce 0
+    (reify java.util.function.BinaryOperator
+      (apply ^Object [_ acc path]
+        (let
+          path (ct java.nio.file.Path path)
+          name (.toString path)
+          file (.toFile path)
+          (if (or (not (.matches name ".*\\.(?:clj|sq|edn)"))
+                (.isDirectory file))
+            acc
+            (let
+              ;_ (.println (jf System out) path)
+              (+ (ct int acc)
+                (.size (jc java.nio.file.Files readAllLines path)))))))))
+  )

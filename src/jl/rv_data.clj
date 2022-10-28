@@ -3,7 +3,11 @@
     [chic.util :refer [<-]]
     [clojure.walk :as walk]
     [lambdaisland.regal :as regal]
-    [jl.reader :as reader :refer [PFormVisitor]]))
+    [jl.reader :as reader :refer [PFormVisitor]])
+  (:import
+    (org.petitparser.parser.primitive CharacterParser)
+    (org.petitparser.parser Parser)
+    (java.util.function Function)))
 
 (defn re-group [re ^java.util.regex.MatchResult match group]
   (let [idx (get (:groups re) group)]
@@ -57,6 +61,223 @@
        \%]]
      [:? [:capture' :type
           [:class \f \d \M]]]]))
+
+  
+(defmacro parsers [& args]
+  `(into-array Parser [~@args]))
+  
+(def pp-sign
+  (.map (.optional (.or (CharacterParser/of \-)
+                     (parsers (CharacterParser/of \+))))
+    (reify Function
+      (apply [_ r]
+        (if (nil? r)
+          :pos-implicit
+          (if (= \- r)
+            :neg :pos))))))
+  
+(defn bigint-fn-with-radix [rad]
+  (reify Function
+    (apply [_ r]
+      [(BigInteger. ^String r ^int rad) rad])))
+  
+(def pp-radix-num
+  (.or
+    (-> (.or
+          (.seq (CharacterParser/of \x)
+            (parsers
+              (.map (.flatten (.plus (CharacterParser/pattern "0-9a-fA-F")))
+                (bigint-fn-with-radix 16))))
+          (parsers
+            (.seq (CharacterParser/of \b)
+              (parsers
+                (.map (.flatten (.plus (CharacterParser/anyOf "01")))
+                  (bigint-fn-with-radix 2))))))
+      (.pick 1))
+    (parsers
+      (.map (.flatten (.plus (CharacterParser/range \0 \7)))
+        (bigint-fn-with-radix 8)))))
+  
+(def pp-int-type
+  (.map (CharacterParser/anyOf "biLN")
+    (reify Function
+      (apply [_ r]
+        (case (char r)
+          \b :byte
+          \i :int
+          \L :long
+          \N :bigint)))))
+  
+(def pp-dec-type
+  (.map (CharacterParser/anyOf "fdM")
+    (reify Function
+      (apply [_ r]
+        (case (char r)
+          \f :float
+          \d :double
+          \M :bigdec)))))
+  
+(def pp-arb-radix
+  (->
+    (.seq (.flatten
+            (.seq (CharacterParser/range \1 \9)
+              (parsers (.star (CharacterParser/digit)))))
+      (parsers
+        (CharacterParser/of \r)
+        (.flatten (.plus (CharacterParser/pattern "0-9a-zA-Z")))))
+    (.map
+      (reify Function
+        (apply [_ r]
+          (let [radix (Integer/parseInt (.get r 0))]
+            [(BigInteger. (.get r 2) radix) radix]))))))
+  
+(def pp-percent
+  (.optional (.map (CharacterParser/of \%)
+               (reify Function (apply [_ _] true)))
+    false))
+  
+(def pp-int
+  (.end
+    (.seq
+      (.or
+        (->
+          (.seq (CharacterParser/of \0)
+            (parsers pp-radix-num))
+          (.pick 1))
+        (parsers
+          pp-arb-radix
+          (.map (.flatten (.plus (CharacterParser/digit)))
+            (bigint-fn-with-radix 10))))
+      (parsers
+        (.optional pp-int-type :none)))))
+  
+(def pp-decimal
+  (->
+    (.seq
+      (.flatten
+        (.or (.seq (CharacterParser/range \1 \9)
+               (parsers (.star (CharacterParser/digit))))
+          (parsers (CharacterParser/of \0))))
+      (parsers
+          
+        (.or
+          (.map
+            (.seq
+              (CharacterParser/of \.)
+              (parsers
+                (.star (CharacterParser/digit))
+                pp-percent
+                (.optional pp-dec-type :none)))
+            (reify Function
+              (apply [_ r]
+                [(.get r 1) (.get r 2) (.get r 3)])))
+          (parsers
+            (.map
+              (.or (.seq (CharacterParser/of \%)
+                     (parsers
+                       (.optional pp-dec-type :none)))
+                (parsers
+                  pp-dec-type))
+              (reify Function
+                (apply [_ r]
+                  (let [perc? (not (keyword? r))]
+                    ["" perc? (if (not perc?) r (.get r 1))]))))))))
+    (.map (reify Function
+            (apply [_ r]
+              (let [sb (doto (StringBuilder.)
+                         (.append (.get r 0)))
+                    [fracpart percent? typ] (.get r 1)
+                    _ (.append sb \.)
+                    _ (doseq [c fracpart]
+                        (.append sb c))
+                    bd (BigDecimal. (.toString sb))
+                    bd (if percent?
+                         (.divide bd 100M)
+                         bd)]
+                [bd typ]))))))
+  
+(def pp
+  (.end
+    (.seq
+      pp-sign
+      (parsers
+        (.or
+          pp-int
+          (parsers
+            (.map pp-decimal
+              (reify Function
+                (apply [_ r]
+                  [[(nth r 0) 10] (nth r 1)])))))))))
+
+(comment
+  017M
+    
+  (defn num-parse [n]
+    (let [r (.get (.parse pp n))
+          _ (prn r)
+          r-int (.get r 1)
+          sign (.get r 0)
+          radix (nth (nth r-int 0) 1)]
+      {:number (nth (nth r-int 0) 0)
+       :sign sign
+       :radix radix
+       :unsigned? (and (not (= 10 radix))
+                    (= sign :pos-implicit))
+       :type (nth r-int 1)}))
+  
+  (defn test-number [n exp]
+    (let [res (num-parse n)]
+      (prn res)
+      (= (merge
+           {:sign :pos-implicit
+            :radix 10
+            :unsigned? false
+            :type :none}
+           exp)
+        res)))
+  
+  (test-number "12"
+    {:number 12N})
+  (test-number "+12"
+    {:number 12 :sign :pos})
+  (test-number "012"
+    {:number 012 :radix 8 :unsigned? true})
+  (test-number "0x12"
+    {:number 0x12 :radix 16 :unsigned? true})
+  (test-number "0x0F"
+    {:number 0x0F :radix 16 :unsigned? true})
+  (test-number "0x0d"
+    {:number 0x0d :radix 16 :unsigned? true})
+  (test-number "0b10"
+    {:number 2r10 :radix 2 :unsigned? true})
+  (test-number "0b10N"
+    {:number 2r10 :radix 2 :unsigned? true :type :bigint})
+  (test-number "5r01"
+    {:number 5r01 :radix 5 :unsigned? true})
+  (test-number "30r0N"
+    {:number 30r0N :radix 30 :unsigned? true})
+  (test-number "1."
+    {:number 1M})
+  (test-number "1.0"
+    {:number 1M})
+  (test-number "1%"
+    {:number 0.01M})
+  (test-number "1.0%"
+    {:number 0.01M})
+  (test-number "1.%d"
+    {:number 0.01M :type :double})
+  (test-number "-1%f"
+    {:number 0.01M :sign :neg :type :float})
+  (test-number "2f"
+    {:number 2M :type :float})
+  (test-number "2%"
+    {:number 0.02M})
+  (test-number "0"
+    {:number 0})
+  (test-number "0f"
+    {:number 0M :type :float})
+  
+  )
 
 (defn parse-number [num]
   (<-

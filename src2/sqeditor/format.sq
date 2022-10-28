@@ -1,0 +1,107 @@
+(Refer-Classes
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+(defclass chic.sqeditor.Indentation
+  [^:pub ^:mut ^ArrayList levels]
+  )
+
+(defclass chic.sqeditor.IndentationOps
+  
+  (defn make []
+    (nw Indentation (nw ArrayList)))
+  
+  (defn level-at-cursor [^Rope rope ^int idx]
+    (let
+      ; it (.reverseChars rope)
+      (loop [i (dec idx) level 0 roffset 0]
+        (if (<= 0 i);(.hasNext it)
+          (let
+            c (.nth rope i) ;(.nextInt it)
+            (let
+              level-delta
+              (case c
+                \( 2, [\[ \{] 1, \) -2, [\] \}] -1
+                0)
+              level' (+ level level-delta)
+              (if (and (not (= 0 level-delta))
+                    (< 0 level'))
+                (let
+                  loffset
+                  (loop [i (dec i) loffset 0]
+                    (if (<= 0 i) ;(.hasNext it)
+                      (let
+                        ; c (.nextInt it)
+                        c (.nth rope i)
+                        (if (= \newline c)
+                          loffset
+                         (recur (dec i) (inc loffset))))
+                      loffset))
+                  _ (.println (jf System out) loffset)
+                  (+ loffset level-delta))
+                (recur
+                  (dec i)
+                  level'
+                  (if (= \newline c)
+                    0
+                    (inc roffset))))))
+          ;; at the root
+          0))))
+  
+  (defn rope->levels [^Rope rope]
+    (let
+      levels (nw ArrayList (.size rope))
+      _ (.add levels 0)
+      it (.codePoints rope)
+      (loop [level 0
+             offset 0]
+        (if (.hasNext it)
+          (let
+            c (.nextInt it)
+            (do
+              (recur
+                (case c
+                  \( (+ level 2)
+                  [\[ \{] (inc level)
+                  \) (- level 2)
+                  [\] \}] (dec level)
+                  level)
+                (if (= \newline c)
+                  (do (.add levels level)
+                    0)
+                  (inc offset)))))
+          (do
+            levels)))))
+  
+  (defn reset-with! ^void [^Indentation self ^Rope rope]
+    (setf! self :levels (jc Self rope->levels rope)))
+  
+  (defn get-level ^int [^Indentation indentation ^int line-idx]
+    (.intValue (ct Integer (.get (jfi indentation :levels) line-idx))))
+  )

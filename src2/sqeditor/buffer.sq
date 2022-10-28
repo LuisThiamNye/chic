@@ -1,0 +1,165 @@
+
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+(defclass chic.sqeditor.Buffer
+  [^:pub ^:mut ^Rope rope
+   ^:pub ^LinearList line-start-idxs
+   ^:pub ^:mut ^Path path
+   ^:pub ^:mut ^Rope saved-rope
+   ^:pub ^ArrayList commits
+   ^:pub ^ArrayList redo-commits
+   ^:pub ^:mut ^EditorCommit latest-commit
+   ^:pub ^:mut ^long last-commit-time]
+  
+  (defi set-rope ^void [_ ^Rope r]
+    (set! rope r)
+    (.clear line-start-idxs)
+    (.addLast line-start-idxs (jc Integer valueOf 0))
+    (=: it (.codePoints rope))
+    (loop [i 1]
+      (when (.hasNext it)
+        (=: ich (.nextInt it))
+        (when (= 10 ich)
+          (.addLast line-start-idxs (jc Integer valueOf i)))
+        (recur (inc i)))))
+  
+  (defi set-path ^void [_ ^Path f]
+    (set! path f))
+  
+  (defi reload ^void [self]
+    (=: rope (jc Rope from (jc Files readString path)))
+    (.set-rope self rope)
+    (set! saved-rope rope))
+  
+  (defi reset-history! ^void [_]
+    (.clear commits)
+    (.clear redo-commits)
+    (set! last-commit-time (jc System currentTimeMillis))
+    (set! latest-commit (nw EditorCommit rope)))
+  
+  (init [self]
+    (set! commits (nw ArrayList))
+    (set! redo-commits (nw ArrayList))
+    (set! line-start-idxs (nw LinearList))
+    (.set-rope self (jf Rope EMPTY))
+    (.reset-history! self))
+  
+  (init [self ^Rope r]
+    (set! commits (nw ArrayList))
+    (set! redo-commits (nw ArrayList))
+    (set! line-start-idxs (nw LinearList))
+    (.set-rope self r)
+    (.reset-history! self))
+  )
+
+(defclass chic.sqeditor.BufferOps
+  
+  (defn commit! [^Buffer buffer ^Selection sel ^EditorCommit commit]
+    (=: latest-commit (jfi buffer :latest-commit))
+    (=: next-rope (jfi commit :rope))
+    (.set-rope buffer next-rope)
+    (when (not (nil? (=: regions (jfi commit :regions))))
+      (.reset-regions! sel regions)))
+  
+  (defn edit! [^Buffer buffer ^Selection sel ^EditorCommit commit]
+    (=: prev-rope (jfi buffer :rope))
+    (=: next-rope (jfi commit :rope))
+    (when (not (== prev-rope next-rope))
+      (=: t (jc System currentTimeMillis))
+      (=: latest-commit (jfi buffer :latest-commit))
+      (when (nil? (jfi latest-commit :regions))
+        ;; save regions prior to the next commit, useful for initial commit
+        (set! latest-commit
+          (setf! buffer :latest-commit
+            (nw EditorCommit (jfi latest-commit :rope) (jfi sel :regions)))))
+      (=: should-commit?
+        (let
+          dt (- t (jfi buffer :last-commit-time))
+          nchardiff 1
+          thres (ct long (* 3400 (jc Math exp (* -0.0027 (ct double nchardiff)))))
+          (<= thres dt)))
+      (when should-commit?
+        (.add (jfi buffer :commits) latest-commit)
+        (setf! buffer :last-commit-time t)
+        (setf! buffer :latest-commit commit))
+      (jc Self commit! buffer sel commit)))
+  
+  (defn undo! [^Buffer buffer ^Selection sel]
+    (=: prev-rope (jfi buffer :rope))
+    (=: commits (jfi buffer :commits))
+    (=: latest-commit (jfi buffer :latest-commit))
+    (=: ncommits (.size commits))
+    (if (= 0 ncommits)
+      (setf! buffer :latest-commit
+        (nw EditorCommit (jfi latest-commit :rope) 
+          (ct "[LRegion;" nil)))
+      (jc Self commit! buffer sel
+        (ct EditorCommit
+          (if (== (jfi latest-commit :rope) prev-rope)
+            ;; no uncommitted changes
+            (do (.add (jfi buffer :redo-commits) latest-commit)
+              (setf! buffer :latest-commit (.remove commits (dec ncommits))))
+            ;; else uncommitted changes
+            (do (.add (jfi buffer :redo-commits)
+                  (nw EditorCommit prev-rope (jfi sel :regions)))
+              latest-commit))))))
+  
+  (defn redo! [^Buffer buffer ^Selection sel]
+    (=: redo-commits (jfi buffer :redo-commits))
+    (when (< 0 (=: nredos (.size redo-commits)))
+      (=: com (.remove redo-commits (dec nredos)))
+      (=: latest-commit (jfi buffer :latest-commit))
+      (=: commits (jfi buffer :commits))
+      (.add commits latest-commit)
+      (=: rope (jfi buffer :rope))
+      (when (not (== (jfi latest-commit :rope) rope))
+        (.add commits (nw EditorCommit rope (jfi sel :regions))))
+      (setf! buffer :latest-commit com)
+      (jc Self commit! buffer sel (ct EditorCommit com))))
+  
+  (defn dirty? [^Buffer buffer]
+    (and (not (nil? (jfi buffer :path)))
+      (not (== (jfi buffer :saved-rope) (jfi buffer :rope)))))
+  
+  (defn save! ^void [^Buffer buffer]
+    (=: rope (jfi buffer :rope))
+    (=: path (jfi buffer :path))
+    (jc Files createDirectories
+      (.getParent path)
+      (na FileAttribute 0))
+    (jc Files writeString path
+      (.toString rope)
+      (let a (na OpenOption 0)
+        (do #_(sa a 0 (jf StandardOpenOption CREATE))
+          a)))
+    (setf! buffer :saved-rope rope))
+  )

@@ -40,7 +40,8 @@
    (transfer-branch-env prev
      (if (in-statement? (:node/env prev))
        (new-void-node)
-       {:node/kind :nil}))))
+       {:node/kind :nil
+        :node/spec {:spec/kind :nil}}))))
 
 (defn get-meta-tags [meta]
   (let [tag (:tag meta)]
@@ -51,6 +52,7 @@
 (declare -analyse-node)
 
 (defn analyse-after [prev node]
+  (assert (map? node))
   (assert (some? (:node/env prev)))
   (assert (some? (:node/locals prev))
     {:msg "prev has no locals"
@@ -69,8 +71,10 @@
        :prev (select-keys prev [:node/kind])})
     (if (and (in-statement? (:node/env prev))
           (not (spec/void? (:node/spec ana))))
-      (assoc ana :node/discard-result true
-        :node/spec (spec/of-class "void"))
+      (do
+       (assoc ana
+         :node/discard-result true
+         :node/spec (spec/of-class "void")))
       ana)))
 
 (defn analyse-expr [prev node]
@@ -95,9 +99,11 @@
       (let [statements
             (reduce
               (fn [acc node]
-                (conj acc (analyse-after
+                (let [ana (analyse-after
                             (update (or (peek acc) prev) :node/env statement-env)
-                            node)))
+                            node)]
+                  (assert (some? ana))
+                  (conj acc ana)))
               [] (subvec body 0 (dec n)))
             tail (analyse-after (update (or (peek statements) prev) :node/env
                                   give-env-retctx-of (:node/env prev))
@@ -144,61 +150,95 @@
      ["float" ["double"]]]))
 
 (defn get-implicit-prim-wideconv [cfrom cto]
-  (when-some [op (get (get prim-widening-conversions- cfrom)
-                   cto)]
-    [:insn op]))
+  (if (identical? cfrom cto)
+    [:insn :nop]
+    (when-some [op (get (get prim-widening-conversions- cfrom)
+                     cto)]
+      [:insn op])))
 
 (comment
   (get-implicit-prim-wideconv Integer/TYPE Long/TYPE)
-  (get-implicit-prim-wideconv Integer/TYPE Float/TYPE))
+  (get-implicit-prim-wideconv Integer/TYPE Float/TYPE)
+  (get-implicit-prim-wideconv Float/TYPE Float/TYPE))
+
+(defn prim-class->box-conversion
+  ([^Class cls]
+   (interop/make-box-conversion
+     (case (.getName cls)
+       "boolean" "Boolean"
+       "int" "Integer"
+       "short" "Short"
+       "char" "Character"
+       "long" "Long"
+       "byte" "Byte"
+       "float" "Float"
+       "double" "Double")
+     (.getName cls)))
+  ([cfrom cto]
+   (case (.getName ^Class cfrom)
+     "boolean" (when (interop/-satisfies? Boolean cto)
+                 (interop/make-box-conversion "Boolean" "boolean"))
+     "byte" (when (interop/-satisfies? Byte cto)
+              (interop/make-box-conversion "Byte" "byte"))
+     "short" (when (interop/-satisfies? Short cto)
+               (interop/make-box-conversion "Short" "short"))
+     "char" (when (interop/-satisfies? Character cto)
+              (interop/make-box-conversion "Character" "char"))
+     "int" (when (interop/-satisfies? Integer cto)
+             (interop/make-box-conversion "Integer" "int"))
+     "long" (when (interop/-satisfies? Long cto)
+              (interop/make-box-conversion "Long" "long"))
+     "float" (when (interop/-satisfies? Float cto)
+               (interop/make-box-conversion "Float" "float"))
+     "double" (when (interop/-satisfies? Double cto)
+                (interop/make-box-conversion "Double" "double")))))
+
+(comment
+  (prim-class->box-conversion Integer/TYPE))
 
 (defn get-coercion [env cfrom cto]
   (if (and (interop/-primitive? cfrom) (interop/-primitive? cto))
     (get-implicit-prim-wideconv cfrom cto)
     (if (interop/-primitive? cto)
-      (case (.getName ^Class cto)
-        "boolean" (when (interop/-satisfies? Boolean cfrom)
-                    (interop/make-unbox-conversion "Boolean" "boolean"))
-        "byte" (when (interop/-satisfies? Byte cfrom)
-                 (interop/make-unbox-conversion "Byte" "byte"))
-        "short" (when (interop/-satisfies? Short cfrom)
-                  (interop/make-unbox-conversion "Short" "short"))
-        "char" (when (interop/-satisfies? Character cfrom)
-                 (interop/make-unbox-conversion "Character" "char"))
-        "int" (when (interop/-satisfies? Integer cfrom)
-                (interop/make-unbox-conversion "Integer" "int"))
-        "long" (when (interop/-satisfies? Long cfrom)
-                 (interop/make-unbox-conversion "Long" "long"))
-        "float" (when (interop/-satisfies? Float cfrom)
-                  (interop/make-unbox-conversion "Float" "float"))
-        "double" (when (interop/-satisfies? Double cfrom)
-                   (interop/make-unbox-conversion "Double" "double")))
+      (let [fromname (.getName ^Class cfrom)
+            [prim boxname]
+            (case fromname
+              "java.lang.Boolean" [Boolean/TYPE "Boolean"]
+              "java.lang.Byte" [Byte/TYPE "Byte"]
+              "java.lang.Short" [Short/TYPE "Short"]
+              "java.lang.Character" [Character/TYPE "Character"]
+              "java.lang.Integer" [Integer/TYPE "Integer"]
+              "java.lang.Long" [Long/TYPE "Long"]
+              "java.lang.Float" [Float/TYPE "Float"]
+              "java.lang.Double" [Double/TYPE "Double"]
+              nil)]
+        (when prim
+          (let [unboxcnv (interop/make-unbox-conversion boxname (.getName ^Class prim))]
+            (when-some [c2 (get-implicit-prim-wideconv prim cto)]
+              [:do unboxcnv c2]))))
       (if (interop/-primitive? cfrom)
-        (case (.getName ^Class cfrom)
-          "boolean" (when (interop/-satisfies? Boolean cto)
-                      (interop/make-box-conversion "Boolean" "boolean"))
-          "byte" (when (interop/-satisfies? Byte cto)
-                   (interop/make-box-conversion "Byte" "byte"))
-          "short" (when (interop/-satisfies? Short cto)
-                    (interop/make-box-conversion "Short" "short"))
-          "char" (when (interop/-satisfies? Character cto)
-                   (interop/make-box-conversion "Character" "char"))
-          "int" (when (interop/-satisfies? Integer cto)
-                  (interop/make-box-conversion "Integer" "int"))
-          "long" (when (interop/-satisfies? Long cto)
-                   (interop/make-box-conversion "Long" "long"))
-          "float" (when (interop/-satisfies? Float cto)
-                    (interop/make-box-conversion "Float" "float"))
-          "double" (when (interop/-satisfies? Double cto)
-                     (interop/make-box-conversion "Double" "double")))
-        (if (identical? cto Object)
+        (prim-class->box-conversion cfrom cto)
+        (if (interop/-satisfies? cfrom cto)
           [:insn :nop]
           nil)))))
 
 (comment
   (get-coercion {} Integer/TYPE Integer)
   (get-coercion {} Integer/TYPE Object)
-  (get-coercion {} String Object))
+  (get-coercion {} String Object)
+  (get-coercion {} Integer/TYPE Integer/TYPE)
+  (get-coercion {} String String)
+  (get-coercion {} String Object)
+  (get-coercion {} Object String)
+  (get-coercion {} Character Integer/TYPE))
+
+(defn coerce-to-class [cls node]
+  (let [env (:node/env node)
+        input-cls (spec/get-duck-class env (:node/spec node))
+        co (get-coercion env input-cls cls)]
+    (if co
+      (assoc node :node/coercion co)
+      (throw (ex-info (str "No coercion from " input-cls " to " cls) {})))))
 
 (defn analyse-number [node]
   (let [v (rv-data/parsed-number-value node)]
@@ -405,14 +445,60 @@
                "\nSpecials: " (pr-str (:special-locals (:node/env node)))
                "\nSource: " (pr-str (:node/source node)))))))
 
+(defn analyse-kwlookup [{:keys [children env] :as node}]
+  (assert (<= 2 (count children) 3))
+  (let [target (analyse-after node (nth children 1))
+        target-class (spec/get-duck-class env (:node/spec target))
+        fallback-ast (nth children 2 nil)]
+    (if (interop/-satisfies? target-class
+          (interop/resolve-obj-class env "io.lacuna.bifurcan.IMap"))
+      (let
+        [mapget
+         {:node/kind :jcall
+          :node/spec (spec/of-class (if fallback-ast
+                                      "java.lang.Object"
+                                      "java.util.Optional"))
+          :classname "io.lacuna.bifurcan.IMap"
+          :interface? true
+          :method-name "get"
+          :method-type (Type/getMethodType
+                         (if fallback-ast
+                           "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"
+                           "(Ljava/lang/Object;)Ljava/util/Optional;"))
+          :target target
+          :args (cond-> [(analyse-keyword (nth children 0))]
+                  fallback-ast
+                  (conj (analyse-after node fallback-ast)))}]
+        (transfer-branch-env (or fallback-ast node)
+          (if fallback-ast
+            mapget
+            {:node/kind :jcall
+             :node/spec (spec/of-class "java.lang.Object")
+             :classname "java.util.Optional"
+             :method-name "get"
+             :method-type (Type/getMethodType
+                            "()Ljava/lang/Object;")
+             :target mapget
+             :args []})))
+      (throw (ex-info "Unsupported kw lookup target"
+               {:target (select-keys target [:node/kind :node/spec])})))))
+
 (defn analyse-list [{:keys [children] :as node}]
   (if (= 0 (count children))
     (throw (RuntimeException. "Unquoted empty list not allowed"))
-    (let [c1 (analyse-after node (assoc (nth children 0) :invoke-target? true))
-          sf (:special-form c1)]
-      (if sf
-        (sf node)
-        (throw (RuntimeException. "cannot invoke"))))))
+    (let [ast0 (nth children 0)]
+      (if (= :keyword (:node/kind ast0))
+        (analyse-kwlookup node)
+        (or
+          (when (= :symbol (:node/kind ast0))
+            (when-some [[_ nspart namepart] (re-matches #"(.+)/(.+)" (:string ast0))]
+              ((requiring-resolve 'jl.compiler.sforms/anasf-jscall*)
+               nspart namepart node (subvec (:children node) 1))))
+          (let [c1 (analyse-after node (assoc ast0 :invoke-target? true))
+               sf (:special-form c1)]
+           (if sf
+             (sf node)
+             (throw (RuntimeException. "cannot invoke")))))))))
 
 (defn node-as-class [env cto node]
   (let [cls (spec/get-duck-class env (:node/spec node))]

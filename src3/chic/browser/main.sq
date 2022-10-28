@@ -1,0 +1,275 @@
+;(Import-Classes)
+
+(Refer-Classes
+  (java.util Map$Entry)
+  (io.lacuna.bifurcan IMap Map List)
+  (chic.sqeditor RectTools)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (chic.browser.intr Interactor BasicIntr BasicIntrOps BasicIntrMgr IntrMgr)
+  (chic.browser
+    UiRoot)
+  (chic.browser.ui
+    ChangeableValue KVCell KVRow MapKVView TextGeo Titlebar))
+
+; (defclass chic.browser.ui.DerivedValue-trackingdependants
+;   [^:pub ^:mut ^Object value
+;    ^:pub ^:mut ^boolean invalid
+;    ^ArrayList dependants]
+  
+;   (init [init]
+;     (set! value init)
+;     (set! invalid true)
+;     (set! dependants (nw ArrayList)))
+  
+;   (defi invalidate [_]
+;     (set! invalid true))
+  
+;   (defi reset ^void [self new]
+;     (set! value new)
+;     (let it (.iterator dependants)
+;       (loop []
+;         (when (.hasNext it)
+;           (let d (ct DerivedValue (.next it))
+;             (.invalidate d))))))
+;   )
+
+(defclass chic.browser.ui.ChangeableValue
+  [^:pub ^:mut ^Object value
+   ^:pub ^:mut ^boolean changed]
+  
+  (init [_ init]
+    (set! value init)
+    (set! changed true))
+  
+  (defi set-unchanged [_]
+    (set! changed true))
+  
+  (defi reset ^void [self new]
+    (set! value new)
+    (set! changed true))
+  
+  (defi reset-diff ^void [self new]
+    (if (not (== value new))
+      (.reset self new)
+      (.set-unchanged self)))
+  
+  (defi reset-diffeq ^void [self new]
+    (if (not (.equals new value))
+      (.reset self new)
+      (.set-unchanged self)))
+  )
+
+(defclass chic.browser.ui.TextGeo
+  (defn capcentre-geo [^Font font]
+    (let
+      metrics (.getMetrics font)
+      cap-height (inc (ct int (.getCapHeight metrics)))
+      ascent (- (dec (ct int (.getAscent metrics))))
+      descent (inc (ct int (.getDescent metrics)))
+      above (- ascent cap-height)
+      cap-padding (Math/max above descent)
+      {:padding cap-padding
+       :baseline (+ cap-height cap-padding)
+       :height (+ cap-height (* 2 cap-padding))}))
+  )
+
+(defclass chic.browser.ui.Titlebar
+  [^String objstr
+   ^:mut ^TextLine textline
+   ^Paint bg-fill
+   ^:mut ^int text-dy
+   ^:mut ^int text-dx
+   ^:mut ^IRect rect]
+  
+  (init [_ obj]
+    (set! bg-fill (nw Paint))
+    (.setColor bg-fill 0xFFE0E2E4)
+    (set! objstr (.toString obj)))
+  
+  (defi measure ^IRect [self ^IMap ctx ^IRect rect]
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (=: rect' (.:rect self))
+    (when (.:changed *font)
+      (=: font (ct Font (.:value *font)))
+      (=: geo (TextGeo/capcentre-geo font))
+      (=: font-height (ct int (:height geo)))
+      (=: padding (ct int (* 0.1 font-height)))
+      (setf! self :text-dx (+ padding (ct int (:padding geo))))
+      (setf! self :text-dy (+ padding (ct int (:baseline geo))))
+      (set! rect' (.withHeight rect (+ (* 2 padding) font-height)))
+      (setf! self :rect rect')
+      (setf! self :textline (TextLine/make objstr font)))
+    rect')
+  
+  (defi draw [self ^IMap ctx ^Canvas cnv ^IRect rect]
+    (.drawRect cnv (.toRect rect) bg-fill)
+    (.drawTextLine cnv textline
+      (+ (.getLeft rect) text-dx)
+      (+ (.getTop rect) text-dy) (ct Paint (:text-fill ctx))))
+  )
+
+
+
+(defclass chic.browser.UiRoot
+  :interfaces AutoCloseable
+  [^:mut ^MapKVView ui-child
+   ^:mut ^Titlebar ui-titlebar
+   ^BasicIntrMgr intrmgr
+   ^:mut ^Map ctx
+   ^ChangeableValue *font]
+  
+  (init [self *scale]
+    (setf! self :intrmgr (nw BasicIntrMgr))
+    (setf! self :*font (nw ChangeableValue nil))
+    
+    (=: obj {:text-x 100 :y "A Butter"})
+    (=: entries (List/from obj))
+    (setf! self :ui-child (nw MapKVView entries intrmgr))
+    (setf! self :ui-titlebar (nw Titlebar obj))
+    
+    (=: typeface (jc Typeface makeFromName "Inter"
+                   (nw FontStyle
+                     (jf FontWeight NORMAL)
+                     (jf FontWidth NORMAL)
+                     (jf FontSlant UPRIGHT))))
+    (setf! self :ctx
+      {;:intrmgr (nw ChangeableValue intrmgr)
+       :typeface (nw ChangeableValue typeface)
+       :scale *scale
+       :text-fill (nw Paint)
+       :hovered-bg-fill (let p (nw Paint)
+                          (do (.setColor p 0x0A000000)))
+       :pressed-bg-fill (let p (nw Paint)
+                          (do (.setColor p 0x20000000)))}))
+  
+  (defi draw [self ^Canvas cnv ^IRect rect]
+    (=: ctx (.:ctx self))
+    (=: font-size 24f)
+    (=: *typeface (ct ChangeableValue (:typeface ctx)))
+    (=: *scale (ct ChangeableValue (:scale ctx)))
+    (if (or (.:changed *typeface) (.:changed *scale))
+      (do
+        (let font' (nw Font (ct Typeface (.:value *typeface))
+                     (* font-size (ct float (.:value *scale))))
+          (.reset *font font')))
+      (.set-unchanged *font))
+    
+    (set! ctx (.put ctx :font *font))
+    (=: titlebar-rect (.measure ui-titlebar ctx rect))
+    (.draw ui-titlebar ctx cnv titlebar-rect)
+    (.draw ui-child ctx cnv (.withTop rect (.getBottom titlebar-rect))))
+  
+  (defi event ^void [_ ^Event evt]
+    ; (.clear-hover-state intrmgr)
+    (.event ui-child evt))
+  
+  (defi close ^void [_]
+    )
+  )
+
+(defclass chic.browser.Window
+  :interfaces chic.window.i.PaintAndEventHandler AutoCloseable
+  [^:mut ^Window jwm-window
+   ^:mut ^ChangeableValue *scale
+   ^:mut ^int mouse-x
+   ^:mut ^int mouse-y
+   ^:mut ^UiRoot root]
+  
+  (defi set-root [_]
+    (set! root (nw UiRoot *scale)))
+  
+  (init [self]
+    (set! *scale (nw ChangeableValue nil))
+    (.set-root self))
+  
+  (defi set-window [_ ^Window jwin]
+    (set! jwm-window jwin)
+    (.setTitle jwin "Browser")
+    (.reset *scale (.getScale (.getScreen jwin))))
+  
+  (defi paint ^void [self ^Canvas cnv]
+    (.clear cnv 0xFFffffff)
+    (try (.draw root cnv (RectTools/withPos (.getContentRect jwm-window) 0 0))
+      (catch ClassCastException e
+        ;; important to cast to avoid cast exception
+        (.close (ct AutoCloseable root))
+        (.set-root self)
+        (throw e)))
+    (.set-unchanged *scale))
+  
+  (defi notifyEvent ^void [self ^Event evt]
+    ; (.println (jf System out) evt)
+    ;; note: mouse position events not reported outside of window
+    (if (instance? EventMouseMove evt)
+      (do
+        (set! mouse-x (.getX (ct EventMouseMove evt)))
+        (set! mouse-y (.getY (ct EventMouseMove evt))))
+      nil)
+    (when
+      (<-
+        (if (instance? EventWindowScreenChange evt)
+          (do (.reset *scale (.getScale (.getScreen jwm-window)))
+            true))
+        (if (instance? EventWindowCloseRequest evt)
+          (do (.close jwm-window)
+            false))
+        (if (instance? EventWindowClose evt)
+          (do (.close self)
+            false))
+        (if (instance? EventFrame evt) false)
+        (if (instance? EventFrameSkija evt) false)
+        (do (try (.event root evt)
+              (catch ClassCastException e
+                (.close (ct AutoCloseable root))
+                (.set-root self)
+                (throw e))) true))
+      (.requestFrame jwm-window)))
+  
+  (defi close ^void [self]
+    (jc chic.window.Main unreg-window! self)
+    (.close (ct AutoCloseable root)))
+  
+  (defn spawn []
+    (=: self (nw Self))
+    (let jwin (jc chic.window.Main new-jwm-window)
+      (try
+        (.set-window self jwin)
+        (.setEventListener jwin (nw chic.window.StdWinEventListener self))
+        ;(.setWindowPosition jwin -1800 50)
+        (.setWindowSize jwin 900 600)
+        (.setVisible jwin true)
+        (.focus jwin)
+        (chic.window.Main/reg-window! self)
+        (catch Throwable e
+          (.close jwin)
+          (chic.window.Main/unreg-window! self)
+          (throw e)))))
+  )
+
+
+"
+Idea for allowing component to subscribe to events:
+Use objects to track lifetime.
+When a parent interactor checks a subscriber, it should check whether the component is active.
+A lifetime object checks whether the parent is active in addition to logic defined by the parent
+States:
+- active
+- inactive
+- closed
+If found to be closed, the subscriber is automatically removed.
+Also, each lifetime object can have a close action associated with it.
+When a lifetime object is closed, it closes all its dependencies.
+
+They can be used as a 'key' to services that require reg/unreg to ensure cleanup happens.
+"

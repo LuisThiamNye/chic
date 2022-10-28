@@ -1,0 +1,133 @@
+
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList IMap)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect IPoint)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps TextEditorOps
+    KeyHandling EventHandling)
+  (chic.sqeditor.i LineOffsetConverter)
+  (chic.browser.ui
+    ChangeableValue))
+
+(defclass chic.sqeditor.EventHandling
+  
+  (defn on-mouse-down [^TextEditor self ^EventMouseButton evt]
+    (if (== (jf MouseButton PRIMARY) (.getButton evt))
+      (do
+        (=: view (.:view self))
+        (=: selection (jfi view :selection))
+        (.clear selection)
+            
+        (=: plane-origin (.:plane-origin self))
+        (=: dy (- (.getY evt) (.getY plane-origin)))
+        (=: brx (- (.getX evt) (.getX plane-origin)))
+        (=: target-line-idx (/ dy (.:line-height self)))
+        (=: line-start-idxs (jfi (jfi view :buffer) :line-start-idxs))
+        (=: max-line-idx (dec (ct int (.size line-start-idxs))))
+        (=: line-idx (Maths/clamp target-line-idx 0 max-line-idx))
+        (=: text-line (ct TextLine (.nth (.:textlines self) (ct long line-idx))))
+        (=: offset (.getOffsetAtCoord text-line (ct float brx)))
+        (=: cursor-idx (+ (.intValue
+                            (ct Integer
+                              (.nth line-start-idxs (ct long line-idx))))
+                         offset))
+        (SelectionOps/add selection (nw Region cursor-idx cursor-idx))
+        true)
+      false))
+  
+  (defn on-mouse-up ^boolean [^TextEditor self ^EventMouseButton evt]
+    (when (== (jf MouseButton PRIMARY) (.getButton evt))
+      ; (set! dragging? false)
+      nil)
+    false)
+  
+  (defn on-mouse-move ^boolean [^TextEditor self ^EventMouseMove evt]
+    false)
+  
+  (defn scroll-offset ^int [^int prev ^int content-length ^int visible-length
+                            ^int delta]
+    (if (<= content-length visible-length)
+      0
+      (Maths/clamp
+        (+ prev delta)
+        (- visible-length content-length)
+        0)))
+  
+  (defn on-mouse-scroll ^boolean [^TextEditor self ^EventMouseScroll evt]
+    (=: visible-rect (.:visible-rect self))
+    (=: textlines (.:textlines self))
+    (=: text-padding-h (.:text-padding-h self))
+    (=: text-padding-v (.:text-padding-v self))
+    (=: scroll-x (.:scroll-x self))
+    (=: scroll-y (.:scroll-y self))
+    (=: line-height (.:line-height self))
+    (=: visible-width (.getWidth visible-rect))
+    (=: content-width
+      (loop [i (dec (.size textlines))
+             acc 0]
+        (if (<= 0 i)
+          (let textline (ct TextLine (.nth textlines i))
+            (recur (dec i)
+              (Math/max acc (ct int (Math/ceil (.getWidth textline))))))
+          (+ acc (* 2 text-padding-h)))))
+    (setf! self :scroll-x (Self/scroll-offset scroll-x content-width visible-width
+                     (ct int (.getDeltaX evt))))
+    (=: visible-height (.getHeight visible-rect))
+    (=: content-height (+ (* (ct int (.size textlines)) line-height)
+                         text-padding-v
+                         40))
+    (setf! self :scroll-y
+      (Self/scroll-offset scroll-y content-height visible-height
+        (ct int (.getDeltaY evt))))
+    true)
+  
+  (defn event ^boolean [^TextEditor te ^Consumer action-fn ^Event evt]
+    (<-
+      (if (instance? EventMouseButton evt)
+        (let evt (ct EventMouseButton evt)
+          hovered? (RectTools/contains-point?
+                     (.:visible-rect te) (.getX evt) (.getY evt))
+          (if hovered?
+            (if (.isPressed evt)
+              (Self/on-mouse-down te evt)
+              (Self/on-mouse-up te evt))
+            false)))
+      (if (instance? EventMouseMove evt)
+        (let evt (ct EventMouseMove evt)
+          (Self/on-mouse-move te evt)))
+      (if (instance? EventMouseScroll evt)
+        (let evt (ct EventMouseScroll evt)
+          (Self/on-mouse-scroll te evt)))
+      (if (instance? EventKey evt)
+        (let evt (ct EventKey evt)
+          (if (.isPressed evt)
+            (KeyHandling/on-key-down te action-fn evt)
+            false)))
+      (if (instance? EventTextInput evt)
+        (KeyHandling/on-text-input te (ct EventTextInput evt)))
+      false))
+  )

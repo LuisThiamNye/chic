@@ -2,7 +2,8 @@
   (:require
     [chic.util :as util :refer [loop-zip]]
     [jl.compiler.op :as op]
-    [jl.compiler.type :as type])
+    [jl.compiler.type :as type]
+    [jl.interop :as interop])
   (:import
     (org.objectweb.asm Type Opcodes)
     (java.lang.reflect Method Field Modifier Constructor Executable)))
@@ -102,7 +103,9 @@
   (-getType [self] (.getType self)))
 
 (defrecord UnrealClass [name super interfaces ^int flags
-                        fields methods])
+                        fields methods]
+  Object
+  (toString [self] (str "UnrealClass:" (pr-str (:name self)))))
 (extend-type UnrealClass
   PNamed
   (-getName [self] (:name self))
@@ -158,6 +161,32 @@
   (-getRetType [self] (:ret-type self))
   (-varargs? [self] (op/acc-mask-contains? (:flags self) :varargs)))
 
+(deftype NilClass [])
+(extend-type NilClass
+  PNamed
+  (-getName [self] "aNilClass")
+  PClassNode
+  (-primitive? [_] false)
+  ; (-arrayClass? [self] false)
+  ; (-elementType [self])
+  ; (-arrayType [self])
+  (-hiddenClass? [self] false)
+  (-interface? [self] false)
+  ; (-getInterfaces [self] nil)
+  ; (-getDeclaredMethods [self] )
+  ; (-getDeclaredFields [self] )
+  ; (-getDeclaredConstructors [self] )
+  ; (-getSuperclass [self] Object)
+  (-satisfies? [self other]
+    (or (identical? self other)
+      (not (-primitive? other)))))
+(def nil-class (new NilClass))
+(defn nil-class? [x] (identical? nil-class x))
+
+(deftype JumpClass [])
+(def jump-class (new JumpClass))
+(defn jump-class? [x] (identical? jump-class x))
+
 (defn same-class? [c1 c2]
   (or (identical? c1 c2)
     (= (-getName c1) (-getName c2))))
@@ -181,6 +210,15 @@
     (Type/getType ^Method method)
     (Type/getMethodType
       (type/classname->type (-getName (-getRetType method)))
+      (into-array Type
+        (mapv (comp type/classname->type -getName)
+          (-getParamTypes method))))))
+
+(defn ctor->type [method]
+  (if (instance? Constructor method)
+    (Type/getType ^Constructor method)
+    (Type/getMethodType
+      Type/VOID_TYPE
       (into-array Type
         (mapv (comp type/classname->type -getName)
           (-getParamTypes method))))))
@@ -281,6 +319,8 @@
   (let [box-iname (str "java/lang/" box-name)]
     [:method :class box-iname "valueOf"
      (str "(" (primitive-name->desc prim-name) ")L" box-iname ";" )]))
+
+(def void->nil-conversion [:insn :aconst-null])
 
 (defn member-accessible? [c1 target mods]
   (or (Modifier/isPublic mods)
@@ -398,7 +438,7 @@
     (or (= nparams nargs)
       (let [varargs? (-varargs? method)]
         (when varargs?
-          (< nparams nargs))))))
+          (<= (dec nparams) nargs))))))
 
 (defn match-method-by-arg-types [methods0 arg-types]
   (let []
@@ -480,6 +520,19 @@
     (if static?
       (-getDeclaredMethods target-class)
       (get-all-instance-methods target-class))))
+
+(comment
+  (count (get-methods-pretypes Object java.nio.file.Path true "of" 1))
+  (count (get-methods-pretypes Object io.lacuna.bifurcan.List true "from" 1)))
+
+(defn get-ctor-pretypes [self-class target-class nargs]
+  (into []
+    (filter
+      (fn [method]
+        (and
+          (arity-matching-method? nargs method)
+          (member-accessible? self-class target-class (-getModifiers method)))))
+    (-getDeclaredConstructors target-class)))
 
 (defn match-method-type ^Type
   [{:keys [self-classname] :as env}
@@ -614,43 +667,72 @@
 
 (defn find-common-ancestor [classes]
   ;; finds most specific common class (not interface)
-  (let [clss (java.util.ArrayList. 5)
-        _ (loop [cls (first classes)]
-                 (when cls
-                   (.add clss cls)
-                   (recur (-getSuperclass cls))))
-        clss (.toArray clss)
-        aindexof (fn [a offset x]
-                    (loop [i (dec (alength a))]
-                      (when (<= offset i)
-                        (if (= x (aget a i))
-                          i
-                          (recur (dec i))))))
-        *lb (volatile! 0)]
-    (doseq [c (next classes)]
-      (loop [c c]
-        (if-some [i (aindexof clss @*lb c)]
-          (vreset! *lb i)
-          (when-some [s (-getSuperclass c)]
-            (recur s)))))
-    (aget clss @*lb)))
+  (let
+    [clss (java.util.ArrayList. 5)
+     nonnil-classes (remove nil-class? classes)
+     _ (loop [cls (first nonnil-classes)]
+         (when cls
+           (.add clss cls)
+           (recur (-getSuperclass cls))))
+     ;; first class and all its superclasses
+     clss (.toArray clss)
+     aindexof (fn [a offset x]
+                (loop [i (dec (alength a))]
+                  (when (<= offset i)
+                    (if (= x (aget a i))
+                      i
+                      (recur (dec i))))))
+     *lb (volatile! 0)
+     res (loop [classes (next nonnil-classes)]
+           (if-some [c (first classes)]
+             (if (loop [c c]
+                   (if-some [i (aindexof clss @*lb c)]
+                     (do (vreset! *lb i) true)
+                     (if-some [s (-getSuperclass c)]
+                       (recur s)
+                       nil)))
+               (recur (next classes))
+               nil)
+             (aget clss @*lb)))]
+    (if (and (not= (count classes) (count nonnil-classes))
+          (-primitive? res))
+      (throw (ex-info "Cannot unify nil with primitives" {}))
+      res)))
+
+(comment
+  (= String (find-common-ancestor [nil-class String]))
+  (= String (find-common-ancestor [String nil-class]))
+   (find-common-ancestor [Integer/TYPE nil-class])
+  (find-common-ancestor [Integer/TYPE Void/TYPE])
+  (= Object (find-common-ancestor [Integer Object]))
+  (= Number (find-common-ancestor [Integer BigInteger]))
+  (nil? (find-common-ancestor [Integer/TYPE Integer]))
+  )
 
 (defn get-interfaces-since-super [sub super]
   (loop [acc (transient #{})
          sub sub]
-    (if-let [ifaces (and (not= sub super)
+    (if-let [ifaces (and sub
+                      (not= sub super)
                       (-getInterfaces sub))]
-      (recur (reduce conj! acc ifaces)
+      (recur
+        (reduce conj! acc ifaces)
         (-getSuperclass sub))
       (persistent! acc))))
 
 ;; want to unroll each class up to the common ancestor - intersecting excess interfaces
 (defn intersect-classes [classes]
-  (let [ca (find-common-ancestor classes)]
+  (if-let [ca (find-common-ancestor classes)]
     (new-unreal-class nil ca
       (reduce (fn [acc c]
                 (into acc (get-interfaces-since-super c ca)))
-        #{} classes))))
+        #{} (remove nil-class? classes)))
+    (throw (ex-info "No common class ancestor; cannot intersect"
+             {:classes classes}))))
+
+(comment
+  (intersect-classes [Integer/TYPE Integer])
+  )
 
 ;; fields, local variables, and formal parameters
 #_(defn munge-unqualified-name [name]
@@ -792,8 +874,6 @@
     "Object"
     "String"
     "Class"
-    "BigInteger"
-    "BigDecimal"
     
     "Math"
     "StrictMath"
@@ -907,8 +987,10 @@
     })
 
 (def base-class-aliases
-  (into {} (map (fn [nam]
-                  [nam (str "java.lang." nam)]))
+  (into {"BigInteger" "java.math.BigInteger"
+         "BigDecimal" "java.math.BigDecimal"}
+    (map (fn [nam]
+           [nam (str "java.lang." nam)]))
     (into jlc-extra jlc-essential)))
 
 #_#{"ClassValue"

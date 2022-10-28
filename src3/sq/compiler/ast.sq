@@ -1,0 +1,65 @@
+
+(Refer-Classes
+  (sq.compiler.reader
+    IFormVisitor Reader Util TrackedCharReader IChReader))
+
+(defclass sq.compiler.ast.BaseAnaRdrVisitor
+  :interfaces IFormVisitor
+  [rdr
+   ^Self parent
+   node
+   cb
+   ^boolean discarding?]
+  
+  (defi visitNumber ^void [_ ^String numstr]
+    (let [num (rv-data/parse-number numstr)]
+      (if (nil? num)
+        (throw (nw RuntimeException (.concat "Invalid number: " numstr)))
+        (rv-data/-addEnd cb
+          (assoc num
+            :node/kind :number
+            :node/source (rdr-srcinfo rdr))))))
+  (defi visitKeyword ^void [_ ^String kwstr]
+    (rv-data/-addEnd cb
+      {:node/kind :keyword
+       :node/source (rdr-srcinfo rdr)
+       :string (subs kwstr 1)}))
+  (defi visitSymbol ^void [_ ^String symstr]
+    (rv-data/-addEnd cb
+      {:node/kind :symbol
+       :node/source (rdr-srcinfo rdr)
+       :string symstr}))
+  (defi visitChar ^void [_ ^String token]
+    (rv-data/-addEnd cb 
+      {:node/kind :char
+       :node/source (rdr-srcinfo rdr)
+       :value (rv-data/interpret-char-token token)}))
+  (defi visitCharLiteral ^void [_ ^int c]
+    (rv-data/-addEnd cb
+      {:node/kind :char
+       :node/source (rdr-srcinfo rdr)
+       :value (char c)}))
+  (defi visitString ^void [_ ^String s]
+    (rv-data/-addEnd cb
+      {:node/kind :string
+       :node/source (rdr-srcinfo rdr)
+       :value s}))
+  (defi visitList ^Self [self]
+    (nw Self rdr self {:node/kind :list} (rv-data/clj-vector-builder)))
+  (defi visitVector ^Self [self]
+    (nw Self rdr self {:node/kind :vector} (rv-data/clj-vector-builder)))
+  (defi visitMap ^Self [self]
+    (nw Self rdr self {:node/kind :map} (rv-data/clj-map-builder)))
+  (defi visitSet ^Self [self]
+    (nw Self rdr self {:node/kind :set} (rv-data/clj-set-builder)))
+  (defi visitMeta ^Self [self]
+    (nw Self rdr self nil (->BaseAnaMetaBuilder nil nil)))
+  (defi visitDiscard ^Self [_] (reader/noop-visitor))
+  (defi visitEnd ^void [_]
+    (when (not (nil? parent))
+      (let [coll (rv-data/-toColl cb)]
+        (rv-data/-addEnd (jf parent cb)
+          (if node
+            (assoc node :children coll
+              :node/source (rdr-srcinfo rdr))
+            coll))))))

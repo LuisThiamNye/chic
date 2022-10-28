@@ -37,6 +37,7 @@
         better-cond/better-cond {:mvn/version "2.1.5"}
         criterium/criterium {:mvn/version "0.4.6"}
         io.lacuna/bifurcan {:mvn/version "0.2.0-alpha6"}
+        com.github.petitparser/petitparser-core {:mvn/version "2.3.1"}
         ;; com.luisthiamnye/primitive-maths
         ;; {:git/url "https://github.com/LuisThiamNye/primitive-maths"
         ;;  :git/sha "cb24856629a3643483eebd71b4637ab7af9ce5d1"}

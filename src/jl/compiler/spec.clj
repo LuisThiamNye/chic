@@ -49,14 +49,22 @@
   (if (= :union (:spec/kind spec))
     (interop/intersect-classes
       (mapv (partial get-duck-class env) (:specs spec)))
-    (interop/resolve-class env (get-exact-class spec))))
+    (if (= :jump (:spec/kind spec))
+      interop/jump-class
+      (if (= :nil (:spec/kind spec))
+        interop/nil-class
+        (let [c (get-exact-class spec)]
+          (when (nil? c)
+            (throw (ex-info "nil class" {:spec spec})))
+          (interop/resolve-class env c))))))
 
 (defn prim? [spec]
   (#{"boolean" "byte" "short" "char" "int" "long" "float" "double" "void"}
     (get-exact-class spec)))
 
 (defn void? [spec]
-  (= "void" (get-exact-class spec)))
+  (or (= "void" (get-exact-class spec))
+    (= :jump (:spec/kind spec))))
 #_#_#_
 (defn biginteger-coerce [spec]
   (let [clsname (get-exact-class spec)]

@@ -131,13 +131,8 @@
 
 
 (comment
-  (def --d '{lambdaisland/regal {:mvn/version "0.0.143"}})
-  
-  (run! prn (keys (System/getProperties)))
-  
-  (-> (read-string (slurp (System/getProperty "clojure.basis")))
-    (:libs) (get 'nrepl/nrepl))
-  
+  (def --d '{com.github.petitparser/petitparser-core {:mvn/version "2.3.1"}})
+   
   (def --b (deps/create-basis {:aliases [:dev :repl]
                                ;:extra --d
                                :override-deps --d
@@ -157,6 +152,8 @@
   
   
   (ensure-url-loaders (map pathstr->url --extra-paths))
+  
+  (install-complex-classloader!)
 
   (-> (get-loose-url-loaders) seq first .getURLs first prn)
   

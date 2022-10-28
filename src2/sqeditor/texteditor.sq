@@ -1,0 +1,267 @@
+
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList IMap)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect IPoint)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps TextEditorOps)
+  (chic.sqeditor.i LineOffsetConverter)
+  (chic.browser.ui
+    ChangeableValue))
+
+(defclass chic.sqeditor.TextEditor
+  :interfaces AutoCloseable
+  [^:pub ^:mut ^IRect visible-rect
+   ^:pub ^:mut ^LinearList textlines
+   ^:pub ^:mut ^int line-height
+   ^:pub ^:mut ^IPoint plane-origin
+   ; ^:pub ^Interactor intr
+   ; ^:pub ^IntrMgr intrmgr
+   ^:pub ^:mut ^int scroll-x
+   ^:pub ^:mut ^int scroll-y
+   ^:pub ^:mut ^View view
+   ^:pub ^Indentation indentation
+   ^:pub ^:mut ^int text-padding-h
+   ^:pub ^:mut ^int text-padding-v
+   ^:pub ^:mut ^Font font]
+  
+  (init [self ^View view]
+    (setf! self :text-padding-h 5)
+    (setf! self :text-padding-h 3)
+    (setf! self :view view)
+    (set! indentation (IndentationOps/make))
+    (=: rope (Rope/from ""))
+    (IndentationOps/reset-with! indentation rope))
+  
+  (defi close ^void [_])
+  )
+
+(defclass chic.sqeditor.TextEditorOps
+  
+  (def indent-width 9)
+  
+  (defn calc-indent-offset [^TextEditor self ^int line-idx]
+    (let
+      level (IndentationOps/get-level (.:indentation self) line-idx)
+      (* indent-width level)))
+  
+  (defn draw-text ^void [^TextEditor self ^IMap ctx ^Canvas cnv ^Font font]
+    (=: visible-rect (.:visible-rect self))
+    (=: plane-origin-x (.getX (.:plane-origin self)))
+    (=: plane-origin-y (.getY (.:plane-origin self)))
+    (=: textlines (.:textlines self))
+    (=: line-height (.:line-height self))
+    
+    (=: min-vis-idx (/ (- (.getTop visible-rect) plane-origin-y)
+                      line-height))
+    (=: nlines (ct int (.size textlines)))
+    (=: max-vis-idx (Math/min
+                      (dec nlines)
+                      (/ (- (.getBottom visible-rect) plane-origin-y)
+                        line-height)))
+    (loop [i min-vis-idx
+           y (+ (* i line-height)
+               (- (Math/round (.getAscent (.getMetrics font))))
+               plane-origin-y)]
+      (when (<= i max-vis-idx)
+        (let
+          x plane-origin-x
+          (.drawTextLine cnv (ct TextLine (.nth textlines i))
+            (ct float x) (ct float y) (ct Paint (:text-fill ctx))))
+        (recur (inc i) (+ y line-height)))))
+  
+  (defn line-offset->xpos ^int [^TextEditor self ^int line-idx ^int offset]
+    (let text-line (ct TextLine (.nth (.:textlines self) (ct long line-idx)))
+      (Math/round (.getCoordAtOffset text-line offset))))
+  
+  (defn get-line-start-idx ^int [^TextEditor self ^int line-idx]
+    (ct int (.nth (.:line-start-idxs (.:buffer (.:view self)))
+              line-idx)))
+  
+  (defn cursor-idx->xpos ^int [^TextEditor self ^int cursor-idx]
+    (=: line-start-idxs (.:line-start-idxs (.:buffer (.:view self))))
+    (=: line-idx (Misc/cursor->line-idx line-start-idxs cursor-idx))
+    (=: start-idx
+      (ct int (.nth line-start-idxs line-idx)))
+    (=: offset (- cursor-idx start-idx))
+    (Self/line-offset->xpos self line-idx offset))
+  
+  (defn draw-selection-region
+    ^void [^TextEditor self ^Region region ^Canvas cnv ^Font font]
+    (=: line-start-idxs (.:line-start-idxs (.:buffer (.:view self))))
+    (=: end-idx (.:end region))
+    (=: start-idx (.:start region))
+    (=: end-line-idx (Misc/cursor->line-idx line-start-idxs end-idx))
+    (=: start-line-idx (Misc/cursor->line-idx line-start-idxs start-idx))
+    (=: region-nlines (inc (- end-line-idx start-line-idx)))
+    (=: top-idx (Math/min start-idx end-idx))
+    (=: top-line-idx (Math/min start-line-idx end-line-idx))
+    (=: bottom-line-idx (Math/max start-line-idx end-line-idx))
+
+    (=: nlines (.size line-start-idxs))
+    (=: line-end-xs (nw LinearList region-nlines))
+    (=: nl-width (ct int (.measureTextWidth font "\n")))
+    (loop [i top-line-idx]
+      (if (< i bottom-line-idx)
+        (do
+          (.addLast line-end-xs
+            (+ nl-width
+              (Self/line-offset->xpos self i (jf Integer MAX_VALUE))))
+          (recur (inc i)))
+        (.addLast line-end-xs
+          (Self/line-offset->xpos self i
+            (- (Math/max start-idx end-idx)
+              (Self/get-line-start-idx self i))))))
+    
+    (=: line-height (.:line-height self))
+    (=: first-line-x (Self/cursor-idx->xpos self top-idx))
+    (=: border-radius (* 0.15f (ct float line-height)))
+    
+    (=: plane-origin (.:plane-origin self))
+    (=: region-paint (nw Paint))
+    (.setColor region-paint 0xFFB4D8FD)
+    (.drawPath cnv
+      (.offset (RegionPathOps/compute-path line-height line-end-xs border-radius first-line-x)
+        (ct float (.getX plane-origin))
+        (ct float (+ (.getY plane-origin) (* line-height top-line-idx))))
+      region-paint))
+  
+  (defn draw-region-cursor [^TextEditor self ^Region region ^Canvas cnv]
+    (=: line-height (.:line-height self))
+    (=: line-start-idxs (.:line-start-idxs (.:buffer (.:view self))))
+    (=: end-idx (.:end region))
+    (=: end-line-idx (Misc/cursor->line-idx line-start-idxs end-idx))
+    (=: plane-origin (.:plane-origin self))
+    (=: line-top (+ (* end-line-idx line-height) (.getY plane-origin)))
+    
+    (=: line-start-idx (ct int (.nth line-start-idxs end-line-idx)))
+    (=: offset (- end-idx line-start-idx))
+    (=: text-line (ct TextLine (.nth (.:textlines self) end-line-idx)))
+    (=: cursor-brx (.getCoordAtOffset text-line offset))
+    (=: cursor-x (ct float (+ cursor-brx (ct float (.getX plane-origin)))))
+    (=: cursor-width 2f)
+    
+    (=: cursor-paint (nw Paint))
+    (.setColor cursor-paint 0xE0007ACC)
+    (=: extra-v (Math/round (* 0.12f (ct float line-height))))
+    (.drawRect cnv
+      (Rect/makeLTRB
+        (- cursor-x (/ cursor-width 2f))
+        (ct float (- line-top extra-v))
+        (+ cursor-x (/ cursor-width 2f))
+        (ct float (+ line-top line-height extra-v)))
+      cursor-paint))
+  
+  (def padding-bottom 20)
+  
+  (defn regenerate-textlines! [^TextEditor self ^Rope rope]
+    (=: font (.:font self))
+    (IndentationOps/reset-with! (.:indentation self) rope)
+    (=: line-start-idxs (.:line-start-idxs (.:buffer (.:view self))))
+    (=: textlines' (nw LinearList (ct int (.size line-start-idxs))))
+    (=: it (.iterator line-start-idxs))
+    (loop [prev-i (ct int (.next it))]
+      (if (.hasNext it)
+        (let lsi (ct int (.next it))
+          (do
+            (.addLast textlines'
+              (TextLine/make
+                ;; dec to exclude newline
+                (.toString (.slice rope prev-i (dec lsi))) font))
+            (recur lsi)))
+        (.addLast textlines'
+          (TextLine/make
+            (.toString (.slice rope prev-i (.size rope))) font))))
+    (setf! self :textlines textlines'))
+  
+  (defn reset-view! ^void [^TextEditor self ^IMap ctx ^View view]
+    (setf! self :view view)
+    (Self/regenerate-textlines! self (.:rope (.:buffer view))))
+  
+  (defn make ^TextEditor [^Path path]
+    (=: buffer (nw Buffer))
+    (.set-path buffer path)
+    (.reload buffer)
+    (.reset-history! buffer)
+    (=: rope (.:rope buffer))
+    (=: view (nw View buffer))
+    (SelectionOps/add (.:selection view) (nw Region 0 0))
+    
+    (=: self (nw TextEditor view))
+    self)
+  
+  (defn draw ^void [^TextEditor self ^IMap ctx ^Canvas cnv ^IRect frame-rect]
+    (setf! self :visible-rect frame-rect)
+    
+    ; (.set-rect intr irect)
+    (=: plane-origin-x (+ (.:text-padding-h self) (.:scroll-x self) (.getLeft frame-rect)))
+    (=: plane-origin-y (+ (.:text-padding-v self) (.:scroll-y self) (.getTop frame-rect)))
+    (setf! self :plane-origin (nw IPoint plane-origin-x plane-origin-y))
+    
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (=: font (ct Font (.:value *font)))
+    (when (.:changed *font)
+      (setf! self :line-height (inc (ct int (.getSpacing font))))
+      (setf! self :font font)
+      (Self/regenerate-textlines! self (.:rope (.:buffer (.:view self)))))
+    
+    ;; region highlights
+    (loopr [region (.:regions (.:selection (.:view self)))] []
+      (do
+        (=: region (ct Region region))
+        (when (not (RegionOps/caret? region))
+          (Self/draw-selection-region self region cnv font))
+        (recur)))
+    
+    (Self/draw-text self ctx cnv font)
+    
+    ;; cursors
+    (loopr [region (.:regions (.:selection (.:view self)))] []
+      (do
+        (=: region (ct Region region))
+        (Self/draw-region-cursor self region cnv)
+        (recur))))
+  
+  (defn perform-edit! ^void [^TextEditor self ^EditorCommit commit]
+    (BufferOps/edit! (.:buffer (.:view self))
+      (.:selection (.:view self)) commit)
+    (Self/regenerate-textlines! self (.:rope commit)))
+  
+  (defn perform-undo ^void [^TextEditor self]
+    (=: buffer (.:buffer (.:view self)))
+    (BufferOps/undo! buffer (.:selection (.:view self)))
+    (Self/regenerate-textlines! self (.:rope buffer)))
+  
+  (defn perform-redo ^void [^TextEditor self]
+    (=: buffer (.:buffer (.:view self)))
+    (BufferOps/redo! buffer (.:selection (.:view self)))
+    (Self/regenerate-textlines! self (.:rope buffer)))
+  
+  ; (defi close ^void [_]
+    ; (.unreg-intr! intrmgr intr)
+    ; (.unreg-intr! intrmgr sidebar-intr)
+  ;   )
+  )

@@ -31,14 +31,15 @@
       (let [s (some #(cond
                        (= :symbol (:node/kind %)) (:string %)
                        (= :string (:node/kind %)) (:value %))
-                (:children tag))
-            ret (if (= "Self" s) (:self-classname env)
-                  (ana/expand-classname env s))]
-        
-        ;; note: could be primitive
-        ; (assert (some #{\.} ret)
-        ;   (pr-str ret " env: " (keys env)))
-        ret))))
+                (:children tag))]
+        (when s
+          (let [ret (if (= "Self" s) (:self-classname env)
+                      (ana/expand-classname env s))]
+                      
+            ;; note: could be primitive
+            ; (assert (some #{\.} ret)
+            ;   (pr-str ret " env: " (keys env)))
+            ret))))))
 
 (defn classinfo->class [env info]
   (interop/new-unreal-class
@@ -117,7 +118,9 @@
                             ;; first arg is self
                             (spec/of-class (:classname clsinfo))
                             (if-some [cn (class-tag (assoc arg-node :node/env env))]
-                              (spec/of-class cn)
+                              (if (and (= 0 i) (not static?))
+                                (throw (ex-info "'self' parameter must not have type label" {}))
+                                (spec/of-class cn))
                               (spec/of-class "java.lang.Object"))))
                         :arg-idx i)]))
           params)
@@ -159,6 +162,11 @@
                bodydecl)
         body (assoc body :node/locals (:node/locals prev-node))
         body (update body :node/env assoc :method prev-method)
+        body (if preknown-ret-classname
+               (ana/coerce-to-class
+                 (interop/resolve-class env preknown-ret-classname)
+                 body)
+               body)
         ret-classname (or preknown-ret-classname
                         (spec/get-exact-class (:node/spec body))
                         "void")]
@@ -382,6 +390,8 @@
        (let [paramsdecl (nth children 1)
              bodydecl (subvec children 2)
              _ (assert (<= 1 (count (:children paramsdecl))) "Must specify 'self' parameter")
+             _ (assert (nil? (class-tag (assoc (first (:children paramsdecl)) :node/env {})))
+                 "cannot assign type to 'self' parameter in 'init' constructor")
              m (analyse-method-body (:prev-node clsinfo)
                  clsinfo false "<init>" paramsdecl bodydecl "void")]
          (-> clsinfo
@@ -511,6 +521,8 @@
      (fn [info {:keys [string]}]
        (let [classname (ana/expand-classname env string)
              cls ((:class-resolver env) classname)
+             _ (when (nil? cls)
+                 (throw (ex-info (str "Class/interface not found: " (pr-str cls)) {})))
              info (if (interop/-interface? cls)
                     (cond-> (update info :interfaces (fnil conj []) classname)
                       (not (:super info))

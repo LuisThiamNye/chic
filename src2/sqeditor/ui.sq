@@ -1,0 +1,67 @@
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList IMap)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect IPoint)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter)
+  (chic.sqeditor.ui Label)
+  (chic.browser.ui
+    TextGeo ChangeableValue)
+  (chic.types SizeWH))
+
+(defclass chic.types.SizeWH
+  [^:pub ^int width ^:pub ^int height])
+
+(defclass chic.sqeditor.ui.Label
+  :interfaces AutoCloseable
+  [^:mut ^TextLine textline
+   ^:mut ^int baseline-dy
+   ^:mut ^SizeWH size]
+  
+  (init [_])
+  
+  (defi measure ^SizeWH [self ^IMap ctx ^ChangeableValue *text]
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (when (or (.:changed *font) (.:changed *text))
+      (=: font (ct Font (.:value *font)))
+      (=: text (ct String (.:value *text)))
+      (=: geo (TextGeo/capcentre-geo font))
+      (setf! self :baseline-dy (ct int (:baseline geo)))
+      (=: textline (TextLine/make text font))
+      (setf! self :textline textline)
+      (setf! self :size (nw SizeWH
+                          (inc (ct int (.getWidth textline)))
+                          (ct int (:height geo)))))
+    (.:size self))
+  
+  (defi draw ^void [self ^IMap ctx ^Canvas cnv ^IPoint point]
+    (.drawTextLine cnv textline
+      (.getX point) (+ (.getY point) baseline-dy)
+      (ct Paint (:text-fill ctx))))
+  
+  (defi close ^void [_] (.close textline))
+  )

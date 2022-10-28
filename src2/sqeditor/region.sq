@@ -1,0 +1,284 @@
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+(Alias-Classes
+  SkPath io.github.humbleui.skija.Path)
+
+(defclass chic.sqeditor.Region
+  [^:pub ^int start
+   ^:pub ^int end ;; idx of active cursor, may be >= or < than start
+   ^:pub ^int xpos ;; for vertical movement; else -1 
+   ]
+  (init [_ ^int s ^int e]
+    (set! start s)
+    (set! end e)
+    (set! xpos -1))
+  
+  (init [_ ^int s ^int e ^int x]
+    (set! start s)
+    (set! end e)
+    (set! xpos x))
+  )
+
+
+(defclass chic.sqeditor.RegionOps
+  
+  (defn min [^Region region]
+    (jc Math min (jfi region :start) (jfi region :end)))
+  
+  (defn max [^Region region]
+    (jc Math max (jfi region :start) (jfi region :end)))
+  
+  (defn caret? [^Region region]
+    (= (jfi region :start) (jfi region :end)))
+  
+  (defn offset [^Region region ^int offset]
+    (if (= 0 offset)
+      region
+      (nw Region (+ offset (jfi region :start)) (+ offset (jfi region :end)))))
+  
+  (defn end-moved-vertically
+    ^Ints2 [^int end ^int xpos ^int dlines ^Rope rope ^LinearList line-start-idxs
+            ^LineOffsetConverter lo]
+    (=: line-idx (+ dlines (jc Misc cursor->line-idx line-start-idxs end)))
+    (if (< line-idx 0)
+      (nw Ints2 0 xpos)
+      (if (<= (ct int (.size line-start-idxs)) line-idx)
+        (nw Ints2 (ct int (.size rope)) xpos)
+        (let
+          lsi (.intValue (ct Integer (.nth line-start-idxs (ct long line-idx))))
+          xpos' (if (<= 0 xpos)
+                  xpos
+                  (let
+                    line-idx-before (jc Misc cursor->line-idx
+                                      line-start-idxs end)
+                    lsi-before (.intValue
+                                 (ct Integer
+                                   (.nth line-start-idxs
+                                     (ct long line-idx-before))))
+                    (.line-offset->xpos lo line-idx-before (- end lsi-before))))
+          (nw Ints2 (+ lsi
+                     (.line-xpos->offset lo line-idx xpos')) xpos')))))
+  
+  (defn simple-moved-vertically
+    [^Region region type ^Rope rope ^boolean modify?
+     ^LinearList line-start-idxs
+     ^LineOffsetConverter lo]
+    (=: end' 0)
+    (=: xpos' -1)
+    (<-
+      (if (== :up type)
+        (let r (jc Self end-moved-vertically (jfi region :end) (jfi region :xpos)
+                 -1 rope line-start-idxs lo)
+          (do (set! end' (jfi r :x1))
+            (set! xpos' (jfi r :x2)))))
+      (if (== :down type)
+        (let r (jc Self end-moved-vertically (jfi region :end) (jfi region :xpos)
+                 1 rope line-start-idxs lo)
+          (do (set! end' (jfi r :x1))
+            (set! xpos' (jfi r :x2)))))
+      nil)
+    (nw Region (if modify? (jfi region :start) end') end' xpos'))
+  
+  (defn simple-move-end ^Region
+    [^Region region type ^Rope rope ^boolean modify?]
+    (=: end' 0)
+    (=: xpos' -1)
+    (<-
+      (if (== :left type)
+        (if (or modify? (jc Self caret? region))
+          (if (< 0 (=: end (jfi region :end)))
+            (set! end' (dec end))
+            nil)
+          (set! end' (jc Self min region))))
+      (if (== :right type)
+        (if (or modify? (jc Self caret? region))
+          (if (< (=: end (jfi region :end)) (.size rope))
+            (set! end' (inc end))
+            (do
+              (set! end' end)
+              nil))
+          (set! end' (jc Self max region))))
+      (if (== :line-start type)
+        (let
+          end (jfi region :end)
+          lsi (inc (jc RopeUtil lastIndexOf rope 10 (dec end)))
+          nwsi (if (= lsi (.size rope))
+                 lsi
+                 (loop [i lsi]
+                   (let c (.nth rope i)
+                     (if (or (= 32 c) (= 9 c)) ;; space, tab
+                       (recur (inc i))
+                       i))))
+          (do
+            (set! end' (if (= end nwsi)
+                         lsi nwsi))
+            (set! xpos' 0))))
+      (if (== :line-end type)
+        (do (=: next-lf-idx (jc RopeUtil indexOf rope 10 (jfi region :end)))
+          (set! end'
+            (if (<= 0 next-lf-idx)
+              next-lf-idx
+              (.size rope)))
+          (set! xpos' (jf Integer MAX_VALUE))))
+      (if (== :doc-start type)
+        (set! end' 0))
+      (if (== :doc-end type)
+        (set! end' (ct int (.size rope))))
+      (if (== :word-right type)
+        (let word-iter (jc BreakNav make-word-iter rope)
+          (set! end' (jc BreakNav word-after word-iter (jfi region :end)))))
+      (if (== :word-left type)
+        (let word-iter (jc BreakNav make-word-iter rope)
+          (set! end' (jc BreakNav word-before word-iter (jfi region :end)))))
+      nil)
+    (nw Region (if modify? (jfi region :start) end') end' xpos'))
+  
+  (defn effective-range ^Ints2 [^Region region ^Rope rope]
+    (if (= 0 (=: rope-size (.size rope)))
+      (nw Ints2 0 0)
+      (if (jc Self caret? region)
+        (let
+          end (jfi region :end)
+          lsi (inc (jc RopeUtil lastIndexOf rope 10 (dec end)))
+          next-lf-idx (jc RopeUtil indexOf rope 10 end)
+          rope-size (.size rope)
+          lei (if (<= 0 next-lf-idx) (inc next-lf-idx) rope-size)
+          (nw Ints2 lsi lei))
+        (nw Ints2
+          (jc Self min region) (jc Self max region)))))
+  )
+
+(defclass chic.sqeditor.RegionPathOps
+  
+  (defn add-line-end- ^void [^SkPath path ^float border-radius ^float y ^int x0 ^int x1]
+    (when (not (= x0 x1))
+      (let
+        bd (* 2f border-radius)
+        brx (jc Math min border-radius (jc Math abs (/ (ct float (- x0 x1)) 2f)))
+        bdx (* 2f brx)
+        x0f (ct float x0) x1f (ct float x1)
+        (if (< x1 x0)
+          ;; join from right to left
+          (do (.arcTo path (jc Rect makeLTRB (- x0f (* 2f brx)) (- y bd)
+                             x0f y)
+                0f 90f false)
+            (.arcTo path (jc Rect makeLTRB x1f y
+                           (+ x1f bdx) (+ y bd))
+              270f -90f false))
+          ;; join from left to right
+          (do (.arcTo path (jc Rect makeLTRB x0f (- y bd)
+                             (+ x0f bdx) y)
+                180f -90f false)
+            (.arcTo path (jc Rect makeLTRB (- x1f bdx) y
+                           x1f (+ y bd))
+              270f 90f false))))))
+  
+  (defn add-simple-first-line- ^void
+    [^SkPath path ^int line-height ^float border-radius
+     ^int first-line-x ^int first-end-x]
+    (let
+      bd (* 2f border-radius)
+      brx (jc Math min border-radius (ct float (- first-end-x first-line-x)))
+      bdx (* 2f brx)
+      origin-y 0
+      origin-yf (ct float origin-y)
+      first-line-xf (ct float first-line-x)
+      first-end-xf (ct float first-end-x)
+      (do
+        ;; top-left of first line
+        (.moveTo path first-line-xf (+ origin-yf bd))
+        (.arcTo path (jc Rect makeLTRB first-line-xf origin-yf
+                       (+ first-line-xf bdx) (+ origin-yf bdx))
+          180f 90f false)
+        (.arcTo path (jc Rect makeLTRB (- first-end-xf bdx) origin-yf
+                       first-end-xf (+ origin-yf bd))
+          270f 90f false))))
+  
+  (defn add-first-line-leader- ^void
+    [^SkPath path ^int line-height ^float border-radius ^int first-line-x]
+    (let
+      origin-x 0 origin-y 0
+      origin-xf 0f origin-yf 0f
+      bd (* 2f border-radius)
+      first-line-xf (ct float first-line-x)
+      y (ct float (+ origin-y line-height))
+      bdx (jc Math min bd (ct float (- first-line-x origin-x)))
+      (do
+        ;; top-left of second line
+        (.arcTo path (jc Rect makeLTRB
+                       origin-xf y (+ origin-xf bdx) (+ y bd))
+          180f 90f false)
+        (.arcTo path (jc Rect makeLTRB
+                       (- first-line-xf bdx) (- y bd) first-line-xf y)
+          90f -90f false))))
+  
+  (defn compute-path ^SkPath [^int line-height ^IList line-end-xs ^float border-radius ^int first-line-x]
+    (let
+      path (nw SkPath)
+      bd (* 2f border-radius) ;; border diameter
+      bd-rounded (jc Math round bd)
+      origin-x 0 origin-y 0
+      first-end-x (.intValue (ct Integer (.nth line-end-xs 0L)))
+      (do
+        (jc Self add-simple-first-line- path line-height border-radius first-line-x first-end-x)
+        (=: nlines (.size line-end-xs))
+        (loop ;; right ends
+          [y (+ line-height origin-y)
+           prev-x first-end-x
+           i 1L]
+          (=: yf (ct float y))
+          (if (< i nlines)
+            (do (=: end-x (.intValue (ct Integer (.nth line-end-xs i))))
+              (jc Self add-line-end- path border-radius yf prev-x end-x)
+              (recur
+                (+ y line-height)
+                end-x
+                (inc i)))
+            (let
+              x prev-x
+              xf (ct float x)
+              left-x (if (< 1L nlines) origin-x first-line-x)
+              left-xf (ct float left-x)
+              brx (jc Math min border-radius (ct float (- x origin-x)))
+              bdx (* 2f brx)
+              (do
+                ;; bottom-right
+                (.arcTo path (jc Rect makeLTRB (- xf bdx) (- yf bd) xf yf)
+                  0f 90f false)
+                ;; bottom-left
+                (.arcTo path (jc Rect makeLTRB left-xf (- yf bd) (+ left-xf bdx) yf)
+                  90f 90f false)
+                (when (and (< 1L nlines) (< 0 first-line-x))
+                  ;; the first line is offset and not alone
+                  (do (jc Self add-first-line-leader- path line-height border-radius first-line-x)))))))
+        (.closePath path))))
+  )

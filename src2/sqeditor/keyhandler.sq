@@ -1,0 +1,177 @@
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps TextEditorOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+(defclass chic.sqeditor.KeyHandling
+  
+  (defn on-key-down ^boolean [^TextEditor self ^Consumer action-fn ^EventKey evt]
+    (=: view (.:view self))
+    (=: mods (bit-and (.:_modifiers evt) (bit-not 1)))
+    (=: rope (.:rope (.:buffer view)))
+    (=: key (.getKey evt))
+    (when (.isArrowKey key)
+      (set! mods (bit-and mods (bit-not 512))))
+    (=: lo
+      (reify LineOffsetConverter
+        (line-xpos->offset ^int [_ ^int line-idx ^int xpos]
+          (let text-line (ct TextLine (.nth (.:textlines self) (ct long line-idx)))
+            (.getOffsetAtCoord text-line (ct float xpos))))
+        (line-offset->xpos ^int [_ ^int line-idx ^int offset]
+          (TextEditorOps/line-offset->xpos self line-idx offset))))
+    (=: line-start-idxs (jfi (.:buffer view) :line-start-idxs) )
+    (=: shift? (.isModifierDown evt (jf KeyModifier SHIFT)))
+    (=: macos? (== (jf Platform MACOS) (jf Platform CURRENT)))
+    (=: control? (.isModifierDown evt (jf KeyModifier CONTROL)))
+    (=: primary? (.isModifierDown evt
+                   (if macos?
+                     (jf KeyModifier MAC_COMMAND)
+                     (jf KeyModifier CONTROL))))
+    (=: option? (.isModifierDown evt (jf KeyModifier MAC_OPTION)))
+    (=: alt? (.isModifierDown evt (jf KeyModifier ALT)))
+    (if primary?
+      (case-enum key
+        A (SelectionOps/select-all (.:selection view) rope)
+        V (let data (Clipboard/get (let a (na ClipboardFormat 1)
+                                        (do (sa a 0 (jf ClipboardFormat TEXT))
+                                          a)))
+           nil #_(when (not (nil? data))
+              (.perform-edit! self
+                (SelectionOps/insert-text (.:selection view)
+                  (.:rope (.:buffer view)) (.getString data)))))
+        C (let s (SelectionOps/combined-regions-str (.:selection view) rope)
+            (Clipboard/set (let a (na ClipboardEntry 1)
+                                (do (sa a 0 (ClipboardEntry/makeString
+                                              (jf ClipboardFormat TEXT) s))
+                                  a))))
+        X (do (let s (SelectionOps/combined-regions-str (.:selection view) rope)
+                (Clipboard/set (let a (na ClipboardEntry 1)
+                                    (do (sa a 0 (ClipboardEntry/makeString
+                                                  (jf ClipboardFormat TEXT) s))
+                                      a))))
+            #_(.perform-edit! self
+              (SelectionOps/delete (.:selection view)
+                (.:rope (.:buffer view)))))
+        Z (if shift? (TextEditorOps/perform-redo self) (TextEditorOps/perform-undo self))
+        S (BufferOps/save! (.:buffer view))
+        ; W (.close-current self)
+        G (.accept action-fn :navigate-to-region)
+        E (.println (jf System out)
+            (Eval/eval-str
+              (SelectionOps/combined-regions-str (.:selection view) rope)))
+        HOME (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
+        END (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
+        (when macos?
+          (case-enum key
+            LEFT (SelectionOps/simple-move-ends (.:selection view) :line-start rope shift?)
+            RIGHT (SelectionOps/simple-move-ends (.:selection view) :line-end rope shift?)
+            UP (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
+            DOWN (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
+            BACKSPACE (TextEditorOps/perform-edit! self
+                        (SelectionOps/delete-by-movement (.:selection view) :line-start rope))
+            nil)))
+      ;; non primary
+      (if (if macos? option? control?)
+        (case-enum key
+          RIGHT (SelectionOps/simple-move-ends (.:selection view) :word-right rope shift?)
+          LEFT (SelectionOps/simple-move-ends (.:selection view) :word-left rope shift?)
+          nil)
+        (if alt?
+          nil
+          (case-enum key
+            RIGHT (SelectionOps/simple-move-ends (.:selection view) :right rope shift?)
+            LEFT (SelectionOps/simple-move-ends (.:selection view) :left rope shift?)
+            UP (SelectionOps/simple-moved-vertically (.:selection view) :up rope shift?
+                 line-start-idxs lo)
+            DOWN (SelectionOps/simple-moved-vertically (.:selection view) :down rope shift?
+                   line-start-idxs lo)
+            BACKSPACE (TextEditorOps/perform-edit! self
+                        (SelectionOps/delete-backward (.:selection view)
+                          (.:rope (.:buffer view))))
+            ENTER
+            (do
+              (TextEditorOps/perform-edit! self
+                (SelectionOps/insert-text (.:selection view)
+                  (.:rope (.:buffer view)) "\n"))
+              (TextEditorOps/perform-edit! self
+                (SelectionOps/insert-indent (.:selection view)
+                  (.:rope (.:buffer view))
+                  line-start-idxs (.:indentation self))))
+            HOME (SelectionOps/simple-move-ends (.:selection view) :line-start rope shift?)
+            END (SelectionOps/simple-move-ends (.:selection view) :line-end rope shift?)
+            nil))))
+    true)
+  
+  (defn on-text-input ^boolean [^TextEditor self ^EventTextInput evt]
+    (when (not (.equals "\r" (.getText evt)))
+      (=: view (.:view self))
+      (TextEditorOps/perform-edit! self
+        (SelectionOps/insert-text (.:selection view)
+          (.:rope (.:buffer view)) (.getText evt))))
+    true)
+  )
+
+
+
+
+    ; ;; interactor
+    ; (set! intrmgr intrmgr')
+    ; (set! intr (nw Interactor))
+    ; (.reg-intr! intrmgr' intr)
+    ; (.add-listener intr :mouse-down
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-mouse-down self (ct EventMouseButton evt)))))
+    ; (.add-listener intr :mouse-up
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-mouse-up self (ct EventMouseButton evt)))))
+    ; (.add-listener intr :mouse-scroll
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-mouse-scroll self (ct EventMouseScroll evt)))))
+    ; (.add-listener intr :key-down
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-key-down self (ct EventKey evt)))))
+    ; (.add-listener intr :text-input
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-text-input self (ct EventTextInput evt)))))
+    
+    ; (set! sidebar-intr (nw Interactor))
+    ; (.reg-intr! intrmgr' sidebar-intr)
+    ; (set! ui-sidebar (nw TextButtonList
+    ;                    (reify IntConsumer
+    ;                      (accept ^void [_ ^int idx]
+    ;                        (.set-view-idx self idx)))))
+    ; (.add-listener sidebar-intr :mouse-down
+    ;   (reify Consumer
+    ;     (accept ^void [_ evt]
+    ;       (.on-mouse-down (jfi self :ui-sidebar) (ct EventMouseButton evt)))))

@@ -1,7 +1,12 @@
+
 (defclass sq.lang.util.Ints2
   [^:pub ^int x1 ^:pub ^int x2])
 (defclass sq.lang.util.Ints3
   [^:pub ^int x1 ^:pub ^int x2 ^:pub ^int x3])
+(defclass sq.lang.util.Objs2
+  [^:pub ^Object x1 ^:pub ^Object x2])
+(defclass sq.lang.util.Objs3
+  [^:pub ^Object x1 ^:pub ^Object x2 ^:pub ^Object x3])
 
 (defclass sq.lang.util.Maths
   (defn clamp ^int [^int x ^int min ^int max]
@@ -124,25 +129,25 @@ Uses a blocking infinte loop."
   
   (defi first ^char [_]
     (set! idx 0)
-    (.nth rope 0))
+    (ct char (.nth rope 0)))
   (defi last ^char [_]
     (set! idx (dec end-idx))
-    (.nth rope idx))
+    (ct char (.nth rope idx)))
   (defi current ^char [_]
     (if (= idx end-idx)
       (jf CharacterIterator DONE)
-      (.nth rope idx)))
+      (ct char (.nth rope idx))))
   (defi next ^char [_]
     (set! idx (inc idx))
     (if (< idx end-idx)
-      (.nth rope idx)
+      (ct char (.nth rope idx))
       (do (set! idx end-idx)
           (jf CharacterIterator DONE))))
   (defi previous ^char [_]
     (if (= 0 idx)
       (jf CharacterIterator DONE)
       (do (set! idx (dec idx))
-          (.nth rope idx))))
+          (ct char (.nth rope idx)))))
   (defi setIndex ^char [_ ^int idx2]
     (when (or (< idx2 0) (< end-idx idx2))
       (throw (nw IllegalArgumentException
@@ -151,7 +156,7 @@ Uses a blocking infinte loop."
     (set! idx idx2)
     (if (= idx2 end-idx)
       (jf CharacterIterator DONE)
-      (.nth rope idx2)))
+      (ct char (.nth rope idx2))))
   (defi getBeginIndex ^int [_] 0)
   (defi getEndIndex ^int [_] end-idx)
   (defi getIndex ^int [_] idx)

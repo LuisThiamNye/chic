@@ -1,0 +1,121 @@
+
+(Refer-Classes
+  (chic.browser.intr BasicIntr BasicIntrMgr)
+  (chic.sqeditor RectTools)
+  (io.github.humbleui.types IRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard))
+
+
+(defclass chic.browser.intr.BasicIntrMgr
+  [^:mut focused-intr
+   ^:mut hovered-intr
+   ^:mut engaged-intr ;; engaged + hovered = pressed
+   ]
+  
+  (init [_]
+    )
+  
+  ; (defi clear-hover-state ^void [_]
+  ;   (set! hover-state nil)
+  ;   (set! hovered-intr nil))
+  
+  ; (defi get-hover-state ^Object [_] hover-state)
+  
+  ; (defi get-hover-state ^Object [_ intr]
+  ;   (if (== intr hovered-intr)
+  ;     hover-state
+  ;     nil))
+  
+  ; (defi set-hover-state [_ intr state]
+  ;   (set! hover-state state)
+  ;   (set! hovered-intr intr))
+  
+  (defi engaged? [_]
+    (not (nil? engaged-intr)))
+  
+  (defi engaged? [self intr]
+    (== engaged-intr intr))
+  
+  (defi engage ^void [_ intr]
+    (set! engaged-intr intr))
+  
+  (defi hovered? [_ intr]
+    (and (== intr hovered-intr)
+      (or (nil? engaged-intr) (== engaged-intr intr))))
+  
+  (defi hover ^void [_ intr]
+    (set! hovered-intr intr))
+  
+  (defi focused? [_ intr]
+    (== intr focused-intr))
+  
+  (defi focus ^void [self intr]
+    (set! focused-intr intr))
+    
+  
+  )
+
+
+(defclass chic.browser.intr.BasicIntr
+  [^:pub ^:mut ^IRect rect
+   ^:pub ^BasicIntrMgr mgr]
+  
+  (init [self ^BasicIntrMgr mgr]
+    (setf! self :mgr mgr)
+    (setf! self :rect (IRect/makeLTRB -1 -1 -1 -1)))
+  
+  (defi set-rect [self ^IRect new-rect]
+    (set! rect new-rect))
+  
+  (defi get-rect [_] rect)
+  
+  (defi hovered? [self]
+    (.hovered? mgr self))
+  
+  (defi engaged? [self]
+    (.engaged? mgr self))
+  )
+
+(defclass chic.browser.intr.BasicIntrOps
+  
+  (defn notify-mousedown ^void [^BasicIntr self ^EventMouseButton evt]
+    (=: mgr (.:mgr self))
+    (case-enum (.getButton evt)
+      PRIMARY
+      (when (RectTools/contains-point?
+              (.:rect self) (.getX evt) (.getY evt))
+       (.focus mgr self)
+       (.engage mgr self))
+      nil))
+  
+  (defn notify-mouseup ^void [^BasicIntr self ^EventMouseButton evt]
+    (when (.engaged? (.:mgr self) self)
+      (.engage (.:mgr self) nil)))
+  
+  (defn notify-mousemove ^void [^BasicIntr self ^EventMouseMove evt]
+    (=: mgr (.:mgr self))
+    (=: hovered? (RectTools/contains-point?
+                   (.:rect self) (.getX evt) (.getY evt)))
+    (if hovered?
+      (.hover mgr self)
+      (when (.hovered? mgr self)
+        (.hover mgr nil))))
+  
+  (defn notify-event ^void [^BasicIntr self ^Event evt]
+    (<-
+      (if (instance? EventMouseMove evt)
+        (Self/notify-mousemove self (ct EventMouseMove evt)))
+      (if (instance? EventMouseButton evt)
+        (let
+          evt (ct EventMouseButton evt)
+          (if (.isPressed evt)
+            (Self/notify-mousedown self evt)
+            (Self/notify-mouseup self evt))))
+      nil
+      ))
+  )

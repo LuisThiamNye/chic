@@ -1,0 +1,213 @@
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+(defclass chic.sqeditor.Selection
+  [^:pub ^:mut ^LinearList regions]
+  (init [_]
+    (set! regions (nw LinearList)))
+  (defi clear ^void [_]
+    (set! regions (nw LinearList)))
+  #_(defi reset-regions! [_ ^LinearList regions']
+    (set! regions regions'))
+  (defi reset-regions! [_ ^"[Lchic.sqeditor.Region;" regions']
+    (set! regions (nw LinearList (alength regions')))
+    (loop [i 0]
+      (when (< i (alength regions'))
+        (.addLast regions (aa regions' i)))))
+  )
+
+(defclass chic.sqeditor.SelectionOps
+  
+  (defn add-region! ^void [^LinearList regions ^Region region]
+    (.addLast regions region))
+  
+  (defn add ^void [^Selection sel ^Region region]
+    (.addLast (jfi sel :regions) region))
+  
+  (defn simple-moved-vertically ^void [^Selection sel type ^Rope rope ^boolean modify?
+                                       ^LinearList line-start-idxs
+                                       ^LineOffsetConverter lo]
+    (=: regions (jfi sel :regions))
+    (.clear sel)
+    (let it (.iterator regions)
+      (loop []
+        (when (.hasNext it)
+          (jc Self add sel (jc RegionOps simple-moved-vertically
+                             (ct Region (.next it)) type rope modify?
+                             line-start-idxs
+                             lo))
+          (recur)))))
+  
+  (defn simple-move-ends ^void [^Selection sel type ^Rope rope ^boolean modify?]
+    (=: regions (jfi sel :regions))
+    (.clear sel)
+    (let it (.iterator regions)
+      (loop []
+        (when (.hasNext it)
+          (jc Self add sel (jc RegionOps simple-move-end
+                             (ct Region (.next it)) type rope modify?))
+          (recur)))))
+  
+  (defn reg-ary [^LinearList regions]
+    (ct "[Lchic.sqeditor.Region;" (.toArray regions)))
+  
+  (defn insert-text ^EditorCommit [^Selection sel ^Rope rope1 ^String text]
+    (=: prev-regions (jfi sel :regions))
+    (=: regions (nw LinearList))
+    (let it (.iterator prev-regions)
+      (loop [rope rope1, offset 0]
+        (if (.hasNext it)
+          (do
+            (=: region (ct Region (.next it)))
+            (=: start (+ offset (jc RegionOps min region)))
+            (=: end (+ offset (jc RegionOps max region)))
+            (=: text-length (.length text))
+            (=: end' (+ start text-length))
+            (=: rope (if (= start end)
+                       rope
+                       (.remove rope start end)))
+            (jc Self add-region! regions (nw Region end' end'))
+            (recur
+              (.insert rope start text)
+              (+ offset (- text-length (- end start)))))
+          (do
+            (nw EditorCommit rope (jc Self reg-ary regions)))))))
+  
+  (defn insert-indent ^EditorCommit
+    [^Selection sel ^Rope rope1 ^LinearList line-start-idxs ^Indentation indentation]
+    (=: prev-regions (jfi sel :regions))
+    (=: regions (nw LinearList))
+    (let it (.iterator prev-regions)
+      (loop [rope rope1, offset 0]
+        (if (.hasNext it)
+          (do
+            (=: region (ct Region (.next it)))
+            (=: start (+ offset (jc RegionOps min region)))
+            (=: end (+ offset (jc RegionOps max region)))
+            ; (=: line-idx (jc Misc cursor->line-idx line-start-idxs end))
+            (=: indent-level (jc IndentationOps level-at-cursor rope end))
+            (=: text (.repeat " " indent-level))
+            (=: text-length (.length text))
+            (=: end' (+ start text-length))
+            (=: rope (if (= start end)
+                       rope
+                       (.remove rope start end)))
+            (jc Self add-region! regions (nw Region end' end'))
+            (recur
+              (.insert rope start text)
+              (+ offset (- text-length (- end start)))))
+          (do
+            (nw EditorCommit rope (jc Self reg-ary regions)))))))
+  
+  (defn delete-by-movement ^EditorCommit [^Selection sel type ^Rope rope]
+    (=: regions (nw LinearList))
+    (let it (.iterator (jfi sel :regions))
+      (loop [rope rope
+             offset 0]
+        (if (.hasNext it)
+          (let
+            region (jc RegionOps offset (ct Region (.next it)) offset)
+            region' (jc RegionOps simple-move-end region type rope true)
+            high (+ offset (jc RegionOps max region'))
+            low (+ offset (jc RegionOps min region'))
+            (do (jc Self add-region! regions (nw Region low low))
+              (recur
+                (.remove rope low high)
+                (- offset (- high low)))))
+          (nw EditorCommit rope (jc Self reg-ary regions))))))
+  
+  (defn delete-backward ^EditorCommit [^Selection sel ^Rope rope]
+    ;; may want behaviour of deleting multiple spaces of tab size etc
+    (=: regions (nw LinearList))
+    (let it (.iterator (jfi sel :regions))
+      (loop [rope rope
+             offset 0]
+        (if (.hasNext it)
+          (do
+            (=: region (ct Region (.next it)))
+            (=: end (+ offset (jc RegionOps max region)))
+            (=: start (+ offset (jc RegionOps min region)))
+            (when (and (= start end) (< 0 end))
+              (set! start (dec end)))
+            (=: end' (jc Math min start end))
+            (jc Self add-region! regions (nw Region end' end'))
+            (if (= 0 end)
+              (recur rope offset)
+              (recur (.remove rope start end)
+                (- offset (- end start)))))
+          (nw EditorCommit rope (jc Self reg-ary regions))))))
+  
+  (defn delete ^EditorCommit [^Selection sel ^Rope rope]
+    (let
+      regions (nw LinearList)
+      it (.iterator (jfi sel :regions))
+      (loop [rope rope
+             offset 0]
+        (if (.hasNext it)
+          (let
+            region (jc RegionOps offset (ct Region (.next it)) offset)
+            ab (jc RegionOps effective-range region rope)
+            a (jfi ab :x1)
+            b (jfi ab :x2)
+            (do
+              (jc Self add-region! regions (nw Region a a))
+              (recur (.remove rope a b)
+                (+ offset (- b a)))))
+          (nw EditorCommit rope (jc Self reg-ary regions))))))
+  
+  (defn select-all ^void [^Selection sel ^Rope rope]
+    (=: regions (jfi sel :regions))
+    (.clear regions)
+    (.addLast regions (nw Region 0 (ct int (.size rope)))))
+  
+  (defn combined-regions-str ^String [^Selection sel ^Rope rope]
+    (let
+      regions (jfi sel :regions)
+      sb (nw StringBuilder)
+      it (.iterator regions)
+      (loop []
+        (if (.hasNext it)
+          (let region (ct Region (.next it))
+            (do
+              (when (< 0 (.length sb))
+                (.append sb \newline))
+              (let
+                  ab (jc RegionOps effective-range region rope)
+                  a (jfi ab :x1)
+                  b (jfi ab :x2)
+                (do (.append sb (.toCharSequence
+                                  (.slice rope a b)))
+                  (when (and (jc RegionOps caret? region)
+                          (= b (.size rope)))
+                    (.append sb \newline))))
+              (recur)))
+          (.toString sb)))))
+  )

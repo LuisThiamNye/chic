@@ -1,0 +1,241 @@
+"
+sq/compiler/reader
+"
+
+(Refer-Classes
+  (sq.clj CljUtil)
+  (sq.lang.util Objs2 Objs3)
+  (sq.compiler.parser
+    ParsedTextNumber NumberParser)
+  (org.petitparser.parser.primitive CharacterParser)
+  (org.petitparser.parser Parser)
+  (java.math BigInteger BigDecimal)
+  (java.util ArrayList)
+  (java.util.function Function))
+
+#_(defclass sq.compiler.parser.ParsedTextNumber
+  [^boolean neg?
+   type
+   ^Number number
+   ^int radix
+   ^boolean unsigned?
+   ^boolean percent?]
+  )
+
+
+(defclass sq.compiler.parser.NumberParser
+
+  (def pp-sign
+    (.map (.optional (jc CharacterParser anyOf "-+"))
+      (reify Function
+        (apply ^Object [_ r]
+          (if (nil? r)
+            :pos-implicit
+            (if (= \- (ct Character r))
+              :neg :pos))))))
+  
+  (defn bigint-fn-with-radix [^int rad]
+    (reify Function
+      (apply ^Object [_ r]
+        (nw Objs2 (ct String r) rad))))
+  
+  (def pp-radix-num
+    (.or
+      (-> (.or
+            (.seq
+              (jc CharacterParser of \x)
+              (.map (.flatten (.plus (jc CharacterParser pattern "0-9a-fA-F")))
+                (jc Self bigint-fn-with-radix 16)))
+            (.seq
+              (jc CharacterParser of \b)
+              (.map (.flatten (.plus (jc CharacterParser anyOf "01")))
+                (jc Self bigint-fn-with-radix 2))))
+        (.pick 1))
+      (.map (.flatten (.plus (jc CharacterParser range \0 \7)))
+        (jc Self bigint-fn-with-radix 8))))
+  
+  (def pp-int-type
+    (.map (jc CharacterParser anyOf "biLN")
+      (reify Function
+        (apply ^Object [_ r]
+          (case (ct Character r)
+            \b :byte
+            \i :int
+            \L :long
+            \N :bigint)))))
+  
+  (def pp-dec-type
+    (.map (jc CharacterParser anyOf "fdM")
+      (reify Function
+        (apply ^Object [_ r]
+          (case (ct Character r)
+            \f :float
+            \d :double
+            \M :bigdec)))))
+  
+  (def pp-arb-radix
+    (->
+      (.seq
+        (.flatten
+          (.seq
+            (jc CharacterParser range \1 \9)
+            (.star (jc CharacterParser digit))))
+        (jc CharacterParser of \r)
+        (.flatten (.plus (jc CharacterParser pattern "0-9a-zA-Z"))))
+      (.map
+        (reify Function
+          (apply ^Object [_ r]
+            (let
+              r (ct ArrayList r)
+              radix (jc Integer parseInt (ct String (.get r 0)))
+              (nw Objs2 (ct String (.get r 2)) radix)))))))
+  
+  (def pp-int
+    (-> (.end
+          (.seq
+            (.or
+              (->
+                (.seq
+                  (jc CharacterParser of \0)
+                  pp-radix-num)
+                (.pick 1))
+              pp-arb-radix
+              (.map (.flatten (.plus (jc CharacterParser digit)))
+                (jc Self bigint-fn-with-radix 10)))
+            (.optional pp-int-type :none)))
+      (.map
+        (reify Function
+          (apply ^Object [_ r]
+            (nw Objs2 :int r))))))
+  
+  (defn make-int-number ^Number [^ArrayList r sign]
+    (let
+      n+r (ct Objs2 (.get r 0))
+      n (ct String (jfi n+r :x1))
+      radix (ct int (jfi n+r :x2))
+      type (.get r 1)
+      unsigned? (and (not (= 10 radix))
+                  (== sign :pos-implicit))
+      (<-
+        (if (or (== :none type) (== :int type))
+          (if unsigned?
+            (jc Integer parseUnsignedInt n radix)
+            (jc Integer parseInt n radix)))
+        (if (== :long type)
+          (if unsigned?
+            (jc Long parseUnsignedLong n radix)
+            (jc Long parseLong n radix)))
+        (if (== :bigint type)
+          (nw BigInteger n radix))
+        (if (== :byte type)
+          (jc Byte parseByte n radix))
+        (throw (nw Error)))))
+ 
+  (def pp-digits-no-leading-zero
+    (.flatten
+      (.or (.seq (jc CharacterParser range \1 \9)
+             (.star (jc CharacterParser digit)))
+        (jc CharacterParser of \0))))
+  
+  (def pp-decimal
+    (->
+      (.seq
+        pp-digits-no-leading-zero
+        (.or
+          (-> (.seq
+                (jc CharacterParser of \.)
+                (.flatten (.star (jc CharacterParser digit)))
+                (.optional (jc CharacterParser of \%))
+                (.optional pp-dec-type))
+            (.map
+              (reify Function
+                (apply ^Object [_ r]
+                  (let r (ct ArrayList r)
+                    (nw Objs3
+                      (.get r 1)
+                      (if (nil? (.get r 2)) false true)
+                      (.get r 3)))))))
+          (-> (.or
+                (.seq
+                  (jc CharacterParser of \%)
+                  (.optional pp-dec-type))
+                pp-dec-type)
+            (.map
+              (reify Function
+                (apply ^Object [_ r]
+                  (let
+                    perc? (instance? ArrayList r)
+                    (nw Objs3
+                      ""
+                      perc?
+                      (if (not perc?) r (.get (ct ArrayList r) 1))))))))))
+      (.map
+        (reify Function
+          (apply ^Object [_ r]
+            (nw Objs2 :decimal r))))))
+  
+  (defn make-decimal ^Number [^ArrayList r]
+    (let
+      sb (nw StringBuilder)
+      _ (.append sb (ct String (.get r 0)))
+      fracinfo (ct Objs3 (.get r 1))
+      fracpart (ct String (jfi fracinfo :x1))
+      type (jfi fracinfo :x3)
+      _ (.append sb \.)
+      _ (.append sb fracpart)
+      bd (nw BigDecimal (.toString sb))
+      percent? (.booleanValue (ct Boolean (jfi fracinfo :x2)))
+      bd (if percent?
+           (.divide bd (nw BigDecimal "100"))
+           bd)
+      (<-
+        (if (nil? type)
+          (.doubleValue bd))
+        (if (== :double type)
+          (.doubleValue bd))
+        (if (== :bigdec type)
+          bd)
+        (if (== :float type)
+          (.floatValue bd))
+        (throw (nw Error (.toString type))))))
+  
+  (def pp
+    (.map
+      (.end
+        (.seq
+          pp-sign
+          (.or
+            pp-int
+            pp-decimal)))
+      (reify Function
+        (apply ^Object [_ r]
+          (let
+            r (ct ArrayList r)
+            sign (.get r 0)
+            v (ct Objs2 (.get r 1))
+            which (jfi v :x1)
+            numinfo (ct ArrayList (jfi v :x2))
+            (if (== :int which)
+              (jc NumberParser make-int-number numinfo sign)
+              (jc NumberParser make-decimal numinfo)))))))
+  
+  (defn parse-number ^Number [^String numtext]
+    (=: presult (.get (.parse pp numtext)))
+    (ct Number presult))
+  )
+
+(defclass sq.compiler.parser.TokenParser
+
+  (defn interpret-char-token ^int [^String token]
+    (<-
+      (if (.equals token "newline") \newline)
+      (if (.equals token "space") \space)
+      (if (.equals token "tab") \tab)
+      (if (.equals token "backspace") \backspace)
+      (if (.equals token "formfeed") \formfeed)
+      (if (.equals token "return") \return)
+      (if (.startsWith token "u")
+        (throw (nw UnsupportedOperationException
+                 "not implemented unicode character literal")))
+      (throw (nw RuntimeException (.concat "Invalid char: " token)))))
+  )

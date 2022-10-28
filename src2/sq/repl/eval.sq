@@ -1,0 +1,11 @@
+
+(Refer-Classes
+  (sq.clj CljUtil))
+
+(defclass sq.repl.eval.Eval
+  
+  (def eval-str-var (jc CljUtil find-var "jl.kickstart" "eval-str"))
+  
+  (defn eval-str [^String string]
+    (.invoke eval-str-var string))
+  )

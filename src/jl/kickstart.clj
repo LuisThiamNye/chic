@@ -19,12 +19,13 @@
   `(let [th# (Thread/currentThread)
          cl# ~cl
          pcl# (.getContextClassLoader th#)]
-     (with-bindings {clojure.lang.Compiler/LOADER cl#}
+     (with-bindings {clojure.lang.Compiler/LOADER
+                     (or cl# @clojure.lang.Compiler/LOADER)}
        (try
-         (.setContextClassLoader th# cl#)
+         (when cl# (.setContextClassLoader th# cl#))
          ~@body
          (finally
-           (.setContextClassLoader th# pcl#))))))
+           (when cl# (.setContextClassLoader th# pcl#)))))))
 
 (defn reflect-find-field* [fld flds]
   (reduce (fn [_ ^java.lang.reflect.Field f]
@@ -34,9 +35,11 @@
 (defn rfield [target fld]
   (let [fld (name fld)
         cls (if (class? target) target (.getClass target))
+        _ (assert (some? cls))
         fld ^java.lang.reflect.Field
         (or (reflect-find-field* fld (.getFields cls))
           (reflect-find-field* fld (.getDeclaredFields cls)))]
+    (assert fld "no field found")
     (.setAccessible fld true)
     (.get fld target)))
 
@@ -73,6 +76,8 @@
     "sq.lang.util.ClassReflect"
     "sq.lang.util.Ints2"
     "sq.lang.util.Ints3"
+    "sq.lang.util.Objs2"
+    "sq.lang.util.Objs3"
     "sq.lang.util.RopeCharacterIterator"
     "sq.lang.util.EmptyCharacterIterator"
     "sq.lang.util.RopeUtil"
@@ -108,6 +113,9 @@
     "chic.window.i.PaintAndEventHandler"
     "chic.window.StdWinEventListener"]
    
+   "src2/sq/clj/util.sq"
+   ["sq.clj.CljUtil"]
+   
    "src3/sq/compiler/reader.sq"
    ["sq.compiler.reader.IFormVisitor"
     "sq.compiler.reader.Reader"
@@ -116,26 +124,84 @@
     "sq.compiler.reader.IChReader"
     "sq.compiler.reader.Stock"]
    
+   "src3/sq/compiler/parser.sq"
+   ["sq.compiler.parser.NumberParser"
+    "sq.compiler.parser.TokenParser"]
+   
+   "src2/sq/repl/eval.sq"
+   ["sq.repl.eval.Eval"]
+   
+   "src2/sqeditor/intr.sq"
+   ["chic.sqeditor.IntrMgr"
+    "chic.sqeditor.Interactor"]
+   
+   "src2/sqeditor/region.sq"
+   ["chic.sqeditor.Region"
+    "chic.sqeditor.RegionOps"
+    "chic.sqeditor.RegionPathOps"]
+   
+   "src2/sqeditor/selection.sq"
+   ["chic.sqeditor.Selection"
+    "chic.sqeditor.SelectionOps"]
+   
+   "src2/sqeditor/buffer.sq"
+   ["chic.sqeditor.Buffer"
+    "chic.sqeditor.BufferOps"]
+   
+   "src2/sqeditor/eventhandler.sq"
+   ["chic.sqeditor.EventHandling"]
+   
+   "src2/sqeditor/keyhandler.sq"
+   ["chic.sqeditor.KeyHandling"]
+   
+   "src2/sqeditor/ui.sq"
+   ["chic.sqeditor.ui.Label"
+    "chic.types.SizeWH"]
+   
+   "src2/sqeditor/texteditor.sq"
+   ["chic.sqeditor.TextEditor"
+    "chic.sqeditor.TextEditorOps"]
+   
+   "src2/sqeditor/tablist.sq"
+   ["chic.sqeditor.TabListItem"
+    "chic.sqeditor.TabButtonList"
+    "chic.sqeditor.TabListBar"]
+   
    "src2/sqeditor.sq"
    ["chic.sqeditor.RectTools"
-    "chic.sqeditor.IntrMgr"
-    "chic.sqeditor.Interactor"
-    "chic.sqeditor.Buffer"
-    "chic.sqeditor.BufferOps"
     "chic.sqeditor.Misc"
     "chic.sqeditor.BreakNav"
     "chic.sqeditor.i.LineOffsetConverter"
     "chic.sqeditor.TextButtonList"
-    "chic.sqeditor.Region"
-    "chic.sqeditor.RegionOps"
-    "chic.sqeditor.RegionPathOps"
-    "chic.sqeditor.Selection"
-    "chic.sqeditor.SelectionOps"
     "chic.sqeditor.View"
     "chic.sqeditor.EditorCommit"
-    "chic.sqeditor.TextEditor"
     "chic.sqeditor.Window"
-    "chic.sqeditor.UiRoot"]})
+    "chic.sqeditor.UiRoot"
+    "chic.sqeditor.StatusBar"
+    "chic.sqeditor.StatusBarOps"]
+   
+   "src2/sqeditor/format.sq"
+   ["chic.sqeditor.Indentation"
+    "chic.sqeditor.IndentationOps"]
+   
+   "src3/chic/browser/intr.sq"
+   ["chic.browser.intr.BasicIntr"
+    "chic.browser.intr.BasicIntrOps"
+    "chic.browser.intr.BasicIntrMgr"]
+   
+   "src3/chic/browser/main.sq"
+   ["chic.browser.ui.ChangeableValue"
+    "chic.browser.UiRoot"
+    "chic.browser.Window"
+    "chic.browser.ui.TextGeo"
+    "chic.browser.ui.Titlebar"]
+   
+   "src3/chic/browser/view/maptable.sq"
+   ["chic.browser.ui.KVCell"
+    "chic.browser.ui.KVRow"
+    "chic.browser.ui.MapKVView"]
+   
+   })
 
 (def classname->file
   (reduce (fn [acc [f cns]]
@@ -311,10 +377,27 @@
 (defn get-hidden-class-host-lookup []
   (.get classloader-lookups @*current-hidden-class-loader))
 
+(defn eval-with-dcl [expr]
+  (with-thread-classloader (new-dcl)
+    (clojure.lang.Compiler/eval expr)))
+
+(defmacro evl [& body]
+ (let [expr `(do ~@body)]
+   `(eval-with-dcl ~expr)))
+
+(defn eval-str [s]
+  (evl
+    (compiler/eval-ast
+      {:classloader (new-dcl)}
+      (analyse-node {} (first (ana/str->ast s))))))
+
 (defn load-class [clsname]
-  (try (when-some [cold (try (find-class clsname)
-                          (catch Throwable _))]
-             (uninstall-class cold))
+  (with-thread-classloader
+    (try (new-dcl)
+      (catch ClassNotFoundException _ nil))
+    (try (when-some [cold (try (find-class clsname)
+                            (catch Throwable _))]
+           (uninstall-class cold))
       (let [ir (analyse-defclass-node {} clsname)
             classloader (try (new-dcl)
                           (catch ClassNotFoundException _ nil))
@@ -333,7 +416,7 @@
                                         (.loadClass classloader clsname false)
                                         (find-class clsname))))
         ret)
-      (catch Throwable e (.printStackTrace e) :error)))
+      (catch Throwable e (.printStackTrace e) :error))))
 
 (defn swinvalidate-dyncls []
   (let [sw (.get (rfield (find-class "sq.lang.InternalDataContainer") 'map)
@@ -348,10 +431,11 @@
     (find-class classname)))
 
 (defn load-hidden-as [host clsname]
-  (try (when-some [c (try (find-sq-class clsname)
-                        (catch Exception _))]
-         (uninstall-class c)
-         (.remove *meta-classes clsname))
+  (with-thread-classloader (new-dcl)
+    (try (when-some [c (try (find-sq-class clsname)
+                         (catch Exception _))]
+           (uninstall-class c)
+           (.remove *meta-classes clsname))
       (let [lookup (if host
                      (get-class-lookup (find-sq-class host))
                      (get-hidden-class-host-lookup))
@@ -365,10 +449,13 @@
         (doseq [[c lk] ret]
           (let [mc (:class (get new-classes c))]
             (assert (some? mc))
-            (.put *meta-classes c (assoc mc :lookup lk))))
+            (.put *meta-classes c
+              (assoc mc
+                :lookup lk
+                :hidden? true))))
         (swinvalidate-dyncls)
         ret)
-      (catch Throwable e (.printStackTrace e) :error)))
+      (catch Throwable e (.printStackTrace e) :error))))
 
 (defn load-hidden [classname]
   (load-hidden-as nil classname))
@@ -443,15 +530,6 @@
                         :lookup-class lookup-class})))))]
     (.unreflect lk method)))
 
-(defn eval-with-dcl [expr]
-  (with-thread-classloader (new-dcl)
-    (clojure.lang.Compiler/eval expr))
-  )
-
-(defmacro evl [& body]
- (let [expr `(do ~@body)]
-   `(eval-with-dcl ~expr)))
-
 (comment
   (remove-dcl!)
   (load-class "sq.lang.InternalDataContainer")
@@ -467,12 +545,18 @@
   (reset-dcl-ctor!)
   (refresh-hidden-class-loader!)
   
-  (find-class "sq.lang.LoadedClassLookup")
+  ; (.hashCode (cof "sq.lang.LoadedClassLookup"))
+  ; (.hashCode (find-sq-class "sq.lang.LoadedClassLookup"))
+  ; (rfield (cof "sq.lang.LoadedClassLookup") 'class-finder)
+  ; (.get (rfield (find-sq-class "sq.lang.InternalDataContainer") 'map)
+  ;   "cachedClassFinder")
   
   (load-class "sq.lang.util.TrimRefValueMapLoopRunner")
   (load-class "sq.lang.util.SilentThreadUncaughtExceptionHandler")
   (load-class "sq.lang.util.Ints2")
   (load-class "sq.lang.util.Ints3")
+  (load-class "sq.lang.util.Objs2")
+  (load-class "sq.lang.util.Objs3")
   (load-class "sq.lang.GlobalCHM")
   ; (load-class "sq.lang.LoadedClassLookup")
   (load-class "sq.lang.util.ClassReflect")
@@ -510,9 +594,17 @@
   (load-hidden "sq.compiler.reader.TrackedCharReader")
   (load-hidden "sq.compiler.reader.Stock")
   
+  (load-hidden "sq.compiler.parser.NumberParser")
+  (load-hidden "sq.compiler.parser.TokenParser")
+  
+  (rcall (cof "sq.compiler.reader.Stock") 'file-reader-default
+    "src3/sq/compiler/reader.sq")
   
   
-  ;; SQEDITOR
+  ;; UI
+  
+  (load-hidden "sq.clj.CljUtil")
+  (load-hidden "sq.repl.eval.Eval")
   
   (.put (get-globalchm) "chic.window"
     (new java.util.concurrent.ConcurrentHashMap))
@@ -523,7 +615,14 @@
   (load-hidden "chic.window.StdWinEventListener")
   (load-hidden "chic.window.Main")
   
+  (load-hidden "chic.types.SizeWH")
+  (load-hidden "chic.browser.ui.ChangeableValue")
+  (load-hidden "chic.sqeditor.ui.Label")
+  
+  ;; SQEDITOR
+  
   (load-hidden "chic.sqeditor.RectTools")
+  
   (load-hidden "chic.sqeditor.Interactor")
   (load-hidden "chic.sqeditor.IntrMgr")
   
@@ -533,14 +632,26 @@
   (load-hidden "chic.sqeditor.Misc")
   (load-hidden "chic.sqeditor.BreakNav")
   (load-class "chic.sqeditor.i.LineOffsetConverter")
+  (load-hidden "chic.sqeditor.Indentation")
+  (load-hidden "chic.sqeditor.IndentationOps")
   (load-hidden "chic.sqeditor.RegionOps")
   (load-hidden "chic.sqeditor.RegionPathOps")
   (load-hidden "chic.sqeditor.Selection")
   (load-hidden "chic.sqeditor.BufferOps")
   (load-hidden "chic.sqeditor.SelectionOps")
-  (load-hidden "chic.sqeditor.TextButtonList")
+  ; (load-hidden "chic.sqeditor.TextButtonList")
   (load-hidden "chic.sqeditor.View")
   (load-hidden "chic.sqeditor.TextEditor")
+  (load-hidden "chic.sqeditor.TextEditorOps")
+  
+  (load-hidden "chic.sqeditor.KeyHandling")
+  (load-hidden "chic.sqeditor.EventHandling")
+  
+  (load-hidden "chic.sqeditor.StatusBar")
+  (load-hidden "chic.sqeditor.StatusBarOps")
+  
+  (load-hidden "chic.sqeditor.TabListItem")
+  (load-hidden "chic.sqeditor.TabListBar")
   
   (load-hidden "chic.sqeditor.UiRoot")
   (load-hidden "chic.sqeditor.Window")
@@ -550,30 +661,35 @@
       (catch Throwable e
         (.printStackTrace e))))
   
-  ;; Classes keep vanishing from behind the SoftReferences of DCL's cache
-  ;; IllegalAccessErrors on classes happens after running this
-  (run! (fn [c]
-          (.put (rfield clojure.lang.DynamicClassLoader 'classCache)
-            (.getName c) (java.lang.ref.SoftReference. c)))
-    (eduction
-      (keep (fn [{:keys [^Class impl-class]}]
-              (when (and impl-class (not (.isHidden impl-class)))
-                impl-class)))
-      (vals *meta-classes)))
+  ;; BROWSER
+  
+  (load-hidden "chic.browser.intr.BasicIntrMgr")
+  (load-hidden "chic.browser.intr.BasicIntr")
+  (load-hidden "chic.browser.intr.BasicIntrOps")
+  (load-hidden "chic.browser.ui.TextGeo")
+  (load-hidden "chic.browser.ui.Titlebar")
+  (load-hidden "chic.browser.ui.KVCell")
+  (load-hidden "chic.browser.ui.KVRow")
+  (load-hidden "chic.browser.ui.MapKVView")
+  (load-hidden "chic.browser.UiRoot")
+  (load-hidden "chic.browser.Window")
+
+  (chic.windows/dosendui
+    (try (do (rcall (cof "chic.browser.Window") 'spawn))
+      (catch Throwable e
+        (.printStackTrace e))))
+  
+  (.loadClass (.getClassLoader (cof "sq.lang.KeywordFactory"))
+    "sq.lang.KeywordMgr" false)
+  (.loadClass (.getClassLoader (cof "chic.browser.UiRoot"))
+    "sq.lang.KeywordMgr" false)
+  (:hidden? (.get *meta-classes "sq.lang.KeywordMgr"))
+  
   
   (for [w (vec (.get (.get (rfield (cof "chic.window.Main") 'pkgmap) "windows")))]
     (chic.windows/safe-doui
       (.close (rfield w 'jwm-window))))
 
-  
-  (let [cn "sq.lang.DynInstanceMethodCallSite"]
-    )
-  
- (try (sq.lang.KeywordFactory/from "x")
-   (catch Throwable e
-     (.printStackTrace e)))
-  (cof "chic.sqeditor.View")
-  
   (swinvalidate-dyncls)
   (refresh-hidden-class-loader!)
     
@@ -581,16 +697,19 @@
   (println (chic.decompiler/decompile
              "tmp/eval.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/chic.sqeditor.TextEditor.class" :bytecode))
+             "tmp/chic.sqeditor.ui.Label.class" :bytecode))
   (println (chic.decompiler/decompile
-             "tmp/sq.lang.DynClassMethodCallSite.class" :bytecode))
+             "tmp/sq.lang.KeywordFactory.class" :bytecode))
   (import '(io.lacuna.bifurcan Rope))
   
-
+(-> (.getMetrics
+  (io.github.humbleui.skija.Font.
+  (io.github.humbleui.skija.Typeface/makeFromName "Inter"
+    io.github.humbleui.skija.FontStyle/NORMAL)
+  24.))
+  .getBaseline)
   
   ;; TODO mechanism for safely redefining class, preserving static fields
-  (io.github.humbleui.jwm.Key/values)
-
   
   
   )

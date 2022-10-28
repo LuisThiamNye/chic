@@ -35,8 +35,11 @@ For initialising classes:
   
   (def ^:priv class-finder
     (ct java.util.function.Function
-      (.get (jf sq.lang.InternalDataContainer :map)
-        "cachedClassFinder")))
+      (let x (.get (jf sq.lang.InternalDataContainer :map)
+               "cachedClassFinder")
+        (if (nil? x)
+          (throw (nw Error "nil class-finder"))
+          x))))
   
   (defn find ^Class [^String name]
     (ct Class (.apply class-finder name))

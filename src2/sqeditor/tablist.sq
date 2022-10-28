@@ -1,0 +1,146 @@
+
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList IMap)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect IPoint)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps
+    TabListItem TabListBar)
+  (chic.sqeditor.i LineOffsetConverter)
+  (chic.sqeditor.ui Label)
+  (chic.browser.ui
+    TextGeo ChangeableValue)
+  (chic.types SizeWH))
+
+(defclass chic.sqeditor.TabListItem
+  :interfaces AutoCloseable
+  [^:mut ^IRect rect
+   ^Label ui-label
+   ^ChangeableValue *text]
+  
+  (init [self ^String text]
+    (setf! self :*text (nw ChangeableValue text))
+    (setf! self :ui-label (nw Label)))
+  
+  (defi measure ^SizeWH [self ^IMap ctx]
+    (.measure ui-label ctx *text))
+  
+  (defi draw ^void [self ^IMap ctx ^Canvas cnv ^IRect rect]
+    (setf! self :rect rect)
+    (.draw ui-label ctx cnv (RectTools/origin rect)))
+  
+  (defi event ^Object [self ^Event evt]
+    (<-
+      (if (instance? EventMouseButton evt)
+        (let evt (ct EventMouseButton evt)
+          (when (.isPressed evt)
+            (when (RectTools/contains-point? rect (.getX evt) (.getY evt))
+              :activate))))
+      nil))
+  
+  (defi close ^void [_]
+    (.close ui-label))
+  )
+
+(defclass chic.sqeditor.TextButtonList
+  [^:mut ^int item-height
+   ^LinearList ui-items]
+  
+  (init [_ ^IntConsumer f]
+    (set! on-click f))
+  
+  (defi draw ^void [self ^IMap ctx ^Canvas cnv ^IRect rect]
+    (loopr [ui-item ui-items]
+      [origin (RectTools/origin rect)]
+      (let ui-item (ct TabListItem ui-item)
+        size (.measure ui-item ctx)
+        (do
+          (.draw ui-item ctx cnv (RectTools/from-size size origin))
+          (recur (.offset origin 0 (.:height size)))))))
+  
+  (defi close ^void [_]
+    (loopr [u ui-items] []
+      (.close u)))
+  
+  ; (defi on-mouse-down ^void [_ ^EventMouseButton evt]
+  ;   (=: idx
+  ;     (/ (jc Math min (dec y-bottom) (- (.getY evt) y-top)) item-height))
+  ;   (.accept on-click idx))
+  )
+
+(defclass chic.sqeditor.TabListBar
+  [^:mut ^HashMap ui-items]
+  
+  (init [self]
+    (setf! self :ui-items (nw HashMap)))
+  
+  ; (defi measure [self ^IMap ctx ^Canvas cnv])
+  
+  (defi draw [self ^IMap ctx ^Canvas cnv ^IRect rect ^ArrayList views]
+    (let
+      n (.save cnv)
+      (try
+        (.clipRect cnv (.toRect rect))
+        (let
+          ui-items' (nw HashMap)
+          views (ct java.util.List (.clone views))
+          _ (java.util.Collections/reverse views)
+          (loopr [view views]
+            [origin (RectTools/origin rect)]
+            (let
+              view (ct View view)
+              path (.:path (.:buffer view))
+              label (if (nil? path)
+                      "<no file>"
+                      (.toString path))
+              existing (.get ui-items view)
+              ui-item (if (nil? existing)
+                        (nw TabListItem label)
+                        (ct TabListItem existing))
+              size (.measure ui-item ctx)
+              height (.:height size)
+              (do
+                (.put ui-items' view ui-item)
+                (.draw ui-item ctx cnv (IRect/makeXYWH (.getLeft rect) (.getY origin)
+                                         (.getWidth rect) (.:height size)))
+                (recur (.offset origin 0 height))))
+            (do
+              (setf! self :ui-items ui-items'))))
+        (finally
+          (.restoreToCount cnv n)))))
+  
+  (defi event ^Object [self ^Event evt ^ArrayList views]
+    (loopr [view views] []
+      (let ;view (ct View view)
+        ui-item (ct TabListItem (.get ui-items view))
+        res (.event ui-item evt)
+        (<-
+          (if (== res :activate)
+            {:action :activate
+             :view view})
+          (recur)))
+      nil))
+  )

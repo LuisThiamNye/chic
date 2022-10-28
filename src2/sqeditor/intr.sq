@@ -1,0 +1,130 @@
+
+
+(Refer-Classes
+  (sq.repl.eval Eval)
+  (sq.lang.util
+    Ints2 Maths RopeCharacterIterator EmptyCharacterIterator RopeUtil
+    IteratorIterable)
+  (io.lacuna.bifurcan Set Map List LinearList Rope IList)
+  (java.util ArrayList HashMap LinkedList)
+  (java.util.function UnaryOperator Consumer IntBinaryOperator IntConsumer)
+  (java.util.concurrent.atomic AtomicReference)
+  (java.util.concurrent ConcurrentHashMap)
+  (java.nio.file Path Files OpenOption StandardOpenOption LinkOption)
+  (java.nio.file.attribute FileAttribute)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (com.ibm.icu.text BreakIterator)
+  (chic.sqeditor
+    RectTools UiRoot TextEditor Interactor IntrMgr Buffer View Selection
+    Region RegionOps SelectionOps Misc RegionPathOps BreakNav EditorCommit
+    TextButtonList BufferOps  Indentation IndentationOps)
+  (chic.sqeditor.i LineOffsetConverter))
+
+
+(defclass chic.sqeditor.Interactor
+  [^:mut ^IRect rect
+   ^HashMap handlers]
+  (init [_]
+    (set! handlers (nw HashMap)))
+  (defi add-listener [self k ^Consumer listener]
+    (.put handlers k listener))
+  (defi set-rect [self ^IRect new-rect]
+    (set! rect new-rect))
+  (defi getRect [_] rect)
+  (defi handle-generic [self k evt]
+    (when (not (nil? (=: h (.get handlers k))))
+      (.accept (ct Consumer h) evt)))
+  (defi handle-mousescroll ^void [self ^EventMouseScroll evt]
+    (.handle-generic self :mouse-scroll evt))
+  (defi handle-mousedown ^void [self ^EventMouseButton evt]
+    (.handle-generic self :mouse-down evt))
+  (defi handle-mouseup ^void [self ^EventMouseButton evt]
+    (.handle-generic self :mouse-up evt))
+  (defi handle-mousemove ^void [self ^EventMouseMove evt]
+    (.handle-generic self :mouse-move evt))
+  (defi handle-keydown ^void [self ^EventKey evt]
+    (.handle-generic self :key-down evt))
+  (defi handle-keyup ^void [self ^EventKey evt]
+    (.handle-generic self :key-up evt))
+  (defi handle-textinput ^void [self ^EventTextInput evt]
+    (.handle-generic self :text-input evt))
+  )
+
+(defclass chic.sqeditor.IntrMgr
+  [^ArrayList intrs
+   ^:mut ^Interactor focused-intr]
+  
+  (init [_]
+    (set! intrs (nw ArrayList)))
+  
+  (defi reg-intr! ^void [self intr]
+    (.add intrs intr))
+  
+  (defi unreg-intr! ^void [self intr]
+    (.remove intrs intr))
+  
+  (defi handle-mousescroll ^boolean [_ ^EventMouseScroll evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (ct Interactor (.next it))
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (do (.handle-mousescroll intr evt) nil))
+          (recur))))
+    true)
+  
+  (defi handle-mousedown ^boolean [_ ^EventMouseButton evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (ct Interactor (.next it))
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (do (set! focused-intr intr)
+                        (.handle-mousedown intr evt) nil))
+          (recur))))
+    true)
+  
+  (defi handle-mouseup ^boolean [_ ^EventMouseButton evt]
+    (=: it (.iterator intrs))
+    (loop []
+      (when (.hasNext it)
+        (let
+          intr (ct Interactor (.next it))
+          rect (.getRect intr)
+          _handled? (when (jc RectTools contains-point?
+                            rect (.getX evt) (.getY evt))
+                      (do (.handle-mouseup intr evt) nil))
+          (recur))))
+    true)
+  (defi handle-mousemove ^boolean [_ ^EventMouseMove evt]
+    true)
+  (defi handle-keydown ^boolean [_ ^EventKey evt]
+    (when (not (nil? focused-intr))
+      (.handle-keydown focused-intr evt))
+    true)
+  (defi handle-keyup ^boolean [_ ^EventKey evt]
+    (when (not (nil? focused-intr))
+      (.handle-keyup focused-intr evt))
+    true)
+  (defi handle-textinput ^boolean [_ ^EventTextInput evt]
+    (when (not (nil? focused-intr))
+      (.handle-textinput focused-intr evt))
+    true)
+  )

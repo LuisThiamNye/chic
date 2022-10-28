@@ -1,0 +1,146 @@
+
+
+(Refer-Classes
+  (java.util Map$Entry)
+  (io.lacuna.bifurcan IMap Map List)
+  (chic.sqeditor RectTools)
+  (io.github.humbleui.types IRect Rect RRect)
+  (io.github.humbleui.jwm
+    EventMouseButton EventMouseMove EventMouseScroll
+    EventKey EventWindowFocusOut App Window EventWindowResize EventTextInput
+    EventFrame Platform Event
+    EventWindowScreenChange EventWindowClose EventWindowCloseRequest
+    MouseButton KeyModifier Key ClipboardFormat ClipboardEntry Clipboard)
+  (io.github.humbleui.jwm.skija
+    EventFrameSkija LayerD3D12Skija LayerGLSkija LayerMetalSkija)
+  (io.github.humbleui.skija
+    Canvas Paint PaintMode Font FontWeight FontWidth FontSlant
+    TextLine Typeface FontStyle)
+  (chic.browser.intr Interactor BasicIntr BasicIntrOps BasicIntrMgr IntrMgr)
+  (chic.browser
+    UiRoot)
+  (chic.browser.ui
+    ChangeableValue KVCell KVRow MapKVView))
+
+(defclass chic.browser.ui.KVCell
+  [^:mut ^String objstr
+   ^:mut ^TextLine textline
+   ^BasicIntr intr]
+  
+  (init [_ obj ^BasicIntrMgr intrmgr]
+    (set! objstr (.toString obj))
+    (set! intr (nw BasicIntr intrmgr)))
+  
+  (defn calc-common-geo-state [^float scale ^Font font]
+    (let
+      metrics (.getMetrics font)
+      cap-height (inc (ct int (.getCapHeight metrics)))
+      font-height (inc (ct int (.getHeight metrics)))
+      cap-padding (/ (- font-height cap-height) 2)
+      text-y (+ cap-height cap-padding)
+      {:text-x cap-padding
+       :text-y text-y
+       :height font-height}))
+  
+  (defn calc-bg-paint ^Paint [^BasicIntr intr ^IMap theme]
+    (ct Paint
+      (if (.hovered? intr)
+        (if (.engaged? intr)
+          (:pressed-bg-fill theme)
+          (:hovered-bg-fill theme))
+        nil)))
+  
+  (defi draw [self ^IMap ctx ^Canvas cnv ^IRect irect
+              ^int text-x ^int text-y]
+    (.set-rect intr irect)
+    
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (when (.:changed *font)
+      (=: font (ct Font (.:value *font)))
+      (set! textline (TextLine/make objstr font)))
+    
+    (=: bg-paint (Self/calc-bg-paint intr ctx))
+    (when (not (nil? bg-paint))
+      (.drawRect cnv (.toRect irect) bg-paint))
+    
+    (let
+      x (+ (.getLeft irect) text-x)
+      y (+ (.getTop irect) text-y)
+      (.drawTextLine cnv textline x y (ct Paint (:text-fill ctx)))))
+  
+  (defi event [_ ^Event evt]
+    (BasicIntrOps/notify-event intr evt))
+  )
+
+(defclass chic.browser.ui.KVRow
+  [^KVCell ui-kcell
+   ^KVCell ui-vcell]
+  
+  (init [_ ^BasicIntrMgr intrmgr key val]
+    (set! ui-kcell (nw KVCell key intrmgr))
+    (set! ui-vcell (nw KVCell val intrmgr)))
+  
+  (defi draw [_ ^IMap ctx ^Canvas cnv ^IRect irect
+              ^int text-x ^int text-y]
+    (let
+      x-mid (ct int (/ (+ (.getLeft irect) (.getRight irect)) 2))
+      (do
+        (.draw ui-kcell ctx cnv (.withRight irect x-mid) text-x text-y)
+        (.draw ui-vcell ctx cnv (.withLeft irect x-mid) text-x text-y))))
+  
+  (defi event [_ ^Event evt]
+    (.event ui-kcell evt)
+    (.event ui-vcell evt))
+  )
+
+(defclass chic.browser.ui.MapKVView
+  [^ChangeableValue *geo-state
+   ^List ui-rows]
+  
+  (init [self ^List entries ^BasicIntrMgr intrmgr]
+    (set! *geo-state (nw ChangeableValue nil))
+    (let
+      list (.linear (nw List))
+      (loopr [mpe entries] []
+        (let
+          entry (ct io.lacuna.bifurcan.IEntry mpe)
+          (do (.addLast list
+                (nw KVRow intrmgr (.key entry) (.value entry)))
+            (recur)))
+        (setf! self :ui-rows (.forked list)))))
+  
+  (defi draw [_ ^IMap ctx ^Canvas cnv ^IRect irect]
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (=: *scale (ct ChangeableValue (:scale ctx)))
+    (if (or (.:changed *font) (.:changed *scale))
+      (do
+        (=: font (ct Font (.:value *font)))
+        (=: scale (ct float (.:value *scale)))
+        (.reset *geo-state
+          (jc KVCell calc-common-geo-state scale font)))
+      (.set-unchanged *geo-state))
+    
+    (let
+      geo-state (ct IMap (.:value *geo-state))
+      text-x (ct int (:text-x geo-state))
+      text-y (ct int (:text-y geo-state))
+      l (.getLeft irect) r (.getRight irect)
+      height (ct int (:height geo-state))
+      (loopr [ui-row ui-rows]
+        [y (.getTop irect)]
+        (let
+          ui-row (ct KVRow ui-row)
+          b (+ y height)
+          (do
+            (.draw ui-row ctx cnv (IRect/makeLTRB l y r b) text-x text-y)
+            (recur b))))))
+  
+  (defi event [_ ^Event evt]
+    (loopr [ui-row ui-rows]
+      []
+      (let ui-row (ct KVRow ui-row)
+        (do
+          (.event ui-row evt)
+          (recur)))))
+  
+  )
