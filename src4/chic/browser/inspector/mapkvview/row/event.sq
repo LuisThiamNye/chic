@@ -1,0 +1,9 @@
+#!fndecl-v1
+event
+#!Context
+"chic/browser/inspector/mapkvview/row/_ctx.sq"
+#!Params
+^void [^KVRowObj _ ^Event evt]
+#!Body
+;(.event ui-kcell evt)
+;(.event ui-vcell evt)

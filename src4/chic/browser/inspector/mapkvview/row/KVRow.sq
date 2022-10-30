@@ -1,0 +1,6 @@
+#!jclass-v1
+KVRow
+#!Functions
+"chic/browser/inspector/mapkvview/row/make.sq"
+"chic/browser/inspector/mapkvview/row/draw.sq"
+"chic/browser/inspector/mapkvview/row/event.sq"

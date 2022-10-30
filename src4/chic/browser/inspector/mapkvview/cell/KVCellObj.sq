@@ -1,0 +1,8 @@
+#!jtype-v1
+KVCellObj
+#!Context
+"chic/browser/_ctx.sq"
+#!Fields
+^:mut ^String objstr
+^:mut ^TextLine textline
+; ^BasicIntr intr

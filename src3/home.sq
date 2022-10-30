@@ -1,5 +1,12 @@
 " Hello!
+"chic/browser/UiRootObj.sq"
+"chic/window/main/Main.sq"
+"chic/window/safe-event-listener/Obj.sq"
+
+TODO - migrate away from stub classes
+
 sq/lang/util
 sq/compiler/reader
 dev/indent
+me/linesofcode
 "

@@ -1,0 +1,6 @@
+#!context-v1
+"chic/browser/_ctx.sq"
+"chic/browser/inspector/mapkvview/row/KVRowObj.sq"
+"chic/browser/inspector/mapkvview/cell/KVCell.sq"
+"chic/browser/inspector/mapkvview/cell/KVCellObj.sq"
+

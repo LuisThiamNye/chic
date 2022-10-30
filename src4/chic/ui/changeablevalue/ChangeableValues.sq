@@ -1,0 +1,8 @@
+#!jclass-v1
+ChangeableValues
+#!Functions
+"chic/ui/changeablevalue/make.sq"
+"chic/ui/changeablevalue/set-unchanged.sq"
+"chic/ui/changeablevalue/reset.sq"
+"chic/ui/changeablevalue/reset-diff.sq"
+"chic/ui/changeablevalue/reset-diffeq.sq"

@@ -1,0 +1,10 @@
+#!fndecl-v1
+reset-diff
+#!Context
+"chic/ui/changeablevalue/ChangeableValue.sq"
+#!Params
+^void [^ChangeableValue self new]
+#!Body
+(if (not (== (.:value self) new))
+      (Self/reset self new)
+      (Self/set-unchanged self))

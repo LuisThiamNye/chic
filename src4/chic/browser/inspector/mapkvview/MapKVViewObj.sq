@@ -1,0 +1,7 @@
+#!jtype-v1
+MapKVViewObj
+#!Context
+"chic/browser/_ctx.sq"
+#!Fields
+^ChangeableValue *geo-state
+^IList ui-rows

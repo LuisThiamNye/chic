@@ -1,0 +1,5 @@
+#!jtype-v1
+SizeWH
+#!Fields
+^int width
+^int height

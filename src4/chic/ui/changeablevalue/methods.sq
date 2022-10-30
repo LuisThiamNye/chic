@@ -1,0 +1,23 @@
+#!CONTEXT
+"chic/ui/changeablevalue/ChangeableValue.sq"
+#!BODY
+(init [_ init]
+  (set! value init)
+  (set! changed true))
+  
+(defi set-unchanged [_]
+  (set! changed true))
+  
+(defi reset ^void [self new]
+  (set! value new)
+  (set! changed true))
+  
+(defi reset-diff ^void [self new]
+  (if (not (== value new))
+    (.reset self new)
+    (.set-unchanged self)))
+  
+(defi reset-diffeq ^void [self new]
+  (if (not (.equals new value))
+    (.reset self new)
+    (.set-unchanged self)))

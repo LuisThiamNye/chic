@@ -609,15 +609,18 @@
         (throw (ex-info "Exception analysing node"
                  {:node (select-keys node [:node/kind :node/source])} e))))))
 
+(defn env-default []
+  {:class-aliases interop/base-class-aliases
+   :class-resolver interop/find-class
+   :self-classname "_.(Eval)"
+   :ctx :expression
+   :self-classinfo {:classname "_.(Eval)"
+                    :class (interop/new-unreal-class
+                             "_.(Eval)" Object nil)}})
+
 (defn inject-default-env [node]
   (assoc node :node/env
-    {:class-aliases interop/base-class-aliases
-     :class-resolver interop/find-class
-     :self-classname "_.(Eval)"
-     :ctx :expression
-     :self-classinfo {:classname "_.(Eval)"
-                      :class (interop/new-unreal-class
-                               "_.(Eval)" Object nil)}}
+    (env-default)
     :node/locals {}))
 
 (defn expand-classname [env s]
@@ -728,6 +731,11 @@
       {:node/kind :string
        :node/source (rdr-srcinfo rdr)
        :value s}))
+  (-visitSpecialComment [_ s]
+    (rv-data/-addEnd cb
+      {:node/kind :special-comment
+       :node/source (rdr-srcinfo rdr)
+       :string s}))
   (-visitList [self] 
     (BaseAnaRdrVisitor. rdr self {:node/kind :list} (rv-data/clj-vector-builder)))
   (-visitVector [self]

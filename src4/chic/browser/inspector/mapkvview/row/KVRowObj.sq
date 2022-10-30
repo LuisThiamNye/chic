@@ -1,0 +1,7 @@
+#!jtype-v1
+KVRowObj
+#!Context
+"chic/browser/inspector/mapkvview/cell/KVCellObj.sq"
+#!Fields
+^KVCellObj ui-kcell
+^KVCellObj ui-vcell

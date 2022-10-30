@@ -1,0 +1,11 @@
+#!fndecl-v1
+make
+#!Context
+"chic/browser/inspector/mapkvview/row/_ctx.sq"
+#!Params
+[;^BasicIntrMgr intrmgr
+  key val]
+#!Body
+(nw KVRowObj
+  (KVCell/make key #_intrmgr)
+  (KVCell/make val #_intrmgr))

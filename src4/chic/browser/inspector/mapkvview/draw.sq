@@ -1,0 +1,31 @@
+#!fndecl-v1
+draw
+#!Context
+"chic/browser/inspector/mapkvview/_ctx.sq"
+#!Params
+^void [^MapKVViewObj self ^IMap ctx ^Canvas cnv ^IRect irect]
+#!Body
+(=: *font (ct ChangeableValue (:font ctx)))
+    (=: *scale (ct ChangeableValue (:scale ctx)))
+    (if (or (.:changed *font) (.:changed *scale))
+      (do
+        (=: font (ct Font (.:value *font)))
+        (=: scale (ct float (.:value *scale)))
+        (ChangeableValues/reset (.:*geo-state self)
+          (KVCell/calc-common-geo-state scale font)))
+      (ChangeableValues/set-unchanged (.:*geo-state self)))
+    
+    (let
+      geo-state (ct IMap (.:value (.:*geo-state self)))
+      text-x (ct int (:text-x geo-state))
+      text-y (ct int (:text-y geo-state))
+      l (.getLeft irect) r (.getRight irect)
+      height (ct int (:height geo-state))
+      (loopr [ui-row (.:ui-rows self)]
+        [y (.getTop irect)]
+        (let
+          ui-row (ct KVRowObj ui-row)
+          b (+ y height)
+          (do
+            (KVRow/draw ui-row ctx cnv (IRect/makeLTRB l y r b) text-x text-y)
+            (recur b)))))

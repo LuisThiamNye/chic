@@ -1,0 +1,13 @@
+#!fndecl-v1
+draw
+#!Context
+"chic/browser/inspector/mapkvview/row/_ctx.sq"
+#!Params
+^void [^KVRowObj self ^IMap ctx ^Canvas cnv ^IRect irect
+              ^int text-x ^int text-y]
+#!Body
+(let
+      x-mid (ct int (/ (+ (.getLeft irect) (.getRight irect)) 2))
+      (do
+        (KVCell/draw (.:ui-kcell self) ctx cnv (.withRight irect x-mid) text-x text-y)
+        (KVCell/draw (.:ui-vcell self) ctx cnv (.withLeft irect x-mid) text-x text-y)))

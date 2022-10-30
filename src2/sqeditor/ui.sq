@@ -40,7 +40,7 @@
   :interfaces AutoCloseable
   [^:mut ^TextLine textline
    ^:mut ^int baseline-dy
-   ^:mut ^SizeWH size]
+   ^:pub ^:mut ^SizeWH size]
   
   (init [_])
   

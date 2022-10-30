@@ -187,15 +187,6 @@
       (.drawPoint cnv (+ (.getX origin) 3) (+ (.getY origin) 3) text-paint)))
   )
   
-  ; (defi close-current ^void [self]
-  ;   (=: n (.size views))
-  ;   (when (and (< 1 n)
-  ;           (not (BufferOps/dirty? (jfi view :buffer))))
-  ;     (.remove views (dec n))
-  ;     (set! view (.get views (- n 2)))
-  ;     (.regenerate-textlines! self
-  ;       (jfi (jfi view :buffer) :rope))))
-  
   
   ; (defi set-view-idx ^void [self ^int idx]
   ;   (set! view (.remove views (- (.size views) idx 1)))  
@@ -266,7 +257,7 @@
        :pressed-bg-fill (let p (nw Paint)
                           (do (.setColor p 0x20000000)))}))
   
-  (def code-font-size 14f)
+  (def code-font-size 13f)
   (def main-font-size 14f)
   
   (def sidebar-width 180)
@@ -329,22 +320,45 @@
     (=: view (ct View (.:value *view)))
     (=: nav-loc (SelectionOps/combined-regions-str
                   (.:selection view) (.:rope (.:buffer view))))
+    (=: nav-loc (.trim nav-loc))
+    (when (and (.startsWith nav-loc "\"")
+            (.endsWith nav-loc ".sq\""))
+      (set! nav-loc (.substring nav-loc 1 (- (.length nav-loc) 4))))
     (=: path (java.nio.file.Path/of
-               (-> "src3/"
+               (-> "src4/"
                  (.concat nav-loc)
                  (.concat ".sq"))
               (na String 0)))
-    (=: buffer' (nw Buffer))
-    (.set-path buffer' path)
-    (=: view' (nw View buffer'))
-    (SelectionOps/add (.:selection view') (nw Region 0 0))
-    (when (Files/exists path (na LinkOption 0))
-      (try
-        (.reload buffer')
-        (catch java.io.IOException e
-          (.println (jf System out) "Could not load file")
-          (.println (jf System out) e))))
-    (.select-view self view'))
+    (=: existing-view
+      (loopr [v views] []
+        (let v (ct View v)
+          p (.:path (.:buffer v))
+          (if (.equals p path)
+            v
+            (recur)))
+        nil))
+    
+    (if (nil? existing-view)
+      (do
+        (=: buffer' (nw Buffer))
+        (.set-path buffer' path)
+        (=: view' (nw View buffer'))
+        (SelectionOps/add (.:selection view') (nw Region 0 0))
+        (when (Files/exists path (na LinkOption 0))
+          (try
+            (.reload buffer')
+            (catch java.io.IOException e
+              (.println (jf System out) "Could not load file")
+              (.println (jf System out) e))))
+        (.select-view self view'))
+      (.select-view self existing-view)))
+  
+  (defi close-current ^void [self]
+    (=: n (.size views))
+    (when (and (< 1 n)
+            (not (BufferOps/dirty? (.:buffer (ct View (.:value (.:*view self)))))))
+      (.remove views (dec n))
+      (.select-view self (ct View (.get views (- n 2))))))
   
   (defi event ^boolean [self ^Event evt]
     (=: tl-change? false)
@@ -364,6 +378,8 @@
           (<-
             (if (== k :navigate-to-region)
               (.navigate-from-region self))
+            (if (== k :close-file)
+              (.close-current self))
             nil))))
     (=: te-change? (EventHandling/event ui-child action-fn evt))
     (or te-change? tl-change?))

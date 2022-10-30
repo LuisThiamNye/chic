@@ -1,0 +1,13 @@
+#!fndecl-v1
+make
+#!Context
+"chic/browser/inspector/mapkvview/cell/_ctx.sq"
+#!Params
+[obj ;^BasicIntrMgr intrmgr
+ ]
+#!Body
+(nw KVCellObj
+  (.toString obj)
+  nil
+  ;(nw BasicIntr intrmgr)
+  )

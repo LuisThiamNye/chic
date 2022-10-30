@@ -1,0 +1,12 @@
+#!fndecl-v1
+make-skija-layer
+#!Context
+"chic/humbleui/allctx.sq"
+#!Params
+^Layer []
+#!Body
+(case-enum (jf Platform CURRENT)
+  WINDOWS (nw LayerD3D12Skija)
+  MACOS (nw LayerMetalSkija)
+  X11 (nw LayerGLSkija)
+  (throw (nw RuntimeException "Unsupported platform")))

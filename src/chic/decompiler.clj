@@ -48,6 +48,14 @@
       (compiled-classfile-paths))
     (finally (clean-tmp-dir))))
 
+(defn decompile-bytes [ba lang]
+  (try
+    (let [path (fs/path tmp-dir "result.class")]
+      (java.nio.file.Files/write path ^"[B" ba
+        (make-array java.nio.file.OpenOption 0))
+      (decompile path lang))
+    (finally (clean-tmp-dir))))
+
 (comment
   (clean-tmp-dir)
 

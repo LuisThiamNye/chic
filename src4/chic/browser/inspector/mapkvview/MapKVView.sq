@@ -1,0 +1,9 @@
+#!jclass-v1
+MapKVView
+#!Context
+"chic/browser/_ctx.sq"
+"chic/browser/inspector/mapkvview/_ctx.sq"
+#!Functions
+"chic/browser/inspector/mapkvview/make.sq"
+"chic/browser/inspector/mapkvview/draw.sq"
+"chic/browser/inspector/mapkvview/event.sq"

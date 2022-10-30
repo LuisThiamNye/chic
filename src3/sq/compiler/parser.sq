@@ -26,7 +26,7 @@ sq/compiler/reader
 (defclass sq.compiler.parser.NumberParser
 
   (def pp-sign
-    (.map (.optional (jc CharacterParser anyOf "-+"))
+    (.map (.optional (CharacterParser/anyOf "-+"))
       (reify Function
         (apply ^Object [_ r]
           (if (nil? r)
@@ -43,19 +43,19 @@ sq/compiler/reader
     (.or
       (-> (.or
             (.seq
-              (jc CharacterParser of \x)
-              (.map (.flatten (.plus (jc CharacterParser pattern "0-9a-fA-F")))
-                (jc Self bigint-fn-with-radix 16)))
+              (CharacterParser/of \x)
+              (.map (.flatten (.plus (CharacterParser/pattern "0-9a-fA-F")))
+                (Self/bigint-fn-with-radix 16)))
             (.seq
-              (jc CharacterParser of \b)
-              (.map (.flatten (.plus (jc CharacterParser anyOf "01")))
-                (jc Self bigint-fn-with-radix 2))))
+              (CharacterParser/of \b)
+              (.map (.flatten (.plus (CharacterParser/anyOf "01")))
+                (Self/bigint-fn-with-radix 2))))
         (.pick 1))
-      (.map (.flatten (.plus (jc CharacterParser range \0 \7)))
-        (jc Self bigint-fn-with-radix 8))))
+      (.map (.flatten (.plus (CharacterParser/range \0 \7)))
+        (Self/bigint-fn-with-radix 8))))
   
   (def pp-int-type
-    (.map (jc CharacterParser anyOf "biLN")
+    (.map (CharacterParser/anyOf "biLN")
       (reify Function
         (apply ^Object [_ r]
           (case (ct Character r)
@@ -65,7 +65,7 @@ sq/compiler/reader
             \N :bigint)))))
   
   (def pp-dec-type
-    (.map (jc CharacterParser anyOf "fdM")
+    (.map (CharacterParser/anyOf "fdM")
       (reify Function
         (apply ^Object [_ r]
           (case (ct Character r)
@@ -78,16 +78,16 @@ sq/compiler/reader
       (.seq
         (.flatten
           (.seq
-            (jc CharacterParser range \1 \9)
-            (.star (jc CharacterParser digit))))
-        (jc CharacterParser of \r)
-        (.flatten (.plus (jc CharacterParser pattern "0-9a-zA-Z"))))
+            (CharacterParser/range \1 \9)
+            (.star (CharacterParser/digit))))
+        (CharacterParser/of \r)
+        (.flatten (.plus (CharacterParser/pattern "0-9a-zA-Z"))))
       (.map
         (reify Function
           (apply ^Object [_ r]
             (let
               r (ct ArrayList r)
-              radix (jc Integer parseInt (ct String (.get r 0)))
+              radix (Integer/parseInt (ct String (.get r 0)))
               (nw Objs2 (ct String (.get r 2)) radix)))))))
   
   (def pp-int
@@ -96,12 +96,12 @@ sq/compiler/reader
             (.or
               (->
                 (.seq
-                  (jc CharacterParser of \0)
+                  (CharacterParser/of \0)
                   pp-radix-num)
                 (.pick 1))
               pp-arb-radix
-              (.map (.flatten (.plus (jc CharacterParser digit)))
-                (jc Self bigint-fn-with-radix 10)))
+              (.map (.flatten (.plus (CharacterParser/digit)))
+                (Self/bigint-fn-with-radix 10)))
             (.optional pp-int-type :none)))
       (.map
         (reify Function
@@ -119,23 +119,23 @@ sq/compiler/reader
       (<-
         (if (or (== :none type) (== :int type))
           (if unsigned?
-            (jc Integer parseUnsignedInt n radix)
-            (jc Integer parseInt n radix)))
+            (Integer/parseUnsignedInt n radix)
+            (Integer/parseInt n radix)))
         (if (== :long type)
           (if unsigned?
-            (jc Long parseUnsignedLong n radix)
-            (jc Long parseLong n radix)))
+            (Long/parseUnsignedLong n radix)
+            (Long/parseLong n radix)))
         (if (== :bigint type)
           (nw BigInteger n radix))
         (if (== :byte type)
-          (jc Byte parseByte n radix))
+          (Byte/parseByte n radix))
         (throw (nw Error)))))
  
   (def pp-digits-no-leading-zero
     (.flatten
-      (.or (.seq (jc CharacterParser range \1 \9)
-             (.star (jc CharacterParser digit)))
-        (jc CharacterParser of \0))))
+      (.or (.seq (CharacterParser/range \1 \9)
+             (.star (CharacterParser/digit)))
+        (CharacterParser/of \0))))
   
   (def pp-decimal
     (->
@@ -143,9 +143,9 @@ sq/compiler/reader
         pp-digits-no-leading-zero
         (.or
           (-> (.seq
-                (jc CharacterParser of \.)
-                (.flatten (.star (jc CharacterParser digit)))
-                (.optional (jc CharacterParser of \%))
+                (CharacterParser/of \.)
+                (.flatten (.star (CharacterParser/digit)))
+                (.optional (CharacterParser/of \%))
                 (.optional pp-dec-type))
             (.map
               (reify Function
@@ -157,7 +157,7 @@ sq/compiler/reader
                       (.get r 3)))))))
           (-> (.or
                 (.seq
-                  (jc CharacterParser of \%)
+                  (CharacterParser/of \%)
                   (.optional pp-dec-type))
                 pp-dec-type)
             (.map
@@ -216,8 +216,8 @@ sq/compiler/reader
             which (jfi v :x1)
             numinfo (ct ArrayList (jfi v :x2))
             (if (== :int which)
-              (jc NumberParser make-int-number numinfo sign)
-              (jc NumberParser make-decimal numinfo)))))))
+              (NumberParser/make-int-number numinfo sign)
+              (NumberParser/make-decimal numinfo)))))))
   
   (defn parse-number ^Number [^String numtext]
     (=: presult (.get (.parse pp numtext)))

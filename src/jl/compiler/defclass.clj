@@ -173,6 +173,29 @@
     (assoc method :body body
       :ret-classname ret-classname)))
 
+(defn classinfo-add-method [info method]
+  (let
+    [mn (:name method)
+     all-methods (:class-methods info [])
+     [conflict-idx conflicting-method]
+     (loop-zip [m all-methods
+                i :idx]
+       []
+       (if (and (= mn (:name m))
+             (= (:ret-classname method) (:ret-classname m))
+             (= (:param-classnames method) (:param-classnames m)))
+         (do [i m])
+         (recur))
+       nil)
+     all-methods
+     (if conflicting-method
+       (if (:body conflicting-method)
+         (throw (ex-info "Conflicting method" {}))
+         (into (subvec all-methods 0 conflict-idx)
+           (subvec all-methods (inc conflict-idx))))
+       all-methods)]
+    (assoc info :class-methods (conj all-methods method))))
+
 (defn anasf-defclass [{:keys [children node/env] :as node}]
   (assert (<= 2 (count children)))
   (let
@@ -328,28 +351,9 @@
            (update :class-methods conj method))))
      parse-named-cmethod
      (fn [opts mn paramdecl bodydecl retc]
-       (let [method (analyse-method-body (:prev-node opts) opts true mn paramdecl bodydecl retc)
-             all-methods (:class-methods opts [])
-             [conflict-idx conflicting-method]
-             (loop-zip [m all-methods
-                        i :idx]
-               []
-               (if (and (= mn (:name m))
-                     (= (:ret-classname method) (:ret-classname m))
-                     (= (:param-classnames method) (:param-classnames m)))
-                 (do [i m])
-                 (recur))
-               nil)
-             all-methods
-             (if conflicting-method
-               (if (:body conflicting-method)
-                 (throw (ex-info "Conflicting method" {}))
-                 (into (subvec all-methods 0 conflict-idx)
-                   (subvec all-methods (inc conflict-idx))))
-               all-methods)]
-         (-> opts
-           (assoc :prev-node (:body method))
-           (assoc :class-methods (conj all-methods method)))))
+       (let [method (analyse-method-body (:prev-node opts) opts true mn paramdecl bodydecl retc)]
+         (-> (classinfo-add-method opts method)
+           (assoc :prev-node (:body method)))))
      parse-cmethod
      (fn [opts {:keys [children]}]
        (assert (<= 2 (count children)))

@@ -39,6 +39,7 @@
   (-visitChar [_ token])
   (-visitCharLiteral [_ c])
   (-visitString [_ s])
+  (-visitSpecialComment [_ s])
   (-visitList [_])
   (-visitVector [_])
   (-visitMap [_])
@@ -171,6 +172,15 @@ Number repr:
       (when-not (or (= -1 c) (= (int \newline) c))
         (recur)))))
 
+(defn mread-special-comment [vtor rdr _bang]
+  (let [sb (StringBuilder.)]
+    (loop []
+      (let [c (-read rdr)]
+        (when-not (or (= -1 c) (= (int \newline) c))
+          (.appendCodePoint sb c)
+          (recur))))
+    (-visitSpecialComment vtor (.toString sb))))
+
 (defn mread-quote [vtor rdr _quote]
   (let [symname "_§!S_quote"
         lv (-visitList vtor)]
@@ -267,7 +277,7 @@ Number repr:
     ; (aset \( mread-fn)
     (aset \{ #'mread-set)
     ; (aset \= mread-eval)
-    ; (aset \! mread-comment)
+    (aset \! #'mread-special-comment)
     ; (aset \< mread-unreadable)
     (aset \_ #'mread-discard)
     ; (aset \? mread-conditional)
@@ -327,13 +337,17 @@ Number repr:
   (-read [_]
     (let [r (.read rdr)]
       (set! prev-col col)
-      (cond
-        (= r 10)
-        (do (set! line (unchecked-inc-int line))
-          (set! col (unchecked-int 1)))
-        (not (or (= r 13) (= r -1)))
-        (do (set! col (unchecked-inc-int col))))
-      r))
+      (if (= r 13)
+        (recur)
+        (do
+         (cond
+           (= r 10)
+           (do
+             (set! line (unchecked-inc-int line))
+             (set! col (unchecked-int 1)))
+           (not (or (= r 13) (= r -1)))
+           (do (set! col (unchecked-inc-int col))))
+         r))))
   (-unread [_]
     (cond
       (= prev-col col) nil

@@ -1,0 +1,8 @@
+#!fndecl-v1
+event
+#!Context
+"chic/browser/inspector/mapkvview/cell/_ctx.sq"
+#!Params
+^void [^KVCellObj _ ^Event evt]
+#!Body
+;(BasicIntrOps/notify-event intr evt)

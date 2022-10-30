@@ -1,0 +1,20 @@
+#!fndecl-v1
+measure
+#!Context
+"chic/browser/inspector/Titlebar.sq"
+#!Params
+^IRect [^Titlebar self ^IMap ctx ^IRect rect]
+#!Body
+(=: *font (ct ChangeableValue (:font ctx)))
+(=: rect' (.:rect self))
+(when (.:changed *font)
+  (=: font (ct Font (.:value *font)))
+  (=: geo (TextGeo/capcentre-geo font))
+  (=: font-height (ct int (:height geo)))
+  (=: padding (ct int (* 0.1 font-height)))
+  (setf! self :text-dx (+ padding (ct int (:padding geo))))
+  (setf! self :text-dy (+ padding (ct int (:baseline geo))))
+  (set! rect' (.withHeight rect (+ (* 2 padding) font-height)))
+  (setf! self :rect rect')
+  (setf! self :textline (TextLine/make objstr font)))
+rect'

@@ -253,6 +253,12 @@
             contents (slurp filename)]
         (ana/str->ast contents)))))
 
+(def class-resolver
+  (fn [classname]
+    (or (.get *meta-classes classname)
+      (try (find-class classname)
+        (catch ClassNotFoundException _)))))
+
 (defn analyse-node [{:keys [class-aliases]} node]
   (ana/-analyse-node
     (update (ana/inject-default-env node)
@@ -260,11 +266,17 @@
       (fn [env]
         (-> env
           (update :class-aliases into class-aliases)
-          (assoc :class-resolver
-            (fn [classname]
-              (or (.get *meta-classes classname)
-                (try (find-class classname)
-                  (catch ClassNotFoundException _))))))))))
+          (assoc :class-resolver class-resolver))))))
+
+(defn hidden-class-aliases [{:keys [exclusion]}]
+  (into {}
+    (keep (fn [classname]
+            (let [unhidden-classname
+                  (.replace (.replace classname \, \.) "_." "")]
+              (when (not= exclusion unhidden-classname)
+                [unhidden-classname
+                 classname]))))
+    (keys *meta-classes)))
 
 (defn analyse-defclass-node [opts clsname]
   (let [asts (get-file-asts (classname->file clsname))
@@ -295,15 +307,7 @@
                                            (map #(vector % (expand (str pkg "." %))) names))))
                                args)]
                         :else acc))))
-          [nil (-> {}
-                 (into
-                   (keep (fn [classname]
-                           (let [unhidden-classname
-                                 (.replace (.replace classname \, \.) "_." "")]
-                             (when (not= clsname unhidden-classname)
-                               [unhidden-classname
-                                classname]))))
-                   (keys *meta-classes))
+          [nil (-> (hidden-class-aliases {:exclusion clsname})
                  (cond-> (:hidden? opts)
                    (assoc clsname
                      (str "_." (.replace clsname \. \,)))))]
@@ -711,6 +715,8 @@
   
   ;; TODO mechanism for safely redefining class, preserving static fields
   
+  ;; what about interfaces but for individual parameters (as not all implementations
+  ;; may need all the parameters of a method interface)
   
   )
 

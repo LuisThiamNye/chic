@@ -1,0 +1,15 @@
+#!fndecl-v1
+calc-bg-paint
+#!Context
+"chic/browser/inspector/mapkvview/cell/_ctx.sq"
+#!Params
+^Paint [;^BasicIntr intr
+         ^IMap theme]
+#!Body
+nil
+#_(ct Paint
+      (if (.hovered? intr)
+        (if (.engaged? intr)
+          (:pressed-bg-fill theme)
+          (:hovered-bg-fill theme))
+        nil))

@@ -1123,7 +1123,8 @@ JLS:
 (defn classinfo->bytes
   [env {:keys [^String classname ^String super instance-methods
                class-methods interfaces flags class-fields constructors] :as classinfo}]
-  (assert (string? classname) classinfo)
+  (assert (string? classname) {:keys (keys classinfo)
+                               :classname classname})
   (let [ciname (.replace classname \. \/)
         class-type (Type/getObjectType ciname)
         super-in (if super (.replace super \. \/) "java/lang/Object")  
@@ -1251,6 +1252,41 @@ JLS:
                [name
                 (try (.defineHiddenClass lk bytes false;true
                       (make-array MethodHandles$Lookup$ClassOption 0))
+                 (catch Throwable e
+                   (throw (ex-info (str "Could not load hidden class " name)
+                            {} e))))])))
+      new-compiled-classes)))
+
+(defn load-ast-classes-hidden2
+  [{:keys [^MethodHandles$Lookup lookup]} {:keys [node/env] :as node}]
+  (let [new-classes (:new-classes env)
+        writeout
+        (fn [fn ba]
+          (java.nio.file.Files/write
+            (java.nio.file.Path/of (str "tmp/" (.replace (.replace fn \, \.)
+                                                 "_." "")
+                                     ".class") (make-array String 0))
+            ba
+            (make-array java.nio.file.OpenOption 0)))
+        new-compiled-classes
+        (mapv (fn [info]
+                (try 
+                  (classinfo->bytes env info)
+                  (catch Exception e
+                    (when-some [ba (:bytes (ex-data e))]
+                      (writeout (:classname info) ba))
+                    (throw e))))
+          (vals new-classes))]
+    (into {}
+      (map (fn [[name bytes]]
+             (let [lk lookup]
+               (writeout name bytes)
+               [name
+                (try
+                  {:class-bytes bytes
+                   :lookup
+                   (.defineHiddenClass lk bytes false;true
+                     (make-array MethodHandles$Lookup$ClassOption 0))}
                  (catch Throwable e
                    (throw (ex-info (str "Could not load hidden class " name)
                             {} e))))])))

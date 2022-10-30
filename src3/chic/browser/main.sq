@@ -53,7 +53,7 @@
     (set! changed true))
   
   (defi set-unchanged [_]
-    (set! changed true))
+    (set! changed false))
   
   (defi reset ^void [self new]
     (set! value new)

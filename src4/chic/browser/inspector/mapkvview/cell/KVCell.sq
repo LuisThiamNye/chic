@@ -1,0 +1,8 @@
+#!jclass-v1
+KVCell
+#!Functions
+"chic/browser/inspector/mapkvview/cell/calc-common-geo-state.sq"
+"chic/browser/inspector/mapkvview/cell/calc-bg-paint.sq"
+"chic/browser/inspector/mapkvview/cell/make.sq"
+"chic/browser/inspector/mapkvview/cell/draw.sq"
+"chic/browser/inspector/mapkvview/cell/event.sq"

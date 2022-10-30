@@ -1,0 +1,12 @@
+#!jtype-v1
+Titlebar
+#!Context
+"chic/humbleui/allctx.sq"
+"chic/browser/_ctx.sq"
+#!Fields
+^String objstr
+^:mut ^TextLine textline
+^Paint bg-fill
+^:mut ^int text-dy
+^:mut ^int text-dx
+^:mut ^IRect rect

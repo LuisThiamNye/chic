@@ -1,0 +1,20 @@
+#!fndecl-v1
+make
+#!Context
+"chic/browser/inspector/mapkvview/_ctx.sq"
+#!Params
+^MapKVViewObj [^List entries ;^BasicIntrMgr intrmgr
+               ]
+#!Body
+(nw MapKVViewObj
+  (ChangeableValues/make nil)
+  (let
+      list (.linear (nw List))
+      (loopr [mpe entries] []
+        (let
+          entry (ct io.lacuna.bifurcan.IEntry mpe)
+          (do
+            (.addLast list
+              (KVRow/make #_intrmgr (.key entry) (.value entry)))
+            (recur)))
+        (.forked list))))

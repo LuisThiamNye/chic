@@ -1,0 +1,16 @@
+#!fndecl-v1
+calc-common-geo-state
+#!Context
+"chic/browser/inspector/mapkvview/cell/_ctx.sq"
+#!Params
+[^float scale ^Font font]
+#!Body
+(let
+      metrics (.getMetrics font)
+      cap-height (inc (ct int (.getCapHeight metrics)))
+      font-height (inc (ct int (.getHeight metrics)))
+      cap-padding (/ (- font-height cap-height) 2)
+      text-y (+ cap-height cap-padding)
+      {:text-x cap-padding
+       :text-y text-y
+       :height font-height})

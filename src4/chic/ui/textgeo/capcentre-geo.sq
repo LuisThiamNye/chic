@@ -1,0 +1,17 @@
+#!fndecl-v1
+capcentre-geo
+#!Context
+"chic/humbleui/allctx.sq"
+#!Params
+[^Font font]
+#!Body
+(let
+  metrics (.getMetrics font)
+  cap-height (inc (ct int (.getCapHeight metrics)))
+  ascent (- (dec (ct int (.getAscent metrics))))
+  descent (inc (ct int (.getDescent metrics)))
+  above (- ascent cap-height)
+  cap-padding (Math/max above descent)
+  {:padding cap-padding
+   :baseline (+ cap-height cap-padding)
+   :height (+ cap-height (* 2 cap-padding))})

@@ -1,0 +1,8 @@
+#!fndecl-v1
+make
+#!Context
+"chic/ui/changeablevalue/ChangeableValue.sq"
+#!Params
+[init]
+#!Body
+(nw ChangeableValue init true)

@@ -1,0 +1,13 @@
+#!jtype-v1
+UiRootObj
+#!Context
+"chic/browser/inspector/mapkvview/MapKVViewObj.sq"
+"chic/browser/inspector/mapkvview/MapKVView.sq"
+"chic/browser/inspector/titlebar/Titlebar.sq"
+"chic/browser/_ctx.sq"
+#!Fields
+^:mut ^MapKVViewObj ui-child
+^:mut ^Titlebar ui-titlebar
+; ^BasicIntrMgr intrmgr
+^:mut ^IMap ctx
+^ChangeableValue *font

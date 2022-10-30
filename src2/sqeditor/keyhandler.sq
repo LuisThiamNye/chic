@@ -55,53 +55,55 @@
                      (jf KeyModifier CONTROL))))
     (=: option? (.isModifierDown evt (jf KeyModifier MAC_OPTION)))
     (=: alt? (.isModifierDown evt (jf KeyModifier ALT)))
-    (if primary?
+    (=: done? true)
+    (if (if macos? option? control?)
       (case-enum key
-        A (SelectionOps/select-all (.:selection view) rope)
-        V (let data (Clipboard/get (let a (na ClipboardFormat 1)
-                                        (do (sa a 0 (jf ClipboardFormat TEXT))
-                                          a)))
-           nil #_(when (not (nil? data))
-              (.perform-edit! self
-                (SelectionOps/insert-text (.:selection view)
-                  (.:rope (.:buffer view)) (.getString data)))))
-        C (let s (SelectionOps/combined-regions-str (.:selection view) rope)
-            (Clipboard/set (let a (na ClipboardEntry 1)
-                                (do (sa a 0 (ClipboardEntry/makeString
-                                              (jf ClipboardFormat TEXT) s))
-                                  a))))
-        X (do (let s (SelectionOps/combined-regions-str (.:selection view) rope)
-                (Clipboard/set (let a (na ClipboardEntry 1)
-                                    (do (sa a 0 (ClipboardEntry/makeString
-                                                  (jf ClipboardFormat TEXT) s))
-                                      a))))
-            #_(.perform-edit! self
-              (SelectionOps/delete (.:selection view)
-                (.:rope (.:buffer view)))))
-        Z (if shift? (TextEditorOps/perform-redo self) (TextEditorOps/perform-undo self))
-        S (BufferOps/save! (.:buffer view))
-        ; W (.close-current self)
-        G (.accept action-fn :navigate-to-region)
-        E (.println (jf System out)
-            (Eval/eval-str
-              (SelectionOps/combined-regions-str (.:selection view) rope)))
-        HOME (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
-        END (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
-        (when macos?
-          (case-enum key
-            LEFT (SelectionOps/simple-move-ends (.:selection view) :line-start rope shift?)
-            RIGHT (SelectionOps/simple-move-ends (.:selection view) :line-end rope shift?)
-            UP (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
-            DOWN (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
-            BACKSPACE (TextEditorOps/perform-edit! self
-                        (SelectionOps/delete-by-movement (.:selection view) :line-start rope))
-            nil)))
-      ;; non primary
-      (if (if macos? option? control?)
+        RIGHT (SelectionOps/simple-move-ends (.:selection view) :word-right rope shift?)
+        LEFT (SelectionOps/simple-move-ends (.:selection view) :word-left rope shift?)
+        (set! done? false))
+      (set! done? false))
+    (when (not done?)
+      (if primary?
         (case-enum key
-          RIGHT (SelectionOps/simple-move-ends (.:selection view) :word-right rope shift?)
-          LEFT (SelectionOps/simple-move-ends (.:selection view) :word-left rope shift?)
-          nil)
+          A (SelectionOps/select-all (.:selection view) rope)
+          V (let data (Clipboard/get (let a (na ClipboardFormat 1)
+                                       (do (sa a 0 (jf ClipboardFormat TEXT))
+                                         a)))
+              (when (not (nil? data))
+                (TextEditorOps/perform-edit! self
+                  (SelectionOps/insert-text (.:selection view)
+                    (.:rope (.:buffer view)) (.getString data)))))
+          C (let s (SelectionOps/combined-regions-str (.:selection view) rope)
+              (Clipboard/set (let a (na ClipboardEntry 1)
+                               (do (sa a 0 (ClipboardEntry/makeString
+                                             (jf ClipboardFormat TEXT) s))
+                                 a))))
+          X (do (let s (SelectionOps/combined-regions-str (.:selection view) rope)
+                  (Clipboard/set (let a (na ClipboardEntry 1)
+                                   (do (sa a 0 (ClipboardEntry/makeString
+                                                 (jf ClipboardFormat TEXT) s))
+                                     a))))
+              (TextEditorOps/perform-edit! self
+                  (SelectionOps/delete (.:selection view)
+                    (.:rope (.:buffer view)))))
+          Z (if shift? (TextEditorOps/perform-redo self) (TextEditorOps/perform-undo self))
+          S (BufferOps/save! (.:buffer view))
+          W (.accept action-fn :close-file)
+          G (.accept action-fn :navigate-to-region)
+          E (.println (jf System out)
+              (Eval/eval-str
+                (SelectionOps/combined-regions-str (.:selection view) rope)))
+          HOME (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
+          END (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
+          (when macos?
+            (case-enum key
+              LEFT (SelectionOps/simple-move-ends (.:selection view) :line-start rope shift?)
+              RIGHT (SelectionOps/simple-move-ends (.:selection view) :line-end rope shift?)
+              UP (SelectionOps/simple-move-ends (.:selection view) :doc-start rope shift?)
+              DOWN (SelectionOps/simple-move-ends (.:selection view) :doc-end rope shift?)
+              BACKSPACE (TextEditorOps/perform-edit! self
+                          (SelectionOps/delete-by-movement (.:selection view) :line-start rope))
+              nil)))
         (if alt?
           nil
           (case-enum key
@@ -126,6 +128,7 @@
             HOME (SelectionOps/simple-move-ends (.:selection view) :line-start rope shift?)
             END (SelectionOps/simple-move-ends (.:selection view) :line-end rope shift?)
             nil))))
+    
     true)
   
   (defn on-text-input ^boolean [^TextEditor self ^EventTextInput evt]

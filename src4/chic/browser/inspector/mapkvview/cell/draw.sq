@@ -1,0 +1,24 @@
+#!fndecl-v1
+draw
+#!Context
+"chic/browser/inspector/mapkvview/cell/_ctx.sq"
+#!Params
+^void [^KVCellObj self ^IMap ctx ^Canvas cnv ^IRect irect
+              ^int text-x ^int text-y]
+#!Body
+;(.set-rect intr irect)
+    
+    (=: *font (ct ChangeableValue (:font ctx)))
+    (when (.:changed *font)
+      (=: font (ct Font (.:value *font)))
+      (setf! self :textline (TextLine/make (.:objstr self) font)))
+    
+    (=: bg-paint (Self/calc-bg-paint #_intr ctx))
+    (when (not (nil? bg-paint))
+      (.drawRect cnv (.toRect irect) bg-paint))
+    
+    (let
+      x (+ (.getLeft irect) text-x)
+      y (+ (.getTop irect) text-y)
+      (.drawTextLine cnv (.:textline self)
+        x y (ct Paint (:text-fill ctx))))

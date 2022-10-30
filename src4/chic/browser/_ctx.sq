@@ -1,0 +1,15 @@
+#!context-v1
+(Refer-Classes
+  ; (java.util Map$Entry)
+  (io.lacuna.bifurcan IList IMap Map List)
+  ; (chic.sqeditor RectTools)
+  ; (chic.browser.intr Interactor BasicIntr BasicIntrOps BasicIntrMgr IntrMgr)
+  ; (chic.browser
+  ;   UiRoot)
+  ; (chic.browser.ui
+  ;   ChangeableValue KVCell KVRow MapKVView TextGeo Titlebar)
+  )
+"chic/humbleui/allctx.sq"
+"chic/ui/textgeo/TextGeo.sq"
+"chic/ui/changeablevalue/ChangeableValue.sq"
+"chic/ui/changeablevalue/ChangeableValues.sq"

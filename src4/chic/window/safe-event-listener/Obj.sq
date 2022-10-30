@@ -1,0 +1,20 @@
+#!defclass-v1
+SafeWinEventListener
+#!Context
+"chic/humbleui/allctx.sq"
+#!Body
+:interfaces java.util.function.Consumer
+[^chic.window.i.PaintAndEventHandler handler]
+  
+(defi accept ^void [_ evt]
+  (try
+    (if (instance? EventFrameSkija evt)
+      (let
+        cnv (.getCanvas (.getSurface (ct EventFrameSkija evt)))
+        n (.save cnv)
+        (try (.paint handler cnv)
+          (finally
+            (.restoreToCount cnv n))))
+      (.notifyEvent handler (ct Event evt)))
+    (catch Throwable e
+      (.printStackTrace e))))

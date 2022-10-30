@@ -50,7 +50,10 @@
   
   (defi draw ^void [self ^IMap ctx ^Canvas cnv ^IRect rect]
     (setf! self :rect rect)
-    (.draw ui-label ctx cnv (RectTools/origin rect)))
+    (.draw ui-label ctx cnv
+      (.offset (RectTools/origin rect)
+        (- (.getWidth rect) (.:width (.:size ui-label)))
+        0)))
   
   (defi event ^Object [self ^Event evt]
     (<-

@@ -1,0 +1,9 @@
+#!fndecl-v1
+reset
+#!Context
+"chic/ui/changeablevalue/ChangeableValue.sq"
+#!Params
+^void [^ChangeableValue self new]
+#!Body
+(setf! self :value new)
+(setf! self :changed true)

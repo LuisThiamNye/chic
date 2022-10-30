@@ -1,0 +1,5 @@
+#!jtype-v1
+ChangeableValue
+#!Fields
+^:pub ^:mut ^Object value
+^:pub ^:mut ^boolean changed

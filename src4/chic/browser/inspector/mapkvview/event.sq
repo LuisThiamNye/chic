@@ -1,0 +1,7 @@
+#!fndecl-v1
+event
+#!Context
+"chic/browser/inspector/mapkvview/_ctx.sq"
+#!Params
+^void [^MapKVViewObj _ ^Event evt]
+#!Body
