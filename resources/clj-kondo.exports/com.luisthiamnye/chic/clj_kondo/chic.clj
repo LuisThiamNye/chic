@@ -1,4 +1,4 @@
-(ns hooks.chic
+(ns clj-kondo.chic
   (:require 
     [clj-kondo.hooks-api :as api]))
 

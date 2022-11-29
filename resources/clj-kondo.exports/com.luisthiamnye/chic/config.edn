@@ -1,0 +1,16 @@
+{:lint-as {chic.util/doit-zip clojure.core/doseq
+           chic.util/deftype+ clojure.core/deftype
+           chic.util/case-enum clojure.core/case
+           chic.util/with-keep-open clojure.core/with-open
+           
+           chic.ui.ui3/deffnletcmpt clojure.core/defn}
+     
+ :hooks {:analyze-call 
+         {chic.util/<- clj-kondo.chic/<-
+          chic.util.impl.base/<- clj-kondo.chic/<-
+          chic.util/inherit-vars clj-kondo.chic/inherit-vars
+          chic.util.ns/inherit-vars clj-kondo.chic/inherit-vars
+          chic.util/loopr clj-kondo.chic/loopr
+          chic.util.impl.loopr/loopr clj-kondo.chic/loopr
+          chic.util/loop-zip clj-kondo.chic/loopr
+          chic.util.impl.loopr/loop-zip clj-kondo.chic/loopr}}}

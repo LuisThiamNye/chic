@@ -1,19 +1,4 @@
-{:lint-as {chic.util/doit-zip clojure.core/doseq
-           chic.util/deftype+ clojure.core/deftype
-           chic.util/case-enum clojure.core/case
-           chic.util/with-keep-open clojure.core/with-open
-           
-           chic.ui.ui3/deffnletcmpt clojure.core/defn}
-     
- :hooks {:analyze-call 
-         {chic.util/<- hooks.chic/<-
-          chic.util.impl.base/<- hooks.chic/<-
-          chic.util/inherit-vars hooks.chic/inherit-vars
-          chic.util.ns/inherit-vars hooks.chic/inherit-vars
-          chic.util/loopr hooks.chic/loopr
-          chic.util.impl.loopr/loopr hooks.chic/loopr
-          chic.util/loop-zip hooks.chic/loopr
-          chic.util.impl.loopr/loop-zip hooks.chic/loopr}}
+{:config-paths ["../resources/clj-kondo.exports/com.luisthiamnye/chic"]
 
  :linters {:redundant-do {:level :off}
            :use {:level :off}}}
