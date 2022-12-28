@@ -18,7 +18,7 @@
 (defn -propagate-var [src ^Var dst]
   (locking dst
     (let [mta (enc/merge (meta dst)
-                (enc/-alias-meta src))]
+                (select-keys (meta src) [:doc :arglists :private :macro]))]
       (.bindRoot dst @src) ;; clears macro flag
       (reset-meta! dst mta))))
 
